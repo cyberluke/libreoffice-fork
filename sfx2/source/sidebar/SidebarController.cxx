@@ -553,6 +553,11 @@ void SidebarController::SyncUpdate()
 
 void SidebarController::UpdateConfigurations()
 {
+    if (!mpTabBar)
+    {
+        return;
+    }
+
     if (maCurrentContext == maRequestedContext
         && mnRequestedForceFlags == SwitchFlag_NoForce)
         return;
