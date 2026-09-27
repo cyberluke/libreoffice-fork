@@ -1,0 +1,27 @@
+From 0608bbf96239d1101723fd1876d6a10b3713f774 Mon Sep 17 00:00:00 2001
+From: Hossein <hossein@libreoffice.org>
+Date: Wed, 23 Sep 2026 22:25:51 +0200
+Subject: [PATCH] tdf#173676 Fix crash in Sidebar UpdateConfigurations()
+
+This patch should fix the crash caused by null dereference in
+sfx2::sidebar::SidebarController::UpdateConfigurations()
+
+Change-Id: I37b80cc0bec2a0a6106564fef2b12c85861657c7
+---
+
+diff --git a/sfx2/source/sidebar/SidebarController.cxx b/sfx2/source/sidebar/SidebarController.cxx
+index c4f05f9..4864281 100644
+--- a/sfx2/source/sidebar/Sidebarcontroller.cxx
++++ b/sfx2/source/sidebar/Sidebarcontroller.cxx
+@@ -554,6 +554,11 @@
+ 
+ void SidebarController::UpdateConfigurations()
+ {
++    if (!mpTabBar)
++    {
++        return;
++    }
++
+     if (maCurrentContext == maRequestedContext
+         && mnRequestedForceFlags == SwitchFlag_NoForce)
+         return;
