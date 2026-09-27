@@ -1103,6 +1103,7 @@ cygwin*|wsl*)
     test_qt6=yes
     test_win=yes
     enable_pagein=no
+    enable_gpgmepp=no
     build_skia=yes
     _os=WINNT
 
@@ -3239,6 +3240,60 @@ AC_ARG_WITH(coredumpctl,
     AS_HELP_STRING([--with-coredumpctl],
         [Use coredumpctl (together with systemd-run) to retrieve core dumps of crashing test
         processes.]))
+
+dnl CEF (Chromium Embedded Framework) for AI WebView panel
+AC_ARG_WITH(cef,
+    AS_HELP_STRING([--with-cef=DIR],
+        [Path to CEF binary distribution for WebView-based AI panel.
+         Specify the directory containing include/, Release/, and Resources/.
+         If not specified, the VCL-based panel is used instead.]),
+[],[with_cef=no])
+
+ENABLE_CEF=
+CEF_DIR=
+CEF_CFLAGS=
+CEF_LIBS=
+if test "$with_cef" != "no" -a -n "$with_cef"; then
+    if test "$_os" = Darwin; then
+        dnl macOS CEF binary distribution shape: include/, the framework under
+        dnl Release/, and libcef_dll/ wrapper sources (compiled into
+        dnl libcef_dll_wrapper.a by the CEF build step). On macOS the framework
+        dnl is loaded at runtime via CefScopedLibraryLoader, so it is NOT linked
+        dnl at link time; link-time we only need the wrapper static lib (added in
+        dnl Library_officelabs.mk / Executable_officelabs_cef_subprocess.mk) plus
+        dnl the standard AppKit/Cocoa/IOSurface frameworks. CEF_LIBS is therefore
+        dnl empty here (no import lib like the Windows libcef.lib).
+        if test -d "$with_cef/include" -a -d "$with_cef/Release/Chromium Embedded Framework.framework" -a -d "$with_cef/libcef_dll"; then
+            ENABLE_CEF=TRUE
+            CEF_DIR="$with_cef"
+            CEF_CFLAGS="-I$with_cef -I$with_cef/include"
+            CEF_LIBS=
+            AC_MSG_RESULT([using macOS CEF from $with_cef])
+        else
+            AC_MSG_ERROR([macOS CEF directory $with_cef does not contain expected structure ("include/", "Release/Chromium Embedded Framework.framework" and "libcef_dll/" required)])
+        fi
+    elif test -d "$with_cef/include" -a -d "$with_cef/Release"; then
+        ENABLE_CEF=TRUE
+        dnl On Windows the build runs under Cygwin but compiles with MSVC, which
+        dnl cannot resolve a /cygdrive/... pathname. Store CEF_DIR in the native
+        dnl C:/... form the rest of the Windows build uses; otherwise cl.exe is
+        dnl handed -I/cygdrive/... and every CEF include fails with C1083.
+        dnl PathFormat is a no-op on non-Cygwin build hosts.
+        PathFormat "$with_cef"
+        CEF_DIR="$formatted_path"
+        CEF_CFLAGS="-I$CEF_DIR -I$CEF_DIR/include"
+        CEF_LIBS="$CEF_DIR/Release/libcef.lib"
+        AC_MSG_RESULT([using CEF from $CEF_DIR])
+    else
+        AC_MSG_ERROR([CEF directory $with_cef does not contain expected structure (include/ and Release/ required)])
+    fi
+else
+    AC_MSG_RESULT([CEF disabled, using VCL-based AI panel])
+fi
+AC_SUBST(ENABLE_CEF)
+AC_SUBST(CEF_DIR)
+AC_SUBST(CEF_CFLAGS)
+AC_SUBST(CEF_LIBS)
 
 AC_ARG_WITH(buildconfig-recorded,
     AS_HELP_STRING([--with-buildconfig-recorded],

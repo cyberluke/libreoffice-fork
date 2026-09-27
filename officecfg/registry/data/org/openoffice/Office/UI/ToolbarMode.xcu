@@ -16,7 +16,7 @@
   <node oor:name="Applications">
     <node oor:name="Writer" oor:op="replace">
       <prop oor:name="Active">
-        <value>Default</value>
+        <value>notebookbar.ui</value>
       </prop>
       <node oor:name="Modes">
         <node oor:name="Default" oor:op="replace">
@@ -296,7 +296,7 @@
     </node>
     <node oor:name="Calc" oor:op="replace">
       <prop oor:name="Active">
-        <value>Default</value>
+        <value>notebookbar.ui</value>
       </prop>
       <node oor:name="Modes">
         <node oor:name="Default" oor:op="replace">
@@ -401,6 +401,9 @@
           <prop oor:name="UserToolbars">
             <value>
             </value>
+          </prop>
+          <prop oor:name="HasMenubar">
+            <value>true</value>
           </prop>
           <prop oor:name="Sidebar">
             <value>Arrow</value>
@@ -545,7 +548,7 @@
     </node>
     <node oor:name="Impress" oor:op="replace">
       <prop oor:name="Active">
-        <value>Default</value>
+        <value>notebookbar.ui</value>
       </prop>
       <node oor:name="Modes">
         <node oor:name="Default" oor:op="replace">
@@ -800,7 +803,7 @@
     </node>
     <node oor:name="Draw" oor:op="replace">
       <prop oor:name="Active">
-        <value>Default</value>
+        <value>notebookbar.ui</value>
       </prop>
       <node oor:name="Modes">
         <node oor:name="Default" oor:op="replace">

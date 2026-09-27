@@ -29,6 +29,7 @@
 
 #include <memory>
 #include <string.h>
+#include <string>
 #include <limits.h>
 
 #include <win/svsys.h>
@@ -48,6 +49,7 @@
 #include <o3tl/char16_t2wchar_t.hxx>
 
 #include <vcl/event.hxx>
+#include <vcl/officelabstheme.hxx>
 #include <vcl/sysdata.hxx>
 #include <vcl/timer.hxx>
 #include <vcl/settings.hxx>
@@ -95,6 +97,7 @@
 #include <shellapi.h>
 #include <uxtheme.h>
 #include <Vssym32.h>
+#include <string>
 
 using namespace ::com::sun::star;
 using namespace ::com::sun::star::uno;
@@ -268,25 +271,20 @@ static void UpdateDarkMode(HWND hWnd)
     if (!hUxthemeLib)
         return;
 
+    // OfficeLabs: read theme: light / midnight-blue / dark
+    std::string olTheme = vcl::officelabs::GetOLThemeSource().name;
+
     typedef PreferredAppMode(WINAPI* SetPreferredAppMode_t)(PreferredAppMode);
     auto SetPreferredAppMode = reinterpret_cast<SetPreferredAppMode_t>(GetProcAddress(hUxthemeLib, MAKEINTRESOURCEA(135)));
     if (SetPreferredAppMode)
     {
-        switch (MiscSettings::GetAppColorMode())
-        {
-            case AppearanceMode::AUTO:
-                SetPreferredAppMode(AllowDark);
-                break;
-            case AppearanceMode::LIGHT:
-                SetPreferredAppMode(ForceLight);
-                break;
-            case AppearanceMode::DARK:
-                SetPreferredAppMode(ForceDark);
-                break;
-        }
+        if (olTheme == "light")
+            SetPreferredAppMode(ForceLight);
+        else
+            SetPreferredAppMode(ForceDark); // midnight-blue + dark
     }
 
-    BOOL bDarkMode = UseDarkMode();
+    BOOL bDarkMode = (olTheme != "light") ? TRUE : FALSE;
 
     typedef void(WINAPI* AllowDarkModeForWindow_t)(HWND, BOOL);
     auto AllowDarkModeForWindow = reinterpret_cast<AllowDarkModeForWindow_t>(GetProcAddress(hUxthemeLib, MAKEINTRESOURCEA(133)));
@@ -299,6 +297,17 @@ static void UpdateDarkMode(HWND hWnd)
         return;
 
     DwmSetWindowAttribute(hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &bDarkMode, sizeof(bDarkMode));
+
+    // OfficeLabs: set custom title bar color per theme (Windows 11 22000+)
+    // DWMWA_CAPTION_COLOR = 35, takes COLORREF (0x00BBGGRR)
+    COLORREF captionColor;
+    if (olTheme == "midnight-blue")
+        captionColor = 0x002C2221;  // #21222C in BGR
+    else if (olTheme == "dark")
+        captionColor = 0x001A1A1A;  // #1A1A1A
+    else
+        captionColor = 0x00D0D0D0;  // #D0D0D0 grey for light
+    DwmSetWindowAttribute(hWnd, 35 /*DWMWA_CAPTION_COLOR*/, &captionColor, sizeof(captionColor));
 }
 
 static void UpdateAutoAccel()
@@ -2911,6 +2920,11 @@ void WinSalFrame::UpdateSettings( AllSettings& rSettings )
 
     // now apply the values from theming, if available
     WinSalGraphics::updateSettingsNative( rSettings );
+
+    // OfficeLabs: apply file-based widget theme colors (definition.xml)
+    // This must run AFTER updateSettingsNative so theme XML colors win
+    if (mpGraphics)
+        mpGraphics->UpdateSettings( rSettings );
 }
 
 const SystemEnvData& WinSalFrame::GetSystemData() const

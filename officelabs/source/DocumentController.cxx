@@ -1,0 +1,660 @@
+/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/*
+ * This file is part of OfficeLabs.
+ */
+
+#include <officelabs/DocumentController.hxx>
+
+#include <com/sun/star/beans/XPropertySet.hpp>
+#include <com/sun/star/container/XIndexAccess.hpp>
+#include <com/sun/star/frame/XController.hpp>
+#include <com/sun/star/frame/XModel.hpp>
+#include <com/sun/star/frame/XStorable.hpp>
+#include <com/sun/star/text/XTextRange.hpp>
+#include <com/sun/star/view/XSelectionSupplier.hpp>
+#include <com/sun/star/sheet/XSpreadsheets.hpp>
+#include <com/sun/star/sheet/XSpreadsheet.hpp>
+#include <com/sun/star/table/XCell.hpp>
+#include <com/sun/star/table/XCellRange.hpp>
+#include <com/sun/star/table/CellContentType.hpp>
+#include <com/sun/star/drawing/XDrawPagesSupplier.hpp>
+#include <com/sun/star/drawing/XDrawPage.hpp>
+#include <com/sun/star/drawing/XShape.hpp>
+#include <com/sun/star/sheet/XSheetCellCursor.hpp>
+#include <com/sun/star/sheet/XUsedAreaCursor.hpp>
+#include <com/sun/star/sheet/XCellRangeAddressable.hpp>
+
+#include <rtl/ustrbuf.hxx>
+#include <sal/log.hxx>
+
+#include <comphelper/scopeguard.hxx>
+
+using namespace css;
+
+namespace officelabs {
+
+namespace {
+
+// How much document context getCursorContext() collects around the caret.
+//
+// Before this, it returned the current paragraph and nothing else, so a fact one
+// paragraph above the caret was invisible to inline completion no matter how
+// large the agent's own window was (officelabs-project#336). The agent-side cap
+// and InlineCompletionEligibility both clip to 2000 before anything is sent, so
+// collecting more than that here would be discarded downstream.
+const sal_Int32 MAX_CONTEXT_BEFORE_CHARS = 2000;
+const sal_Int32 MAX_CONTEXT_AFTER_CHARS = 500;
+
+// A hard bound on paragraph traversal, independent of the character budgets.
+// getCursorContext() runs on the VCL thread on every debounce (150 ms), so the
+// pathological document -- hundreds of one-character paragraphs, e.g. a long
+// list -- must not turn each keystroke into hundreds of UNO round trips. With
+// ordinary prose the character budget is reached in a handful of hops and this
+// never binds.
+const sal_Int32 MAX_CONTEXT_PARAGRAPH_HOPS = 64;
+
+/// Keep the last nChars (nearest the caret).
+OUString clipTail(const OUString& rText, sal_Int32 nChars)
+{
+    return rText.getLength() > nChars ? rText.copy(rText.getLength() - nChars) : rText;
+}
+
+/// Keep the first nChars (nearest the caret).
+OUString clipHead(const OUString& rText, sal_Int32 nChars)
+{
+    return rText.getLength() > nChars ? rText.copy(0, nChars) : rText;
+}
+
+} // anonymous namespace
+
+DocumentController::DocumentController()
+{
+}
+
+DocumentController::~DocumentController()
+{
+}
+
+void DocumentController::setDocument(const uno::Reference<text::XTextDocument>& xDoc)
+{
+    m_xDocument = xDoc;
+    m_xText = uno::Reference<text::XText>();
+    m_xController = uno::Reference<frame::XController>();
+
+    if (!m_xDocument.is())
+        return;
+
+    m_xText = m_xDocument->getText();
+
+    uno::Reference<frame::XModel> xModel(m_xDocument, uno::UNO_QUERY);
+    if (xModel.is())
+        m_xController = xModel->getCurrentController();
+}
+
+void DocumentController::setCalcDocument(const uno::Reference<sheet::XSpreadsheetDocument>& xDoc)
+{
+    m_xCalcDoc = xDoc;
+    m_xDocument = uno::Reference<text::XTextDocument>(); // clear Writer ref
+    m_xText = uno::Reference<text::XText>();
+    m_xImpressDoc = uno::Reference<drawing::XDrawPagesSupplier>(); // clear Impress ref
+
+    if (!m_xCalcDoc.is())
+        return;
+
+    uno::Reference<frame::XModel> xModel(m_xCalcDoc, uno::UNO_QUERY);
+    if (xModel.is())
+        m_xController = xModel->getCurrentController();
+}
+
+void DocumentController::setImpressDocument(const uno::Reference<drawing::XDrawPagesSupplier>& xDoc)
+{
+    m_xImpressDoc = xDoc;
+    m_xDocument = uno::Reference<text::XTextDocument>(); // clear Writer ref
+    m_xText = uno::Reference<text::XText>();
+    m_xCalcDoc = uno::Reference<sheet::XSpreadsheetDocument>(); // clear Calc ref
+
+    if (!m_xImpressDoc.is())
+        return;
+
+    uno::Reference<frame::XModel> xModel(m_xImpressDoc, uno::UNO_QUERY);
+    if (xModel.is())
+        m_xController = xModel->getCurrentController();
+}
+
+void DocumentController::setModel(const uno::Reference<frame::XModel>& xModel)
+{
+    m_xModel = xModel;
+    if (xModel.is())
+        m_xController = xModel->getCurrentController();
+}
+
+void DocumentController::setController(const uno::Reference<frame::XController>& xController)
+{
+    m_xController = xController;
+}
+
+OUString DocumentController::getApplicationType()
+{
+    if (!m_sAppType.isEmpty())
+        return m_sAppType;
+    return u"writer"_ustr;
+}
+
+OUString DocumentController::getDocumentUrl()
+{
+    if (!m_xModel.is())
+        return OUString();
+
+    return m_xModel->getURL();
+}
+
+OUString DocumentController::getDocumentText()
+{
+    // Writer path
+    if (m_xText.is())
+        return m_xText->getString();
+
+    // Calc path -- read active sheet cells as tab-separated text
+    if (m_xCalcDoc.is())
+    {
+        try
+        {
+            uno::Reference<sheet::XSpreadsheets> xSheets = m_xCalcDoc->getSheets();
+            uno::Reference<container::XIndexAccess> xSheetsIdx(xSheets, uno::UNO_QUERY);
+            if (!xSheetsIdx.is() || xSheetsIdx->getCount() == 0)
+                return OUString();
+
+            // Read first (active) sheet
+            uno::Reference<sheet::XSpreadsheet> xSheet;
+            xSheetsIdx->getByIndex(0) >>= xSheet;
+            if (!xSheet.is())
+                return OUString();
+
+            // Find used range via cursor
+            uno::Reference<sheet::XSheetCellCursor> xCursor = xSheet->createCursor();
+            uno::Reference<sheet::XUsedAreaCursor> xUsed(xCursor, uno::UNO_QUERY);
+            if (!xUsed.is())
+                return OUString();
+
+            xUsed->gotoStartOfUsedArea(false);
+            xUsed->gotoEndOfUsedArea(true);
+
+            uno::Reference<sheet::XCellRangeAddressable> xAddr(xCursor, uno::UNO_QUERY);
+            if (!xAddr.is())
+                return OUString();
+
+            auto addr = xAddr->getRangeAddress();
+            sal_Int32 maxRows = std::min(
+                static_cast<sal_Int32>(addr.EndRow - addr.StartRow + 1),
+                sal_Int32(500));
+            sal_Int32 nCols = addr.EndColumn - addr.StartColumn + 1;
+
+            OUStringBuffer aBuf;
+            for (sal_Int32 r = 0; r < maxRows; ++r)
+            {
+                for (sal_Int32 c = 0; c < nCols; ++c)
+                {
+                    if (c > 0)
+                        aBuf.append('\t');
+
+                    uno::Reference<table::XCell> xCell = xSheet->getCellByPosition(
+                        addr.StartColumn + c, addr.StartRow + r);
+                    if (xCell.is())
+                    {
+                        // Get string which preserves text and formulas
+                        uno::Reference<text::XText> xCellText(xCell, uno::UNO_QUERY);
+                        if (xCellText.is())
+                            aBuf.append(xCellText->getString());
+                    }
+                }
+                aBuf.append('\n');
+            }
+            return aBuf.makeStringAndClear();
+        }
+        catch (const uno::Exception&)
+        {
+            SAL_WARN("officelabs.cef", "getDocumentText: Calc read failed");
+            return OUString();
+        }
+    }
+
+    // Impress path -- read all slide text
+    if (m_xImpressDoc.is())
+    {
+        try
+        {
+            uno::Reference<drawing::XDrawPages> xPages = m_xImpressDoc->getDrawPages();
+            if (!xPages.is())
+                return OUString();
+
+            sal_Int32 nPages = xPages->getCount();
+            OUStringBuffer aBuf;
+
+            for (sal_Int32 p = 0; p < nPages; ++p)
+            {
+                uno::Reference<drawing::XDrawPage> xPage;
+                xPages->getByIndex(p) >>= xPage;
+                if (!xPage.is())
+                    continue;
+
+                aBuf.append("--- Slide ");
+                aBuf.append(p + 1);
+                aBuf.append(" ---\n");
+
+                sal_Int32 nShapes = xPage->getCount();
+                for (sal_Int32 s = 0; s < nShapes; ++s)
+                {
+                    uno::Reference<drawing::XShape> xShape;
+                    xPage->getByIndex(s) >>= xShape;
+                    if (!xShape.is())
+                        continue;
+
+                    uno::Reference<text::XText> xShapeText(xShape, uno::UNO_QUERY);
+                    if (xShapeText.is())
+                    {
+                        OUString sText = xShapeText->getString();
+                        if (!sText.isEmpty())
+                        {
+                            aBuf.append(sText);
+                            aBuf.append('\n');
+                        }
+                    }
+                }
+            }
+            return aBuf.makeStringAndClear();
+        }
+        catch (const uno::Exception&)
+        {
+            SAL_WARN("officelabs.cef", "getDocumentText: Impress read failed");
+            return OUString();
+        }
+    }
+
+    return OUString();
+}
+
+OUString DocumentController::getSelectedText()
+{
+    if (!m_xController.is())
+        return OUString();
+
+    uno::Reference<view::XSelectionSupplier> xSelSupplier(m_xController, uno::UNO_QUERY);
+    if (!xSelSupplier.is())
+        return OUString();
+
+    uno::Any aSelection = xSelSupplier->getSelection();
+
+    // Simple case: a direct text range.
+    uno::Reference<text::XTextRange> xRange;
+    aSelection >>= xRange;
+    if (xRange.is())
+        return xRange->getString();
+
+    // Writer often returns a collection of text ranges.
+    uno::Reference<container::XIndexAccess> xRanges;
+    aSelection >>= xRanges;
+    if (xRanges.is())
+    {
+        const sal_Int32 nCount = xRanges->getCount();
+
+        if (nCount == 1)
+        {
+            xRanges->getByIndex(0) >>= xRange;
+            if (xRange.is())
+                return xRange->getString();
+        }
+        else if (nCount > 1)
+        {
+            OUStringBuffer aBuf;
+            for (sal_Int32 i = 0; i < nCount; ++i)
+            {
+                uno::Reference<text::XTextRange> xCurrentRange;
+                xRanges->getByIndex(i) >>= xCurrentRange;
+                if (!xCurrentRange.is())
+                    continue;
+
+                if (aBuf.getLength() > 0)
+                    aBuf.append('\n');
+                aBuf.append(xCurrentRange->getString());
+            }
+
+            if (aBuf.getLength() > 0)
+                return aBuf.makeStringAndClear();
+        }
+    }
+
+    // Calc: selection may be a cell range
+    if (m_xCalcDoc.is())
+    {
+        uno::Reference<table::XCellRange> xCellRange;
+        aSelection >>= xCellRange;
+        if (xCellRange.is())
+        {
+            try
+            {
+                uno::Reference<sheet::XCellRangeAddressable> xAddr(xCellRange, uno::UNO_QUERY);
+                if (xAddr.is())
+                {
+                    auto addr = xAddr->getRangeAddress();
+                    sal_Int32 nRows = addr.EndRow - addr.StartRow + 1;
+                    sal_Int32 nCalcCols = addr.EndColumn - addr.StartColumn + 1;
+                    sal_Int32 maxRows = std::min(nRows, sal_Int32(200));
+
+                    OUStringBuffer aCalcBuf;
+                    for (sal_Int32 r = 0; r < maxRows; ++r)
+                    {
+                        for (sal_Int32 c = 0; c < nCalcCols; ++c)
+                        {
+                            if (c > 0) aCalcBuf.append('\t');
+                            uno::Reference<table::XCell> xCell = xCellRange->getCellByPosition(c, r);
+                            if (xCell.is())
+                            {
+                                uno::Reference<text::XText> xCellText(xCell, uno::UNO_QUERY);
+                                if (xCellText.is())
+                                    aCalcBuf.append(xCellText->getString());
+                            }
+                        }
+                        aCalcBuf.append('\n');
+                    }
+                    return aCalcBuf.makeStringAndClear();
+                }
+            }
+            catch (const uno::Exception&)
+            {
+                SAL_WARN("officelabs.cef", "getSelectedText: Calc selection read failed");
+            }
+        }
+    }
+
+    // Impress: selection may be shape(s)
+    if (m_xImpressDoc.is())
+    {
+        // Try single shape
+        uno::Reference<drawing::XShape> xShape;
+        aSelection >>= xShape;
+        if (xShape.is())
+        {
+            uno::Reference<text::XText> xShapeText(xShape, uno::UNO_QUERY);
+            if (xShapeText.is())
+                return xShapeText->getString();
+        }
+
+        // Try collection of shapes
+        uno::Reference<container::XIndexAccess> xShapes;
+        aSelection >>= xShapes;
+        if (xShapes.is())
+        {
+            OUStringBuffer aShapeBuf;
+            for (sal_Int32 i = 0; i < xShapes->getCount(); ++i)
+            {
+                uno::Reference<drawing::XShape> xCurShape;
+                xShapes->getByIndex(i) >>= xCurShape;
+                if (!xCurShape.is()) continue;
+
+                uno::Reference<text::XText> xShapeText(xCurShape, uno::UNO_QUERY);
+                if (xShapeText.is())
+                {
+                    OUString sText = xShapeText->getString();
+                    if (!sText.isEmpty())
+                    {
+                        if (aShapeBuf.getLength() > 0) aShapeBuf.append('\n');
+                        aShapeBuf.append(sText);
+                    }
+                }
+            }
+            return aShapeBuf.makeStringAndClear();
+        }
+    }
+
+    return OUString();
+}
+
+CursorContext DocumentController::getCursorContext()
+{
+    CursorContext aContext;
+    aContext.readOnly = true;
+
+    try
+    {
+        if (!m_xController.is())
+            return aContext;
+
+        uno::Reference<text::XTextViewCursorSupplier> xViewCursorSupplier(m_xController,
+                                                                          uno::UNO_QUERY);
+        if (!xViewCursorSupplier.is())
+            return aContext;
+
+        uno::Reference<text::XTextViewCursor> xViewCursor = xViewCursorSupplier->getViewCursor();
+        if (!xViewCursor.is())
+            return aContext;
+
+        uno::Reference<text::XTextCursor> xTextCursor(xViewCursor, uno::UNO_QUERY);
+        if (!xTextCursor.is())
+            return aContext;
+
+        aContext.hasSelection = !xTextCursor->isCollapsed();
+
+        uno::Reference<text::XText> xText = xViewCursor->getText();
+        if (!xText.is())
+            return aContext;
+
+        uno::Reference<text::XTextCursor> xBefore
+            = xText->createTextCursorByRange(xViewCursor->getStart());
+        uno::Reference<text::XParagraphCursor> xParaBefore(xBefore, uno::UNO_QUERY);
+        if (!xParaBefore.is())
+            return aContext;
+        xParaBefore->gotoStartOfParagraph(true);
+        // Walk back across earlier paragraphs until the budget is met (#336).
+        // gotoPreviousParagraph(true) moves to the START of the previous
+        // paragraph and expands, so the selection already covers that whole
+        // paragraph -- no separate goto-end is needed on this side.
+        for (sal_Int32 nHops = 0; nHops < MAX_CONTEXT_PARAGRAPH_HOPS; ++nHops)
+        {
+            if (xParaBefore->getString().getLength() >= MAX_CONTEXT_BEFORE_CHARS)
+                break;
+            if (!xParaBefore->gotoPreviousParagraph(true))
+                break;
+        }
+        // Clip to the budget. The loop above stops *before* a hop that would
+        // exceed it, so the final hop can overshoot by a whole paragraph --
+        // 2000 was a threshold, not a bound. textBefore is additionally clipped
+        // downstream by InlineCompletionEligibility, but textAfter is not
+        // clipped anywhere, so doing it here is what actually bounds the wire.
+        aContext.textBefore = clipTail(xParaBefore->getString(), MAX_CONTEXT_BEFORE_CHARS);
+
+        uno::Reference<text::XTextCursor> xAfter
+            = xText->createTextCursorByRange(xViewCursor->getStart());
+        uno::Reference<text::XParagraphCursor> xParaAfter(xAfter, uno::UNO_QUERY);
+        if (!xParaAfter.is())
+            return aContext;
+        xParaAfter->gotoEndOfParagraph(true);
+        // textAfter stays PARAGRAPH-LOCAL on purpose. It is not a context
+        // budget -- it is the eligibility gate: InlineCompletionEligibility
+        // returns textAfter.trim().isEmpty(), so any text put here SUPPRESSES
+        // the completion. #75 walked forward over following paragraphs, which
+        // made textAfter non-empty for a caret at the end of any paragraph with
+        // text below it, and ghost text only appeared at the end of the last
+        // non-blank paragraph of the document. Widen textBefore freely; widening
+        // this field narrows where the feature works. If the model ever needs
+        // trailing context, add a SEPARATE field and leave this one alone.
+        aContext.textAfter = clipHead(xParaAfter->getString(), MAX_CONTEXT_AFTER_CHARS);
+
+        // ...and here is that separate field. Keep walking the SAME cursor
+        // forward -- textAfter has already been taken, so nothing above can be
+        // affected by how far this goes. gotoNextParagraph(true) lands on the
+        // START of the next paragraph, so its text is only included once
+        // gotoEndOfParagraph(true) runs again.
+        //
+        // The hop bound is independent of the character budget: this runs on
+        // the VCL thread on every 150 ms debounce, and a document of hundreds
+        // of one-character paragraphs must not turn a keystroke into hundreds
+        // of UNO round trips. Clipped here because nothing downstream bounds it.
+        for (sal_Int32 nHops = 0; nHops < MAX_CONTEXT_PARAGRAPH_HOPS; ++nHops)
+        {
+            if (xParaAfter->getString().getLength() >= MAX_CONTEXT_AFTER_CHARS)
+                break;
+            if (!xParaAfter->gotoNextParagraph(true))
+                break;
+            xParaAfter->gotoEndOfParagraph(true);
+        }
+        aContext.textAfterContext
+            = clipHead(xParaAfter->getString(), MAX_CONTEXT_AFTER_CHARS);
+
+        aContext.readOnly = false;
+        if (m_xModel.is())
+        {
+            uno::Reference<frame::XStorable> xStorable(m_xModel, uno::UNO_QUERY);
+            if (xStorable.is() && xStorable->isReadonly())
+                aContext.readOnly = true;
+        }
+
+        // Writer selections inside protected sections or protected table
+        // cells are not caught by the document-level read-only flag.
+        uno::Reference<beans::XPropertySet> xCursorProps(xViewCursor, uno::UNO_QUERY);
+        if (xCursorProps.is())
+        {
+            try
+            {
+                uno::Any aSection = xCursorProps->getPropertyValue(u"TextSection"_ustr);
+                uno::Reference<beans::XPropertySet> xSection;
+                if ((aSection >>= xSection) && xSection.is())
+                {
+                    try
+                    {
+                        bool bProtected = false;
+                        if ((xSection->getPropertyValue(u"IsProtected"_ustr) >>= bProtected)
+                            && bProtected)
+                            aContext.readOnly = true;
+                    }
+                    catch (const uno::Exception&)
+                    {
+                    }
+                }
+            }
+            catch (const uno::Exception&)
+            {
+            }
+
+            try
+            {
+                uno::Any aCell = xCursorProps->getPropertyValue(u"Cell"_ustr);
+                uno::Reference<beans::XPropertySet> xCell;
+                if ((aCell >>= xCell) && xCell.is())
+                {
+                    try
+                    {
+                        bool bProtected = false;
+                        if ((xCell->getPropertyValue(u"IsProtected"_ustr) >>= bProtected)
+                            && bProtected)
+                            aContext.readOnly = true;
+                    }
+                    catch (const uno::Exception&)
+                    {
+                    }
+                }
+            }
+            catch (const uno::Exception&)
+            {
+            }
+        }
+    }
+    catch (const uno::Exception&)
+    {
+        SAL_WARN("officelabs", "DocumentController::getCursorContext failed");
+        aContext.readOnly = true;
+    }
+
+    return aContext;
+}
+
+std::optional<CursorCharFont> DocumentController::getCursorCharFont()
+{
+    try
+    {
+        if (!m_xController.is())
+            return std::nullopt;
+
+        uno::Reference<text::XTextViewCursorSupplier> xViewCursorSupplier(m_xController,
+                                                                          uno::UNO_QUERY);
+        if (!xViewCursorSupplier.is())
+            return std::nullopt;
+
+        uno::Reference<text::XTextViewCursor> xViewCursor = xViewCursorSupplier->getViewCursor();
+        if (!xViewCursor.is())
+            return std::nullopt;
+
+        uno::Reference<beans::XPropertySet> xCursorProps(xViewCursor, uno::UNO_QUERY);
+        if (!xCursorProps.is())
+            return std::nullopt;
+
+        CursorCharFont aFont;
+        if (!(xCursorProps->getPropertyValue(u"CharFontName"_ustr) >>= aFont.familyName)
+            || aFont.familyName.isEmpty())
+            return std::nullopt;
+
+        xCursorProps->getPropertyValue(u"CharHeight"_ustr) >>= aFont.heightPt;
+        xCursorProps->getPropertyValue(u"CharWeight"_ustr) >>= aFont.weight;
+        xCursorProps->getPropertyValue(u"CharPosture"_ustr) >>= aFont.slant;
+
+        return aFont;
+    }
+    catch (const uno::Exception&)
+    {
+        SAL_WARN("officelabs", "DocumentController::getCursorCharFont failed");
+        return std::nullopt;
+    }
+}
+
+bool DocumentController::insertAtCursor(const OUString& rText)
+{
+    if (rText.isEmpty())
+        return false;
+
+    if (getCursorContext().readOnly)
+        return false;
+
+    if (!m_xController.is() || !m_xModel.is())
+        return false;
+
+    try
+    {
+        uno::Reference<text::XTextViewCursorSupplier> xViewCursorSupplier(m_xController,
+                                                                          uno::UNO_QUERY);
+        if (!xViewCursorSupplier.is())
+            return false;
+
+        uno::Reference<text::XTextViewCursor> xViewCursor = xViewCursorSupplier->getViewCursor();
+        if (!xViewCursor.is())
+            return false;
+
+        uno::Reference<document::XUndoManagerSupplier> xUndoSupplier(m_xModel, uno::UNO_QUERY);
+        if (!xUndoSupplier.is())
+            return false;
+
+        uno::Reference<document::XUndoManager> xUndoManager = xUndoSupplier->getUndoManager();
+        if (!xUndoManager.is())
+            return false;
+
+        bool bEntered = false;
+        comphelper::ScopeGuard aGuard([&xUndoManager, &bEntered]() {
+            if (bEntered)
+                xUndoManager->leaveUndoContext();
+        });
+
+        xUndoManager->enterUndoContext(u"Accept suggestion"_ustr);
+        bEntered = true;
+
+        xViewCursor->getText()->insertString(xViewCursor, rText, false);
+
+        return true;
+    }
+    catch (const uno::Exception&)
+    {
+        SAL_WARN("officelabs", "DocumentController::insertAtCursor failed");
+        return false;
+    }
+}
+
+} // namespace officelabs
+
+/* vim:set shiftwidth=4 softtabstop=4 expandtab: */

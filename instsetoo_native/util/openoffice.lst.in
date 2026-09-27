@@ -192,3 +192,83 @@ LibreOfficeDev_SDK
         include {installscriptdir},{filelistpath}/PackageSet,{filelistpath}/GeneratedPackage,{filelistpath}/Package,{licensepath},{packinfopath}
     }
 }
+
+OfficeLabs
+{
+    Settings
+    {
+        variables
+        {
+            PRODUCTNAME @PRODUCTNAME@
+            PRODUCTVERSION @LIBO_VERSION_MAJOR@.@LIBO_VERSION_MINOR@
+            PRODUCTEXTENSION .@LIBO_VERSION_MICRO@.@LIBO_VERSION_PATCH@@LIBO_VERSION_SUFFIX@
+            WINDOWSBASISROOTNAME OfficeLabs @LIBO_VERSION_MAJOR@
+            UNIXBASISROOTNAME officelabs@LIBO_VERSION_MAJOR@.@LIBO_VERSION_MINOR@
+            POSTVERSIONEXTENSION
+            BUNDLEIDENTIFIER @MACOSX_BUNDLE_IDENTIFIER@
+            BRANDPACKAGEVERSION @LIBO_VERSION_MAJOR@.@LIBO_VERSION_MINOR@
+            USERDIRPRODUCTVERSION 4
+            BASEPRODUCTVERSION @LIBO_VERSION_MAJOR@.@LIBO_VERSION_MINOR@
+            # Inert while the build sets --disable-online-update (see
+            # distro-configs/OfficeLabsMacOSX.conf). Point this at an OfficeLabs
+            # endpoint before enabling online update — otherwise an OfficeLabs
+            # install would phone LibreOffice's update server.
+            UPDATEURL https://update.libreoffice.org/check.php
+            ADD_INCLUDE_FILES cli_ure/version/version.txt,unoil/climaker/version.txt
+            ADDSYSTEMINTEGRATION 1
+            PACKAGEVERSION @LIBO_VERSION_MAJOR@.@LIBO_VERSION_MINOR@.@LIBO_VERSION_MICRO@.@LIBO_VERSION_PATCH@@LIBO_VERSION_SUFFIX@
+            PACKAGEREVISION {buildid}
+            LICENSENAME @LICENSE@
+            ROOTMODULEGID gid_Module_Root
+            GLOBALPATCHFILEGID gid_File_Txt_Patchfiles
+            SPELLCHECKERFILE spellchecker_selection.txt
+            CHANGETARGETDIR 1
+            PATCHCODEFILE ooo_patchcodes.txt
+            CODEFILENAME codes_officelabs.txt
+        }
+        active          1
+        compression     5
+        script          setup_osl
+        downloadname    OfficeLabs_{productversion}_{os}_install_{languages}
+        langpackdownloadname    OfficeLabs_{productversion}_languagepack_{os}_install_{languages}
+        helppackdownloadname    OfficeLabs_{productversion}_helppack_{os}_install_{languages}
+        include         {installscriptdir},{customtargetpath}/readlicense_oo/readme,{customtargetpath}/sysui/{pkgtype},{customtargetpath}/setup_native,{filelistpath}/PackageSet,{filelistpath}/GeneratedPackage,{filelistpath}/Package,{filelistpath}/ExtensionPackage,{filelistpath}/CustomTarget/helpcontent2/help3xsl/filelists,{extensionsdir},{licensepath},{packinfopath}
+    }
+}
+
+OfficeLabs_SDK
+{
+    Settings
+    {
+        downloadname OfficeLabs-SDK_{packageversion}_{os}_install_{languages}
+        variables
+        {
+            PRODUCTNAME OfficeLabs
+            PRODUCTVERSION @LIBO_VERSION_MAJOR@.@LIBO_VERSION_MINOR@
+            PRODUCTEXTENSION .@LIBO_VERSION_MICRO@.@LIBO_VERSION_PATCH@@LIBO_VERSION_SUFFIX@
+            WINDOWSBASISROOTNAME OfficeLabs @LIBO_VERSION_MAJOR@
+            UNIXBASISROOTNAME officelabs@LIBO_VERSION_MAJOR@.@LIBO_VERSION_MINOR@
+            POSTVERSIONEXTENSION SDK
+            BUNDLEIDENTIFIER @MACOSX_BUNDLE_IDENTIFIER@.SDK
+            BRANDPACKAGEVERSION @LIBO_VERSION_MAJOR@.@LIBO_VERSION_MINOR@
+            PACKAGEVERSION @LIBO_VERSION_MAJOR@.@LIBO_VERSION_MINOR@.@LIBO_VERSION_MICRO@.@LIBO_VERSION_PATCH@@LIBO_VERSION_SUFFIX@
+            PACKAGEREVISION {buildid}
+            PACK_INSTALLED 1
+            DMG_VOLUMEEXTENSION SDK
+            DATABASENAME libreoffice40sdk
+            NO_README_IN_ROOTDIR 1
+            LICENSENAME @LICENSE@
+            IGNOREDIRECTORYLAYER 1
+            NOVERSIONINDIRNAME 0
+            NOSPACEINDIRECTORYNAME 1
+            NOSHORTDIRECTORYNAMES 1
+            CHANGETARGETDIR 1
+            DONTUSESTARTMENUFOLDER 1
+            CODEFILENAME codes_officelabs.txt
+        }
+        active 1
+        compression 5
+        script sdkoo
+        include {installscriptdir},{filelistpath}/PackageSet,{filelistpath}/GeneratedPackage,{filelistpath}/Package,{licensepath},{packinfopath}
+    }
+}

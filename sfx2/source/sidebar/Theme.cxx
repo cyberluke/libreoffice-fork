@@ -18,7 +18,9 @@
  */
 
 #include <sfx2/sidebar/Theme.hxx>
+#include <sidebar/OfficelabsTheme.hxx>
 #include <sfx2/app.hxx>
+#include <string>
 #include <tools/color.hxx>
 
 #include <vcl/svapp.hxx>
@@ -86,6 +88,64 @@ void Theme::HandleDataChange()
     }
 
     GetCurrentTheme().UpdateTheme();
+
+    // OfficeLabs: re-apply dark VCL StyleSettings every time settings change.
+    // LO re-syncs with the Windows system (light) colors after startup, which
+    // overrides our initial Application::SetSettings() call in Initialize_Impl().
+    {
+        static bool s_bApplying = false;
+        if (!s_bApplying)
+        {
+            s_bApplying = true;
+
+            auto olc = GetOLColors();
+            const Color aBg      = olc.bg;
+            const Color aSurface = olc.surface;
+            const Color aBorder  = olc.border;
+            const Color aText    = olc.text;
+            const Color aSubtext = olc.subtext;
+
+            AllSettings aAllSettings(Application::GetSettings());
+            StyleSettings aStyle(aAllSettings.GetStyleSettings());
+
+            aStyle.SetDialogColor(aBg);
+            aStyle.SetDialogTextColor(aText);
+            aStyle.SetFaceColor(aBg);
+            aStyle.SetButtonTextColor(aText);
+            aStyle.SetMenuColor(aSurface);
+            aStyle.SetMenuTextColor(aText);
+            aStyle.SetMenuBarColor(aBg);
+            aStyle.SetMenuBarTextColor(aText);
+            aStyle.SetMenuBorderColor(aBorder);
+            aStyle.SetLabelTextColor(aText);
+            aStyle.SetGroupTextColor(aText);
+            aStyle.SetRadioCheckTextColor(aText);
+            aStyle.SetDisableColor(aSubtext);
+            aStyle.SetDeactiveColor(aSurface);
+            aStyle.SetDeactiveTextColor(aSubtext);
+            aStyle.SetShadowColor(aBorder);
+            aStyle.SetDarkShadowColor(aBg);
+            aStyle.SetLightColor(aSurface);
+            aStyle.SetLightBorderColor(aBorder);
+            aStyle.SetActiveColor(aSurface);
+            aStyle.SetActiveTextColor(aText);
+            aStyle.SetActiveBorderColor(aBorder);
+            aStyle.SetWindowTextColor(aText);
+            aStyle.SetTabTextColor(aText);
+            aStyle.SetTabRolloverTextColor(aText);
+            aStyle.SetTabHighlightTextColor(aText);
+            aStyle.SetFieldTextColor(aText);
+            aStyle.SetWorkspaceColor(olc.surface);
+            aStyle.SetFieldColor(olc.surface);
+            aStyle.SetWindowColor(aBg);
+            aStyle.SetListBoxWindowBackgroundColor(olc.surface);
+
+            aAllSettings.SetStyleSettings(aStyle);
+            Application::SetSettings(aAllSettings);
+
+            s_bApplying = false;
+        }
+    }
 }
 
 void Theme::InitializeTheme()
@@ -101,11 +161,25 @@ void Theme::UpdateTheme()
     {
         const StyleSettings& rStyle (Application::GetSettings().GetStyleSettings());
 
-        Color aBaseBackgroundColor (rStyle.GetDialogColor());
-        // UX says this should be a little brighter, but that looks off when compared to the other windows.
-        //aBaseBackgroundColor.IncreaseLuminance(7);
-        Color aSecondColor (aBaseBackgroundColor);
-        aSecondColor.DecreaseLuminance(15);
+        // OfficeLabs: branded colours whenever a theme is configured (env, user profile or install share)
+        const bool bOfficeLabs = IsOLThemeConfigured();
+
+        Color aBaseBackgroundColor, aSecondColor, aHighlight;
+
+        if (bOfficeLabs)
+        {
+            auto olc = GetOLColors();
+            aBaseBackgroundColor = olc.bg;
+            aSecondColor = olc.surface;
+            aHighlight = Color(0x0D, 0x94, 0x88); // #0D9488 teal accent
+        }
+        else
+        {
+            aBaseBackgroundColor = rStyle.GetDialogColor();
+            aSecondColor = aBaseBackgroundColor;
+            aSecondColor.DecreaseLuminance(15);
+            aHighlight = rStyle.GetHighlightColor();
+        }
 
         setPropertyValue(
             maPropertyIdToNameMap[Color_DeckBackground],
@@ -130,7 +204,7 @@ void Theme::UpdateTheme()
 
         setPropertyValue(
             maPropertyIdToNameMap[Color_Highlight],
-            Any(sal_Int32(rStyle.GetHighlightColor().GetRGBColor())));
+            Any(sal_Int32(aHighlight.GetRGBColor())));
         setPropertyValue(
             maPropertyIdToNameMap[Color_HighlightText],
             Any(sal_Int32(rStyle.GetHighlightTextColor().GetRGBColor())));

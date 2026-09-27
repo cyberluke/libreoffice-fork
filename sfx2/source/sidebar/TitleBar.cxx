@@ -18,6 +18,7 @@
  */
 
 #include <sidebar/TitleBar.hxx>
+#include <sidebar/OfficelabsTheme.hxx>
 #include <tools/color.hxx>
 #include <vcl/help.hxx>
 #include <vcl/svapp.hxx>
@@ -39,7 +40,7 @@ TitleBar::TitleBar(weld::Builder& rBuilder, Theme::ThemeItem eThemeItem)
 
 void TitleBar::SetBackground()
 {
-    Color aColor(Theme::GetColor(meThemeItem));
+    Color aColor = GetOLColors().bg;
     mxTitlebar->set_background(aColor);
     mxToolBox->set_background(aColor);
 }

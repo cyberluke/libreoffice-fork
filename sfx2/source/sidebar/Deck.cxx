@@ -20,6 +20,7 @@
 #include <algorithm>
 
 #include <sfx2/sidebar/Deck.hxx>
+#include <sidebar/OfficelabsTheme.hxx>
 #include <sidebar/DeckDescriptor.hxx>
 #include <sidebar/DeckLayouter.hxx>
 #include <sidebar/DeckTitleBar.hxx>
@@ -30,6 +31,8 @@
 #include <sfx2/viewsh.hxx>
 
 #include <vcl/event.hxx>
+#include <cstdlib>
+#include <cstring>
 #include <vcl/weld/ScrolledWindow.hxx>
 #include <comphelper/lok.hxx>
 #include <tools/json_writer.hxx>
@@ -54,7 +57,14 @@ Deck::Deck(const DeckDescriptor& rDeckDescriptor, SidebarDockingWindow* pParentW
 {
     SetStyle(GetStyle() | WB_DIALOGCONTROL);
 
-    m_xContainer->set_background(Theme::GetColor(Theme::Color_DeckBackground));
+    // Override InterimItemWindow's SetPaintTransparent(true) so background paints.
+    SetPaintTransparent(false);
+    {
+        const Color aDeckBg = GetOLColors().surface;
+        SetBackground(Wallpaper(aDeckBg));
+        m_xVclContentArea->SetBackground(Wallpaper(aDeckBg));
+        m_xContainer->set_background(aDeckBg);
+    }
 
     mxVerticalScrollBar->vadjustment_set_step_increment(10);
     mxVerticalScrollBar->vadjustment_set_page_increment(100);
@@ -116,6 +126,14 @@ tools::Rectangle Deck::GetContentArea() const
 
 void Deck::DataChanged(const DataChangedEvent&)
 {
+    const Color aDeckBg = GetOLColors().surface;
+    SetBackground(Wallpaper(aDeckBg));
+    m_xVclContentArea->SetBackground(Wallpaper(aDeckBg));
+    m_xContainer->set_background(aDeckBg);
+
+    if (mxTitleBar)
+        mxTitleBar->DataChanged();
+
     for (auto& rpPanel : maPanels)
         rpPanel->DataChanged();
 

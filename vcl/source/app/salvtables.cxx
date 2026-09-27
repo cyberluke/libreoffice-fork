@@ -242,10 +242,40 @@ void SalInstanceWidget::ensure_mouse_listener()
     }
 }
 
+// Recursively apply background color to child VclContainer widgets that are
+// paint-transparent.  VclContainer sets SetPaintTransparent(true) in its ctor,
+// so nested VclGrid/VclBox inside .ui files rely on the parent painting under
+// them.  On Windows this fails when WS_CLIPCHILDREN or window creation order
+// interferes, leaving white gaps.  Making each container explicitly opaque
+// with the same color eliminates the dependency on parent-paints-under-children.
+static void lcl_SetBackgroundRecursive(vcl::Window* pWindow, const Color& rColor)
+{
+    for (vcl::Window* pChild = pWindow->GetWindow(GetWindowType::FirstChild);
+         pChild; pChild = pChild->GetWindow(GetWindowType::Next))
+    {
+        if (pChild->IsPaintTransparent())
+        {
+            pChild->SetControlBackground(rColor);
+            pChild->SetBackground(pChild->GetControlBackground());
+            pChild->SetPaintTransparent(false);
+            pChild->Invalidate();
+        }
+        lcl_SetBackgroundRecursive(pChild, rColor);
+    }
+}
+
 void SalInstanceWidget::set_background(const Color& rColor)
 {
     m_xWidget->SetControlBackground(rColor);
     m_xWidget->SetBackground(m_xWidget->GetControlBackground());
+    // When an explicit background color is set, the widget must actually
+    // paint it.  Two things prevent that by default for VCL containers
+    // (VclBox, VclGrid, …):
+    //   1) SetPaintTransparent(true) in VclContainer ctor
+    //   2) No Invalidate() — containers don't override
+    //      StateChanged(ControlBackground), so no repaint is scheduled.
+    m_xWidget->SetPaintTransparent(false);
+    m_xWidget->EnableChildTransparentMode(false);
     if (m_xWidget->GetStyle() & WB_CLIPCHILDREN)
     {
         // turn off WB_CLIPCHILDREN otherwise the bg won't extend "under"
@@ -256,6 +286,13 @@ void SalInstanceWidget::set_background(const Color& rColor)
         WindowImpl* pImpl = m_xWidget->ImplGetWindowImpl();
         pImpl->mbClipChildren = true;
     }
+    // Force repaint with Erase so the new background is actually drawn.
+    // Without this, container widgets (which don't handle
+    // StateChanged(ControlBackground)) would never schedule a repaint.
+    m_xWidget->Invalidate();
+    // Propagate to nested VclContainer children (VclGrid, VclBox from .ui files)
+    // that are paint-transparent and would otherwise show white on Windows.
+    lcl_SetBackgroundRecursive(m_xWidget, rColor);
 }
 
 void SalInstanceWidget::set_background()

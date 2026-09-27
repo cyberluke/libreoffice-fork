@@ -25,6 +25,7 @@ $(call gb_ExternalProject_use_external_project,libxml2,icu)
 # workdir\UnpackedTarball\libxml2\version(1): error C2059: syntax error: 'constant
 $(call gb_ExternalProject_get_state_target,libxml2,build):
 	$(call gb_Trace_StartRange,libxml2,EXTERNAL)
+<<<<<<< HEAD
 	+$(call gb_ExternalProject_run,build,\
 		export INCLUDE="$(gb_ExternalProject_INCLUDE)" \
 		&& export LIB="$(ILIB)" \
@@ -47,6 +48,14 @@ $(call gb_ExternalProject_get_state_target,libxml2,build):
 		&& $(CMAKE) --build . \
 		&& rm VERSION \
 	)
+=======
+	$(call gb_ExternalProject_run,build,\
+		cscript //E:JScript configure.js \
+			iconv=no icu=yes sax1=yes $(if $(MSVC_USE_DEBUG_RUNTIME),cruntime=/MDd) \
+			$(if $(filter TRUE,$(MSVC_USE_DEBUG_RUNTIME)),debug=yes) \
+		&& nmake \
+	,win32)
+>>>>>>> pher217/master
 	$(call gb_Trace_EndRange,libxml2,EXTERNAL)
 else # OS!=WNT
 $(call gb_ExternalProject_get_state_target,libxml2,build):

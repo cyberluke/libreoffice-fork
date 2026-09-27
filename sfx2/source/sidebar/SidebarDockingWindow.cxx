@@ -17,6 +17,7 @@
  *   the License at http://www.apache.org/licenses/LICENSE-2.0 .
  */
 #include <sfx2/sidebar/SidebarDockingWindow.hxx>
+#include <sidebar/OfficelabsTheme.hxx>
 #include <sfx2/sidebar/SidebarChildWindow.hxx>
 #include <sfx2/sidebar/SidebarController.hxx>
 #include <sidebar/PanelDescriptor.hxx>
@@ -31,7 +32,10 @@
 #include <svtools/acceleratorexecute.hxx>
 #include <tools/gen.hxx>
 #include <vcl/event.hxx>
+#include <vcl/wall.hxx>
 #include <osl/diagnose.h>
+#include <cstdlib>
+#include <cstring>
 
 #include <boost/property_tree/json_parser.hpp>
 
@@ -46,6 +50,10 @@ SidebarDockingWindow::SidebarDockingWindow(SfxBindings& rSfxBindings,
     : SfxDockingWindow(rSfxBindings, &rChildWindow, pParentWindow, nBits)
     , mbIsReadyToDrag(false)
 {
+    // OfficeLabs: dark background on the sidebar root — shows through
+    // all transparent InterimItemWindow children (Deck, TabBar).
+    SetBackground(Wallpaper(GetOLColors().bg));
+
     // Get the XFrame from the bindings.
     if (rSfxBindings.GetDispatcher() == nullptr)
     {

@@ -405,7 +405,9 @@ sub create_package
                 push( @installer::globals::logfileinfo, $infoline);
             }
         }
-        elsif ($volume_name_classic_app eq 'LibreOffice' || $volume_name_classic_app eq 'LibreOfficeDev')
+        # Derive from PRODUCTNAME instead of hardcoding 'LibreOffice'/'LibreOfficeDev' so a
+        # rebranded product (e.g. OfficeLabs) doesn't silently skip code-signing.
+        elsif ($volume_name_classic_app eq $allvariables->{'PRODUCTNAME'})
         {
             my $subdir = "$tempdir/$packagename/$volume_name_classic_app.app/Contents/Resources";
             if ( ! -d $subdir ) { installer::systemactions::create_directory($subdir); }
@@ -431,7 +433,9 @@ sub create_package
                 }
             }
         }
-        elsif ($volume_name_classic_app eq 'LibreOffice SDK' || $volume_name_classic_app eq 'LibreOfficeDev SDK')
+        # Derive from PRODUCTNAME instead of hardcoding 'LibreOffice SDK'/'LibreOfficeDev SDK' so
+        # a rebranded product (e.g. OfficeLabs) doesn't silently skip SDK code-signing.
+        elsif ($volume_name_classic_app eq $allvariables->{'PRODUCTNAME'} . ' SDK')
         {
             if ( $ENV{'MACOSX_CODESIGNING_IDENTITY'} )
             {

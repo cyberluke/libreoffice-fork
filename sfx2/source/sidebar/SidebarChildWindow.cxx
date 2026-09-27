@@ -44,22 +44,19 @@ SidebarChildWindow::SidebarChildWindow(vcl::Window* pParentWindow, sal_uInt16 nI
     pDockWin->SetHelpId(HID_SIDEBAR_WINDOW);
     pDockWin->SetOutputSizePixel(Size(GetDefaultWidth(pDockWin), 450));
 
-    if (rInfo.aExtraString.isEmpty() && rInfo.aModule != "sdraw" && rInfo.aModule != "simpress"
-        && rInfo.aModule != "smath")
-    {
-        // When this is the first start (never had the sidebar open yet),
-        // default to non-expanded sidebars in Writer and Calc.
-        //
-        // HACK: unfortunately I haven't found a clean solution to do
-        // this, so do it this way:
-        //
-        if (!comphelper::LibreOfficeKit::isActive())
-        {
-            pDockWin->SetSizePixel(
-                Size(TabBar::GetDefaultWidth(),
-                     pDockWin->GetSizePixel().Height()));
-        }
-    }
+// OfficeLabs: upstream collapses the sidebar to the bare tab-bar strip on
+    // first start in Writer and Calc (Draw, Impress and Math were already
+    // exempt), overriding the width set immediately above. That default is
+    // reasonable for a suite where the sidebar is an accessory panel; here the
+    // AI Assistant deck IS the product, so shipping it collapsed hides the
+    // whole feature behind a drag gesture most users never perform
+    // (officelabs-project#106 -- making AIDeck the default deck in Sidebar.xcu
+    // did not help, because the right deck was still being collapsed).
+    //
+    // The expanded width from GetDefaultWidth() is inherited from upstream's
+    // paragraph-properties panel and is not tuned for a chat surface; picking
+    // a deliberate width is deferred until it can be measured against the real
+    // window rather than guessed.
 
     pDockWin->Initialize(rInfo);
 

@@ -5,7 +5,7 @@
              # assembler is still used to compile uplink shim
              $vc_win64a_info = { AS        => "ml64",
 -                                ASFLAGS   => "/nologo /Zi",
-+                                ASFLAGS   => "/nologo $$(DEBUG_FLAGS_VALUE)",
++                                ASFLAGS   => "/nologo \$(DEBUG_FLAGS_VALUE)",
                                  asflags   => "/c /Cp /Cx",
                                  asoutflag => "/Fo",
                                  perlasm_scheme => "masm" };
@@ -14,7 +14,7 @@
              # not actually used, uplink shim is inlined into C code
              $vc_win32_info = { AS        => "ml",
 -                               ASFLAGS   => "/nologo /Zi",
-+                               ASFLAGS   => "/nologo $$(DEBUG_FLAGS_VALUE)",
++                               ASFLAGS   => "/nologo \$(DEBUG_FLAGS_VALUE)",
                                 asflags   => "/Cp /coff /c /Cx",
                                 asoutflag => "/Fo",
                                 perlasm_scheme => "win32" };

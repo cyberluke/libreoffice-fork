@@ -420,7 +420,41 @@
         </prop>
       </node>
 
+      <node oor:name="AIDeck" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string">
+          <value xml:lang="en-US">AI Assistant</value>
+        </prop>
+        <prop oor:name="Id" oor:type="xs:string">
+          <value>AIDeck</value>
+        </prop>
+        <prop oor:name="IconURL" oor:type="xs:string">
+          <value>private:graphicrepository/cmd/lc_aideck.png</value>
+        </prop>
+        <prop oor:name="HighContrastIconURL" oor:type="xs:string">
+          <value>private:graphicrepository/cmd/lc_aideck.png</value>
+        </prop>
+        <prop oor:name="ContextList">
+          <value oor:separator=";">
+            WriterVariants, any, visible ;
+            Calc, any, visible ;
+            DrawImpress, any, visible ;
+          </value>
+        </prop>
+        <prop oor:name="OrderIndex" oor:type="xs:int">
+          <value>50</value>
+        </prop>
+        <prop oor:name="HiddenInViewer" oor:type="xs:boolean">
+          <value>true</value>
+        </prop>
+      </node>
+
     </node>
+
+    <!-- Use UNO service names here, not ContextList pseudo-names like WriterVariants:
+         LastActiveDeck is resolved by vcl::EnumContext::GetApplicationEnum which only knows service names. -->
+    <prop oor:name="LastActiveDeck" oor:type="oor:string-list">
+      <value oor:separator=";">any,PropertyDeck;com.sun.star.text.TextDocument,AIDeck;com.sun.star.sheet.SpreadsheetDocument,AIDeck;com.sun.star.presentation.PresentationDocument,AIDeck;com.sun.star.drawing.DrawingDocument,AIDeck</value>
+    </prop>
 
     <node oor:name="PanelList">
 
@@ -2314,7 +2348,101 @@
         </prop>
       </node>
 
+      <node oor:name="AIAssistantPanel" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string">
+          <value xml:lang="en-US">AI Chat</value>
+        </prop>
+        <prop oor:name="TitleBarIsOptional" oor:type="xs:boolean">
+          <value>true</value>
+        </prop>
+        <prop oor:name="Id" oor:type="xs:string">
+          <value>AIAssistantPanel</value>
+        </prop>
+        <prop oor:name="DeckId" oor:type="xs:string">
+          <value>AIDeck</value>
+        </prop>
+        <prop oor:name="DefaultMenuCommand">
+          <value></value>
+        </prop>
+        <prop oor:name="ContextList">
+          <value oor:separator=";">
+            WriterVariants, any, visible ;
+          </value>
+        </prop>
+        <prop oor:name="ImplementationURL" oor:type="xs:string">
+          <value>private:resource/toolpanel/SwPanelFactory/AIAssistantPanel</value>
+        </prop>
+        <prop oor:name="OrderIndex" oor:type="xs:int">
+          <value>100</value>
+        </prop>
+        <prop oor:name="WantsAWT" oor:type="xs:boolean">
+          <value>false</value>
+        </prop>
+      </node>
 
+      <node oor:name="AIAssistantPanelCalc" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string">
+          <value xml:lang="en-US">AI Chat</value>
+        </prop>
+        <prop oor:name="TitleBarIsOptional" oor:type="xs:boolean">
+          <value>true</value>
+        </prop>
+        <prop oor:name="Id" oor:type="xs:string">
+          <value>AIAssistantPanelCalc</value>
+        </prop>
+        <prop oor:name="DeckId" oor:type="xs:string">
+          <value>AIDeck</value>
+        </prop>
+        <prop oor:name="DefaultMenuCommand">
+          <value></value>
+        </prop>
+        <prop oor:name="ContextList">
+          <value oor:separator=";">
+            Calc, any, visible ;
+          </value>
+        </prop>
+        <prop oor:name="ImplementationURL" oor:type="xs:string">
+          <value>private:resource/toolpanel/ScPanelFactory/AIAssistantPanel</value>
+        </prop>
+        <prop oor:name="OrderIndex" oor:type="xs:int">
+          <value>100</value>
+        </prop>
+        <prop oor:name="WantsAWT" oor:type="xs:boolean">
+          <value>false</value>
+        </prop>
+      </node>
+
+      <node oor:name="AIAssistantPanelImpress" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string">
+          <value xml:lang="en-US">AI Chat</value>
+        </prop>
+        <prop oor:name="TitleBarIsOptional" oor:type="xs:boolean">
+          <value>true</value>
+        </prop>
+        <prop oor:name="Id" oor:type="xs:string">
+          <value>AIAssistantPanelImpress</value>
+        </prop>
+        <prop oor:name="DeckId" oor:type="xs:string">
+          <value>AIDeck</value>
+        </prop>
+        <prop oor:name="DefaultMenuCommand">
+          <value></value>
+        </prop>
+        <prop oor:name="ContextList">
+          <value oor:separator=";">
+            DrawImpress, any, visible ;
+          </value>
+        </prop>
+        <prop oor:name="ImplementationURL" oor:type="xs:string">
+          <value>private:resource/toolpanel/SdPanelFactory/AIAssistantPanel</value>
+        </prop>
+        <prop oor:name="OrderIndex" oor:type="xs:int">
+          <value>100</value>
+        </prop>
+        <prop oor:name="WantsAWT" oor:type="xs:boolean">
+          <value>false</value>
+        </prop>
+      </node>
 
     </node>
   </node>

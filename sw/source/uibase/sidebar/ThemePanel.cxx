@@ -19,6 +19,7 @@
 #include <vcl/settings.hxx>
 #include <vcl/svapp.hxx>
 #include <vcl/virdev.hxx>
+#include <vcl/wall.hxx>
 #include <vcl/weld/Builder.hxx>
 #include <docmodel/theme/Theme.hxx>
 #include <svx/svdpage.hxx>
@@ -94,8 +95,15 @@ ScopedVclPtr<VirtualDevice> ThemePanel::CreateImage(const model::ColorSet& rColo
     tools::Long y1 = BORDER + LABEL_HEIGHT;
     tools::Long y2 = y1 + SIZE + BORDER;
 
-    pDev->SetLineColor(COL_LIGHTGRAY);
-    pDev->SetFillColor(COL_LIGHTGRAY);
+    const StyleSettings& rStyleSettings = Application::GetSettings().GetStyleSettings();
+    const Color aLabelBg = rStyleSettings.GetDialogColor();
+    const Color aLabelText = rStyleSettings.GetDialogTextColor();
+    const Color aBorderColor = rStyleSettings.GetShadowColor();
+
+    pDev->SetBackground(Wallpaper(aLabelBg));
+    pDev->Erase();
+    pDev->SetLineColor(aLabelBg);
+    pDev->SetFillColor(aLabelBg);
     tools::Rectangle aNameRect(Point(0, 0), Size(aSize.Width(), LABEL_HEIGHT));
     pDev->DrawRect(aNameRect);
 
@@ -103,6 +111,7 @@ ScopedVclPtr<VirtualDevice> ThemePanel::CreateImage(const model::ColorSet& rColo
     OUString aName = rColorSet.getName();
     aFont.SetFontHeight(LABEL_TEXT_HEIGHT);
     pDev->SetFont(aFont);
+    pDev->SetTextColor(aLabelText);
 
     Size aTextSize(pDev->GetTextWidth(aName), pDev->GetTextHeight());
 
@@ -111,7 +120,7 @@ ScopedVclPtr<VirtualDevice> ThemePanel::CreateImage(const model::ColorSet& rColo
 
     pDev->DrawText(aPoint, aName);
 
-    pDev->SetLineColor(COL_LIGHTGRAY);
+    pDev->SetLineColor(aBorderColor);
     pDev->SetFillColor();
 
     for (sal_uInt32 i = 2; i < 10; i += 2)

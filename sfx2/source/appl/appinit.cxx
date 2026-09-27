@@ -37,9 +37,13 @@
 #include <cppuhelper/implbase.hxx>
 #include <cppuhelper/supportsservice.hxx>
 
+#include <sidebar/OfficelabsTheme.hxx>
 #include <vcl/specialchars.hxx>
 #include <vcl/help.hxx>
 #include <vcl/svapp.hxx>
+#include <vcl/settings.hxx>
+#include <svtools/miscopt.hxx>
+#include <cstring>
 
 #include <unoctitm.hxx>
 #include <appdata.hxx>
@@ -187,6 +191,86 @@ void SfxApplication::Initialize_Impl()
     xDesktop->addTerminateListener( new SfxTerminateListener_Impl );
 
     pImpl->mxAppDispatch = new SfxStatusDispatcher;
+
+    // OfficeLabs: apply theme colors from config file for all 3 themes.
+    {
+        {
+            auto olc = sfx2::sidebar::GetOLColors();
+            bool bDark = (sfx2::sidebar::GetOLTheme() != sfx2::sidebar::OLTheme::Light);
+
+            SvtMiscOptions aMiscOpts;
+            aMiscOpts.SetIconTheme(bDark ? u"colibre_dark_svg"_ustr : u"colibre"_ustr);
+
+            // Before the palette below: SetAppColorMode re-merges the system
+            // colours, which would otherwise overwrite it.
+            const AppearanceMode eAppearance
+                = sfx2::sidebar::GetOLAppearanceMode(sfx2::sidebar::GetOLTheme());
+            if (MiscSettings::GetAppColorMode() != eAppearance)
+                MiscSettings::SetAppColorMode(eAppearance);
+
+            const Color aBg      = olc.bg;
+            const Color aSurface = olc.surface;
+            const Color aBorder  = olc.border;
+            const Color aText    = olc.text;
+            const Color aSubtext = olc.subtext;
+
+            AllSettings aAllSettings(Application::GetSettings());
+            StyleSettings aStyle(aAllSettings.GetStyleSettings());
+
+            // Dialog / panel backgrounds
+            aStyle.SetDialogColor(aBg);
+            aStyle.SetDialogTextColor(aText);
+
+            // Toolbar / button face
+            aStyle.SetFaceColor(aBg);
+            aStyle.SetButtonTextColor(aText);
+
+            // Menu
+            aStyle.SetMenuColor(aSurface);
+            aStyle.SetMenuTextColor(aText);
+            aStyle.SetMenuBarColor(aBg);
+            aStyle.SetMenuBarTextColor(aText);
+            aStyle.SetMenuBorderColor(aBorder);
+
+            // Label / static text
+            aStyle.SetLabelTextColor(aText);
+            aStyle.SetGroupTextColor(aText);
+            aStyle.SetRadioCheckTextColor(aText);
+
+            // Disabled / deactivated
+            aStyle.SetDisableColor(aSubtext);
+            aStyle.SetDeactiveColor(aSurface);
+            aStyle.SetDeactiveTextColor(aSubtext);
+
+            // Shadow / border
+            aStyle.SetShadowColor(aBorder);
+            aStyle.SetDarkShadowColor(aBg);
+            aStyle.SetLightColor(aSurface);
+            aStyle.SetLightBorderColor(aBorder);
+
+            // Active title bar (floating windows / panels)
+            aStyle.SetActiveColor(aSurface);
+            aStyle.SetActiveTextColor(aText);
+            aStyle.SetActiveBorderColor(aBorder);
+
+            // Window / tab / field text
+            aStyle.SetWindowTextColor(aText);
+            aStyle.SetTabTextColor(aText);
+            aStyle.SetTabRolloverTextColor(aText);
+            aStyle.SetTabHighlightTextColor(aText);
+            aStyle.SetFieldTextColor(aText);
+            aStyle.SetWorkspaceColor(aSurface);
+
+            // Sidebar input fields — dark bg so they match the theme
+            // Document canvas uses page color (always white), not these
+            aStyle.SetFieldColor(aSurface);
+            aStyle.SetWindowColor(aBg);
+            aStyle.SetListBoxWindowBackgroundColor(aSurface);
+
+            aAllSettings.SetStyleSettings(aStyle);
+            Application::SetSettings(aAllSettings);
+        }
+    }
 
     // SV-Look
     Help::EnableContextHelp();

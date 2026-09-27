@@ -101,6 +101,7 @@ struct ImplTabCtrlData
 void TabControl::ImplInit( vcl::Window* pParent, WinBits nStyle )
 {
     mbLayoutDirty = true;
+    mbOfficelabsFlatTabs = false;
 
     if ( !(nStyle & WB_NOTABSTOP) )
         nStyle |= WB_TABSTOP;
@@ -159,7 +160,7 @@ void TabControl::ImplInitSettings( bool bBackground )
         return;
 
     vcl::Window* pParent = GetParent();
-    if ( !IsControlBackground() &&
+    if ( !IsControlBackground() && !mbOfficelabsFlatTabs &&
         (pParent->IsChildTransparentModeEnabled()
         || IsNativeControlSupported(ControlType::TabPane, ControlPart::Entire)
         || IsNativeControlSupported(ControlType::TabItem, ControlPart::Entire) ) )
@@ -182,6 +183,15 @@ void TabControl::ImplInitSettings( bool bBackground )
 
     if ( IsControlBackground() )
         SetBackground( GetControlBackground() );
+    else if ( mbOfficelabsFlatTabs )
+    {
+        // the notebookbar strip has to be opaque in the OfficeLabs palette: no native
+        // widget fills it any more (see the TabPane branch in Paint). Take the colour
+        // from the same place NotebookBar::UpdateBackground() does rather than from the
+        // parent, whose wallpaper may still be empty at construction time.
+        SetBackground( Wallpaper( GetSettings().GetStyleSettings().GetDialogColor() ) );
+        ImplGetWindowImpl()->mbUseNativeFocus = false;
+    }
     else
         SetBackground( pParent->GetBackground() );
 }
@@ -873,7 +883,9 @@ void TabControl::ImplDrawItem(vcl::RenderContext& rRenderContext, ImplTabItem co
         assert(nState & ControlState::ROLLOVER);
     }
 
-    bNativeOK = rRenderContext.IsNativeControlSupported(ControlType::TabItem, ControlPart::Entire);
+    // OfficeLabs: skip native tab rendering — Windows dark mode paints black,
+    // ignoring our Dracula blue StyleSettings. VCL rendering uses our colors.
+    bNativeOK = false;
     if ( bNativeOK )
     {
         TabitemValue tiValue(tools::Rectangle(pItem->maRect.Left() + TAB_ITEM_OFFSET_X,
@@ -992,6 +1004,19 @@ void TabControl::ImplDrawItem(vcl::RenderContext& rRenderContext, ImplTabItem co
         if (aImageSize.Height() < aRect.GetHeight())
             aImgTL.AdjustY((aRect.GetHeight() - aImageSize.Height()) / 2 );
         rRenderContext.DrawImage(aImgTL, pItem->maTabImage, pItem->m_bEnabled ? DrawImageFlags::NONE : DrawImageFlags::Disable );
+    }
+
+    // OfficeLabs: draw accent underline for selected tab (notebookbar only)
+    if (pItem->id() == mnCurPageId
+        && dynamic_cast<const NotebookbarTabControlBase*>(this))
+    {
+        const tools::Long nAccentHeight = std::max(tools::Long(3), tools::Long(3 * rRenderContext.GetDPIScaleFactor()));
+        Color aAccentColor(0x0D, 0x94, 0x88); // OfficeLabs teal accent
+        rRenderContext.SetLineColor(aAccentColor);
+        rRenderContext.SetFillColor(aAccentColor);
+        rRenderContext.DrawRect(tools::Rectangle(
+            Point(aRect.Left(), aRect.Bottom() - nAccentHeight + 1),
+            Size(aRect.GetWidth(), nAccentHeight)));
     }
 }
 
@@ -1129,7 +1154,11 @@ void TabControl::Paint( vcl::RenderContext& rRenderContext, const tools::Rectang
         aRect.AdjustRight(10 );
     }
 
-    if (rRenderContext.IsNativeControlSupported(ControlType::TabPane, ControlPart::Entire))
+    // skip native pane/header rendering for the notebookbar, as for the tab items above:
+    // uxtheme would otherwise paint its own light grey over the OfficeLabs background
+    const bool bNativePaneOK = !mbOfficelabsFlatTabs
+        && rRenderContext.IsNativeControlSupported(ControlType::TabPane, ControlPart::Entire);
+    if (bNativePaneOK)
     {
         const bool bPaneWithHeader = mbShowTabs && rRenderContext.IsNativeControlSupported(ControlType::TabPane, ControlPart::TabPaneWithHeader);
         tools::Rectangle aHeaderRect(aRect.Left(), 0, aRect.Right(), aRect.Top());
@@ -2172,6 +2201,11 @@ NotebookbarTabControlBase::NotebookbarTabControlBase(vcl::Window* pParent)
     , bLastContextWasSupported(true)
     , eLastContext(vcl::EnumContext::Context::Any)
 {
+    // set after the base constructor ran: ImplInitSettings() is reached from
+    // TabControl::ImplInit(), where the derived type does not exist yet
+    mbOfficelabsFlatTabs = true;
+    ImplInitSettings( true );
+
     m_pOpenMenu = VclPtr<PushButton>::Create( this , WB_CENTER | WB_VCENTER );
     m_pOpenMenu->SetClickHdl(LINK(this, NotebookbarTabControlBase, OpenMenu));
     m_pOpenMenu->SetModeImage(Image(StockImage::Yes, SV_RESID_BITMAP_NOTEBOOKBAR));
@@ -2297,7 +2331,7 @@ bool NotebookbarTabControlBase::ImplPlaceTabs( tools::Long nWidth )
     tools::Long nShortcutsWidth = m_pShortcuts != nullptr ? m_pShortcuts->GetSizePixel().getWidth() + 1 : 0;
     tools::Long nFullWidth = nShortcutsWidth;
 
-    const tools::Long nOffsetX = 2 + nShortcutsWidth;
+    const tools::Long nOffsetX = 2 + nHamburgerWidth + nShortcutsWidth;
     const tools::Long nOffsetY = 2;
 
     //fdo#66435 throw Knuth/Tex minimum raggedness algorithm at the problem
@@ -2332,8 +2366,8 @@ bool NotebookbarTabControlBase::ImplPlaceTabs( tools::Long nWidth )
         if( nFullWidth < nMaxWidth && !item.maText.isEmpty() && aSize.getWidth() < 100)
             aSize.setWidth( 100 );
 
-        if( !item.maText.isEmpty() && aSize.getHeight() < 28 )
-            aSize.setHeight( 28 );
+        if( !item.maText.isEmpty() && aSize.getHeight() < 36 )
+            aSize.setHeight( 36 );
 
         tools::Rectangle aNewRect( Point( nX, nY ), aSize );
         if ( mbSmallInvalidate && (item.maRect != aNewRect) )
@@ -2351,16 +2385,19 @@ bool NotebookbarTabControlBase::ImplPlaceTabs( tools::Long nWidth )
     // tdf#127610 subtract width of shortcuts from width available for tab items
     lcl_AdjustSingleLineTabs(nMaxWidth - nShortcutsWidth, mpTabCtrlData.get());
 
-    // position the shortcutbox
-    if (m_pShortcuts)
+    // position the menu button on the LEFT (OfficeLabs: hamburger-first layout)
+    if (m_pOpenMenu)
     {
-        tools::Long nPosY = (m_nHeaderHeight - m_pShortcuts->GetSizePixel().getHeight()) / 2;
-        m_pShortcuts->SetPosPixel(Point(0, nPosY));
+        tools::Long nPosY = (m_nHeaderHeight - m_pOpenMenu->GetSizePixel().getHeight()) / 2;
+        m_pOpenMenu->SetPosPixel(Point(0, nPosY));
     }
 
-    tools::Long nPosY = (m_nHeaderHeight - m_pOpenMenu->GetSizePixel().getHeight()) / 2;
-    // position the menu
-    m_pOpenMenu->SetPosPixel(Point(nWidth - nHamburgerWidth, nPosY));
+    // position the shortcutbox after the hamburger
+    if (m_pShortcuts)
+    {
+        tools::Long nShortcutPosY = (m_nHeaderHeight - m_pShortcuts->GetSizePixel().getHeight()) / 2;
+        m_pShortcuts->SetPosPixel(Point(nHamburgerWidth, nShortcutPosY));
+    }
 
     return true;
 }

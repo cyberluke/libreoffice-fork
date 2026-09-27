@@ -11,3 +11,18 @@
 *.odt binary
 *.rtf diff
 schema/*/* export-ignore
+
+# Bug 38: gbuild's optional-implementation filter (solenv/gbuild/ComponentTarget.mk)
+# compares the .component.<impl> COMPONENTIMPL lists with `sort | uniq -u`. A CRLF
+# working-tree copy of these files fails to cancel the LF xsltproc-generated .optionals,
+# so <optional/> UNO implementations (e.g. com.sun.star.comp.Draw.GraphicExporter) get
+# silently stripped from services.rdb and the service is unavailable at runtime. Force
+# LF so a Windows checkout cannot reintroduce the defect.
+*.component.* text eol=lf
+
+# officelabs/ is a hard link into officelabs-core's libreoffice-fork/officelabs/ mirror
+# (the same physical files are tracked by both repos). officelabs-core forces eol=lf
+# for its side (see its .gitattributes, officelabs-project PR #70); without a matching
+# rule here, core.autocrlf=true on Windows flips these files back to CRLF on every
+# checkout in this repo and endlessly re-dirties officelabs-core's working tree.
+officelabs/** text=auto eol=lf

@@ -300,6 +300,7 @@ void NotebookbarTabControl::StateChanged(StateChangedType nStateChange)
 
         m_bInvalidate = false;
     }
+
     NotebookbarTabControlBase::StateChanged( nStateChange );
 }
 

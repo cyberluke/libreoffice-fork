@@ -6,6 +6,8 @@
 /* How to hide global symbols. */
 #if defined __GNUC__
 #define HIDDEN  __attribute__((visibility("hidden")))
+#else
+#define HIDDEN
 #endif
 
 /* Compiler's inline keyword */

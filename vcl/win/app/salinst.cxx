@@ -18,6 +18,7 @@
  */
 
 #include <string.h>
+#include <string>
 #include <win/svsys.h>
 #include <process.h>
 
@@ -36,6 +37,7 @@
 #include <vcl/keycod.hxx>
 #include <vcl/inputtypes.hxx>
 #include <vcl/keycodes.hxx>
+#include <vcl/officelabstheme.hxx>
 #include <vcl/opengl/OpenGLContext.hxx>
 #include <vcl/sysdata.hxx>
 #include <vcl/timer.hxx>
@@ -359,6 +361,36 @@ WinSalInstance::WinSalInstance(SalData* pSalData)
     , mhComWnd( nullptr )
 {
     m_bSupportsOpenGL = true;
+    WinSkiaSalGraphicsImpl::prepareSkia();
+
+    // OfficeLabs: set preferred app mode BEFORE any windows are created
+    // so title bars respect the chosen theme from the start
+    const vcl::officelabs::OLThemeSource& rOLTheme = vcl::officelabs::GetOLThemeSource();
+    if (rOLTheme.configured)
+    {
+        HINSTANCE hUxthemeLib = LoadLibraryExW(L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (hUxthemeLib)
+        {
+            enum PreferredAppMode { Default, AllowDark, ForceDark, ForceLight, Max };
+            typedef PreferredAppMode(WINAPI* SetPreferredAppMode_t)(PreferredAppMode);
+            if (auto SetPreferredAppMode = reinterpret_cast<SetPreferredAppMode_t>(
+                    GetProcAddress(hUxthemeLib, MAKEINTRESOURCEA(135))))
+            {
+                if (rOLTheme.name == "light")
+                    SetPreferredAppMode(ForceLight);
+                else if (rOLTheme.name == "dark")
+                    SetPreferredAppMode(ForceDark);
+            }
+            // Refresh the immersive color policy so Windows applies the change
+            typedef void(WINAPI* RefreshImmersiveColorPolicyState_t)();
+            if (auto RefreshPolicy = reinterpret_cast<RefreshImmersiveColorPolicyState_t>(
+                    GetProcAddress(hUxthemeLib, MAKEINTRESOURCEA(104))))
+            {
+                RefreshPolicy();
+            }
+            FreeLibrary(hUxthemeLib);
+        }
+    }
 }
 
 WinSalInstance::~WinSalInstance()
@@ -771,7 +803,7 @@ void WinSalInstance::AddToRecentDocumentList(const OUString& rFileUrl, const OUS
 
             if ( !sApplicationName.isEmpty() )
             {
-                OUString sApplicationID("TheDocumentFoundation.LibreOffice." + sApplicationName);
+                OUString sApplicationID("CreativePandas.OfficeLabs." + sApplicationName);
 
                 SHARDAPPIDINFO info;
                 info.psi = pShellItem;

@@ -21,6 +21,9 @@
 #include <com/sun/star/ui/XSidebar.hpp>
 
 #include "A11yCheckIssuesPanel.hxx"
+#ifdef HAVE_FEATURE_CEF
+#include <officelabs/WebViewPanel.hxx>
+#endif
 #include "CommentsPanel.hxx"
 #include "ThemePanel.hxx"
 #include "StylePresetsPanel.hxx"
@@ -223,6 +226,18 @@ Reference<ui::XUIElement> SAL_CALL SwPanelFactory::createUIElement (
             = sw::sidebar::QuickFindPanel::Create(pParent, xFrame, pBindings);
         xElement = sfx2::sidebar::SidebarPanelBase::Create(rsResourceURL, xFrame, std::move(xPanel),
                                                            ui::LayoutSize(-1, -1, -1));
+    }
+    else if (rsResourceURL.endsWith("/AIAssistantPanel"))
+    {
+#ifdef HAVE_FEATURE_CEF
+        std::unique_ptr<PanelLayout> xPanel = officelabs::WebViewPanel::Create(pParent, pBindings);
+        xElement = sfx2::sidebar::SidebarPanelBase::Create(
+                        rsResourceURL, xFrame, std::move(xPanel), ui::LayoutSize(-1,-1,-1));
+#else
+        throw RuntimeException(
+            u"AIAssistantPanel requires a LibreOffice build with CEF enabled"_ustr,
+            nullptr);
+#endif
     }
 
     return xElement;

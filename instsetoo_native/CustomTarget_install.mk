@@ -133,16 +133,16 @@ $(gb_CustomTarget_workdir)/instsetoo_native/install/install.phony: $(instsetoo_i
 	$(call gb_Trace_StartRange,$(subst $(WORKDIR)/,,$@),PRL)
 	$(if $(ENABLE_WIX),$(call gb_ExternalExecutable_get_command,python) $(SRCDIR)/msicreator/create_installer.py $(BUILDDIR) $(SRCDIR) $(LIBO_VERSION) $(PRODUCTNAME_WITHOUT_SPACES))
 ifeq (TRUE,$(LIBO_TEST_INSTALL))
-	unzip -q -d $(TESTINSTALLDIR) $(instsetoo_OUT)/$(PRODUCTNAME_WITHOUT_SPACES)/archive/install/en-US/LibreOffice*_archive.zip
-	mv $(TESTINSTALLDIR)/LibreOffice*_archive/LibreOffice*/* $(TESTINSTALLDIR)/
-	rmdir $(TESTINSTALLDIR)/LibreOffice*_archive/LibreOffice*
-	rmdir $(TESTINSTALLDIR)/LibreOffice*_archive
+	unzip -q -d $(TESTINSTALLDIR) $(instsetoo_OUT)/$(PRODUCTNAME_WITHOUT_SPACES)/archive/install/en-US/$(PRODUCTNAME_WITHOUT_SPACES)*_archive.zip
+	mv $(TESTINSTALLDIR)/$(PRODUCTNAME_WITHOUT_SPACES)*_archive/$(PRODUCTNAME_WITHOUT_SPACES)*/* $(TESTINSTALLDIR)/
+	rmdir $(TESTINSTALLDIR)/$(PRODUCTNAME_WITHOUT_SPACES)*_archive/$(PRODUCTNAME_WITHOUT_SPACES)*
+	rmdir $(TESTINSTALLDIR)/$(PRODUCTNAME_WITHOUT_SPACES)*_archive
 ifeq (ODK,$(filter ODK,$(BUILD_TYPE)))
-	unzip -q -d $(TESTINSTALLDIR) $(instsetoo_OUT)/$(PRODUCTNAME_WITHOUT_SPACES)_SDK/archive/install/en-US/LibreOffice*_archive_sdk.zip
-	mv $(TESTINSTALLDIR)/LibreOffice*_archive_sdk/LibreOffice*_SDK/sdk \
+	unzip -q -d $(TESTINSTALLDIR) $(instsetoo_OUT)/$(PRODUCTNAME_WITHOUT_SPACES)_SDK/archive/install/en-US/$(PRODUCTNAME_WITHOUT_SPACES)*_archive_sdk.zip
+	mv $(TESTINSTALLDIR)/$(PRODUCTNAME_WITHOUT_SPACES)*_archive_sdk/$(PRODUCTNAME_WITHOUT_SPACES)*_SDK/sdk \
         $(TESTINSTALLDIR)/
-	rmdir $(TESTINSTALLDIR)/LibreOffice*_archive_sdk/LibreOffice*_SDK
-	rmdir $(TESTINSTALLDIR)/LibreOffice*_archive_sdk
+	rmdir $(TESTINSTALLDIR)/$(PRODUCTNAME_WITHOUT_SPACES)*_archive_sdk/$(PRODUCTNAME_WITHOUT_SPACES)*_SDK
+	rmdir $(TESTINSTALLDIR)/$(PRODUCTNAME_WITHOUT_SPACES)*_archive_sdk
 endif
 endif # LIBO_TEST_INSTALL
 	touch $@

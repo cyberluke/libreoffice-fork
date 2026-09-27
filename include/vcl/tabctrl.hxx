@@ -52,6 +52,7 @@ protected:
     bool                mbRestoreHelpId;
     bool                mbSmallInvalidate;
     bool                mbLayoutDirty;
+    bool                mbOfficelabsFlatTabs;
     Link<TabControl*,void> maActivateHdl;
     Link<TabControl*,bool> maDeactivateHdl;
 
