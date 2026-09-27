@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="http://openoffice.org/2001/manifest">
+  <manifest:file-entry manifest:media-type="application/vnd.sun.star.uno-components;type=Python"
+                       manifest:full-path="python/v271/job.py"/>
+  <manifest:file-entry manifest:media-type="application/vnd.sun.star.uno-components;type=Python"
+                       manifest:full-path="python/v271/protocol.py"/>
+  <manifest:file-entry manifest:media-type="application/vnd.sun.star.uno-components;type=Python"
+                       manifest:full-path="python/v271/contextservice.py"/>
+  <manifest:file-entry manifest:media-type="application/vnd.sun.star.configuration-schema"
+                       manifest:full-path="V271.xcs"/>
+  <manifest:file-entry manifest:media-type="application/vnd.sun.star.configuration-data"
+                       manifest:full-path="V271.xcu"/>
+  <manifest:file-entry manifest:media-type="application/vnd.sun.star.configuration-data"
+                       manifest:full-path="Addons.xcu"/>
+  <manifest:file-entry manifest:media-type="application/vnd.sun.star.configuration-data"
+                       manifest:full-path="ProtocolHandler.xcu"/>
+  <manifest:file-entry manifest:media-type="application/vnd.sun.star.configuration-data"
+                       manifest:full-path="Jobs.xcu"/>
+  <manifest:file-entry manifest:media-type="application/vnd.sun.star.package-bundle-description;locale=en"
+                       manifest:full-path="description-en.txt"/>
+</manifest:manifest>

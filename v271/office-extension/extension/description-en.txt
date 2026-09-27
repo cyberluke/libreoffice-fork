@@ -1,0 +1,6 @@
+V271 Identity, Graph and Document Context integration for the V271 LibreOffice fork.
+
+Connects this LibreOffice build to V271 Identity (OIDC Authorization Code + PKCE),
+the V271 Personal Graph (document.file / document.recent / document.favorite
+entities) and V271 AI context. LibreOffice stays a full desktop application;
+the graph is kept in sync through native extension points.

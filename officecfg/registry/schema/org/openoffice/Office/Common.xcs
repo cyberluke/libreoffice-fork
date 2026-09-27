@@ -4866,7 +4866,8 @@
             </info>
           </enumeration>
         </constraints>
-        <value>0</value>
+        <!-- V271 fork: dark mode enabled by default. -->
+        <value>2</value>
       </prop>
       <prop oor:name="UseOnlyWhiteDocBackground" oor:type="xs:boolean" oor:nillable="false">
         <info>

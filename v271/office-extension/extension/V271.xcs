@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE oor:component-schema SYSTEM "../../component-schema.dtd">
+<oor:component-schema xmlns:oor="http://openoffice.org/2001/registry"
+                      xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                      oor:name="V271" oor:package="org.openoffice.Office" xml:lang="en-US">
+  <info>
+    <desc>Contains the V271 Identity / Graph / AI integration settings.</desc>
+  </info>
+  <templates>
+    <group oor:name="FavoriteEntry">
+      <info>
+        <desc>Describes a favorite document entity reference.</desc>
+      </info>
+      <prop oor:name="SourceId" oor:type="xs:string" oor:nillable="false">
+        <info><desc>Stable document source id (local/cloud URI reference).</desc></info>
+        <value/>
+      </prop>
+      <prop oor:name="DisplayName" oor:type="xs:string" oor:nillable="false">
+        <info><desc>Display name of the document.</desc></info>
+        <value/>
+      </prop>
+      <prop oor:name="Uri" oor:type="xs:string" oor:nillable="false">
+        <info><desc>Local or cloud URI reference.</desc></info>
+        <value/>
+      </prop>
+      <prop oor:name="AddedAt" oor:type="xs:string" oor:nillable="false">
+        <info><desc>ISO-8601 timestamp when the favorite was added.</desc></info>
+        <value/>
+      </prop>
+    </group>
+    <group oor:name="WorkspaceEntry">
+      <info>
+        <desc>Describes a V271/NAI workspace/project association.</desc>
+      </info>
+      <prop oor:name="Id" oor:type="xs:string" oor:nillable="false">
+        <info><desc>Workspace identifier in V271/NAI.</desc></info>
+        <value/>
+      </prop>
+      <prop oor:name="Name" oor:type="xs:string" oor:nillable="false">
+        <info><desc>Workspace display name.</desc></info>
+        <value/>
+      </prop>
+    </group>
+  </templates>
+  <component>
+    <group oor:name="General">
+      <info>
+        <desc>General integration settings.</desc>
+      </info>
+      <prop oor:name="BaseUrl" oor:type="xs:string" oor:nillable="false">
+        <info>
+          <desc>Base URL of the V271 API (graph, vector and AI endpoints).
+          May be overridden by the V271_BASE_URL environment variable.</desc>
+        </info>
+        <value/>
+      </prop>
+      <prop oor:name="IssuerUrl" oor:type="xs:string" oor:nillable="false">
+        <info>
+          <desc>OIDC issuer URL. Empty means: derive from BaseUrl
+          (BaseUrl + '/identity').</desc>
+        </info>
+        <value/>
+      </prop>
+      <prop oor:name="ClientId" oor:type="xs:string" oor:nillable="false">
+        <info>
+          <desc>OIDC client id registered for the LibreOffice desktop client.</desc>
+        </info>
+        <value>libreoffice-v271</value>
+      </prop>
+      <prop oor:name="Scopes" oor:type="xs:string" oor:nillable="false">
+        <info>
+          <desc>Space separated OIDC scopes.</desc>
+        </info>
+        <value>openid profile offline_access</value>
+      </prop>
+      <prop oor:name="RedirectPort" oor:type="xs:int" oor:nillable="false">
+        <info>
+          <desc>Loopback port for the OIDC redirect. 0 selects an ephemeral port.</desc>
+        </info>
+        <value>0</value>
+      </prop>
+      <prop oor:name="SyncOnSave" oor:type="xs:boolean" oor:nillable="false">
+        <info>
+          <desc>Update the V271 graph when a document is saved (debounced).</desc>
+        </info>
+        <value>true</value>
+      </prop>
+      <prop oor:name="EmbedOnSave" oor:type="xs:boolean" oor:nillable="false">
+        <info>
+          <desc>Send extracted text chunks to the V271 vector pipeline on save.</desc>
+        </info>
+        <value>true</value>
+      </prop>
+      <prop oor:name="SyncRecentsOnStart" oor:type="xs:boolean" oor:nillable="false">
+        <info>
+          <desc>Seed document.recent entities from the native recent-documents list at startup.</desc>
+        </info>
+        <value>true</value>
+      </prop>
+      <prop oor:name="MaxChunkSize" oor:type="xs:int" oor:nillable="false">
+        <info>
+          <desc>Maximum characters per embedding chunk.</desc>
+        </info>
+        <value>2000</value>
+      </prop>
+      <prop oor:name="FingerprintMode" oor:type="xs:string" oor:nillable="false">
+        <info>
+          <desc>'none' disables content fingerprints, 'file' hashes local files (skipped above
+          MaxFingerprintBytes).</desc>
+        </info>
+        <value>file</value>
+      </prop>
+      <prop oor:name="MaxFingerprintBytes" oor:type="xs:int" oor:nillable="false">
+        <info>
+          <desc>Files larger than this are not fingerprinted (safety guard).</desc>
+        </info>
+        <value>104857600</value>
+      </prop>
+      <prop oor:name="AllowInsecureTokenStorage" oor:type="xs:boolean" oor:nillable="false">
+        <info>
+          <desc>Fall back to a plain (mode 0600) token file when OS-level protection
+          (DPAPI) is unavailable.</desc>
+        </info>
+        <value>false</value>
+      </prop>
+    </group>
+    <group oor:name="State">
+      <info>
+        <desc>Runtime integration state.</desc>
+      </info>
+      <prop oor:name="CurrentWorkspaceId" oor:type="xs:string" oor:nillable="false">
+        <info>
+          <desc>Workspace currently associated with newly created/opened documents.
+          Manual association is authoritative.</desc>
+        </info>
+        <value/>
+      </prop>
+      <prop oor:name="LastSyncAt" oor:type="xs:string" oor:nillable="false">
+        <info>
+          <desc>ISO-8601 timestamp of the last successful graph sync.</desc>
+        </info>
+        <value/>
+      </prop>
+      <prop oor:name="AccountDisplayName" oor:type="xs:string" oor:nillable="false">
+        <info>
+          <desc>Display name of the signed-in account (cache for status display).</desc>
+        </info>
+        <value/>
+      </prop>
+    </group>
+    <set oor:name="Favorites" oor:node-type="FavoriteEntry">
+      <info>
+        <desc>Documents the user marked as favorites (mirrored to the V271 graph).</desc>
+      </info>
+    </set>
+    <set oor:name="Workspaces" oor:node-type="WorkspaceEntry">
+      <info>
+        <desc>Known V271/NAI workspaces.</desc>
+      </info>
+    </set>
+  </component>
+</oor:component-schema>

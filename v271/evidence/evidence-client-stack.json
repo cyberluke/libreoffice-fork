@@ -1,0 +1,136 @@
+{
+  "harness": "v271/tools/evidence_capture.py",
+  "mock_base_url": "http://127.0.0.1:51742",
+  "criteria": {
+    "1_signin": {
+      "ok": true,
+      "account": {
+        "sub": "sub-1234",
+        "name": "Test User",
+        "email": "test@v271.invalid",
+        "preferred_username": "test-user"
+      },
+      "issued_tokens": 1,
+      "pkce": "S256 challenge verified by token endpoint"
+    },
+    "4_update_not_duplicate": {
+      "ok": true,
+      "first_status": 200,
+      "second_status": 200,
+      "server_said_updated": true,
+      "document.file_count_for_source": 1
+    },
+    "2_recents_sync": {
+      "ok": true,
+      "recent_entity": {
+        "type": "document.recent",
+        "source_id": "file:///docs/v271-proposal.odt",
+        "display_name": "v271-proposal.odt",
+        "file_type": "text",
+        "uri": "file:///docs/v271-proposal.odt",
+        "last_opened": "2026-09-27T10:00:00Z",
+        "last_edited": "2026-09-27T10:05:00Z",
+        "favorite": false,
+        "workspace_id": null,
+        "fingerprint": null,
+        "metadata": {}
+      }
+    },
+    "3_favorites_sync": {
+      "ok": true,
+      "favorite_entity": {
+        "type": "document.favorite",
+        "source_id": "file:///docs/v271-proposal.odt",
+        "display_name": "v271-proposal.odt",
+        "file_type": "text",
+        "uri": "file:///docs/v271-proposal.odt",
+        "last_opened": "2026-09-27T10:00:00Z",
+        "last_edited": "2026-09-27T10:05:00Z",
+        "favorite": true,
+        "workspace_id": null,
+        "fingerprint": null,
+        "metadata": {}
+      },
+      "delete_status": 200
+    },
+    "5_document_context": {
+      "ok": true,
+      "context": {
+        "source_id": "file:///docs/v271-proposal.odt",
+        "display_name": "v271-proposal.odt",
+        "file_type": "text",
+        "uri": "file:///docs/v271-proposal.odt",
+        "text_excerpt": "The quarterly proposal for the V271 integration discusses identity, graph sync and semantic search.",
+        "chunk_count": 1
+      },
+      "note": "UNO text extraction is exercised by lo_evidence.py against a real LibreOffice build; this run proves the pure pipeline."
+    },
+    "6_central_embeddings": {
+      "ok": true,
+      "upsert_status": 200,
+      "chunks_uploaded": 1,
+      "vector_documents": 1
+    },
+    "7_semantic_retrieval": {
+      "ok": true,
+      "query": "semantic search proposal identity",
+      "top_hits": [
+        {
+          "source_id": "file:///docs/v271-proposal.odt",
+          "score": 1.0,
+          "snippet": "the quarterly proposal for the v271 integration discusses identity, graph sync and semantic search."
+        }
+      ]
+    },
+    "8_shared_entity": {
+      "ok": true,
+      "entity_as_served_to_consumers": {
+        "type": "document.file",
+        "source_id": "file:///docs/v271-proposal.odt",
+        "display_name": "v271-proposal.odt",
+        "file_type": "text",
+        "uri": "file:///docs/v271-proposal.odt",
+        "last_opened": "2026-09-27T10:00:00Z",
+        "last_edited": "2026-09-27T10:05:00Z",
+        "favorite": false,
+        "workspace_id": null,
+        "fingerprint": null,
+        "metadata": {}
+      }
+    },
+    "9_secure_token_storage": {
+      "ok": true,
+      "facts": {
+        "dpapi_in_use": true,
+        "token_file_exists": true,
+        "allow_insecure": true,
+        "plaintext_token_in_file": false,
+        "record_starts_with": "{\"dpapi\": true, \"data\": \"AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA4Xg",
+        "file_permissions_0600": false
+      }
+    }
+  },
+  "summary": {
+    "passed": 9,
+    "total": 9,
+    "stats": {
+      "entities": 2,
+      "distinct_documents": 1,
+      "upsert_count": 4,
+      "vector_documents": 1,
+      "issued_tokens": 1,
+      "query_count": 1,
+      "summarize_count": 0,
+      "entity_keys": [
+        [
+          "document.file",
+          "file:///docs/v271-proposal.odt"
+        ],
+        [
+          "document.recent",
+          "file:///docs/v271-proposal.odt"
+        ]
+      ]
+    }
+  }
+}
