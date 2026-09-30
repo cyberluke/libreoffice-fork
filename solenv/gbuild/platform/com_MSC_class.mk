@@ -206,8 +206,21 @@ gb_LinkTarget_CFLAGS := $(gb_CFLAGS)
 gb_LinkTarget_CXXFLAGS := $(gb_CXXFLAGS)
 gb_LinkTarget_CXXCLRFLAGS := $(gb_CXXCLRFLAGS)
 
+# LOCAL (V271): vcvars64.bat sets INCLUDE (which carries the ATL headers at
+# $(VCToolsInstallDir)atlmfc\include), but build_win.sh must unset INCLUDE for
+# the midl recipe in shell/CustomTarget_spsupp_idl.mk. Define the ATL include
+# dir HERE in make instead of via the environment: MSYS2 rewrites env-imported
+# path values to /c/... form on the way into make, and cl then rejects the
+# resulting -I flag (D9002). Defined makefile-side (like SOLARINC in
+# config_host.mk) the value stays a Windows-form 8.3 short path, which also
+# survives sh word splitting. With plain vcvars+make (INCLUDE still set) the
+# env INCLUDE provides ATL as upstream expects; this line is then redundant
+# but harmless.
+ATL_INCLUDE := $(if $(VCToolsInstallDir),-I$(shell cygpath -dm '$(subst \,/,$(VCToolsInstallDir))atlmfc/include'))
+
 gb_LinkTarget_INCLUDE :=\
 	$(SOLARINC) \
+	$(ATL_INCLUDE) \
 	$(foreach inc,$(subst ;, ,$(JDKINC)),-I$(inc)) \
 	-I$(BUILDDIR)/config_$(gb_Side) \
 
@@ -733,7 +746,13 @@ gb_UIMenubarTarget_UIMenubarTarget_platform :=
 
 # Python
 gb_Python_HOME := $(INSTDIR_FOR_BUILD)/program/python-core-$(PYTHON_VERSION)
-gb_Python_PRECOMMAND := PATH="$(shell cygpath -u $(INSTDIR_FOR_BUILD)/program):$(shell cygpath.exe -uS)" PYTHONHOME="$(gb_Python_HOME)" PYTHONPATH="$${PYPATH:+$$PYPATH;}$(gb_Python_HOME)/lib;$(gb_Python_HOME)/lib/lib-dynload:$(INSTDIR_FOR_BUILD)/program"
+# LOCAL (V271): append $$PATH to the precommand PATH. Upstream sets a minimal
+# PATH (instdir/program + System32) so the built python never picks up foreign
+# DLLs, but that also hides MSVC's link.exe from tools the python spawns by
+# bare name (meson's guess_win_linker runs `link --version`; it crashed with
+# FileNotFoundError WinError 2). The make-exported PATH (config_host.mk) keeps
+# the MSVC/SDK dirs and is only consulted after instdir/program + System32.
+gb_Python_PRECOMMAND := PATH="$(shell cygpath -u $(INSTDIR_FOR_BUILD)/program):$(shell cygpath.exe -uS):$$PATH" PYTHONHOME="$(gb_Python_HOME)" PYTHONPATH="$${PYPATH:+$$PYPATH;}$(gb_Python_HOME)/lib;$(gb_Python_HOME)/lib/lib-dynload:$(INSTDIR_FOR_BUILD)/program"
 gb_Python_INSTALLED_EXECUTABLE := $(INSTROOT_FOR_BUILD)/$(LIBO_BIN_FOLDER)/python.exe
 
 gb_ICU_PRECOMMAND := PATH="$(shell cygpath -w $(WORKDIR_FOR_BUILD)/UnpackedTarball/icu/source/lib)"

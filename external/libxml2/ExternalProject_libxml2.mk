@@ -23,9 +23,12 @@ $(call gb_ExternalProject_use_external_project,libxml2,icu)
 # remove VERSION file after the compilation, otherwise, libabw, libvisio,
 # and probably other libraries fail to compile with
 # workdir\UnpackedTarball\libxml2\version(1): error C2059: syntax error: 'constant
+# LOCAL (V271): upstream passes CC to cmake as-is; with an MSYS-style /c/...
+# config_host.mk CC (8.3 short names, no spaces) $(lastword ...) yields the
+# whole path and native cmake rejects it ("not a full path to an existing
+# compiler tool"). cygpath -m converts it to a Windows path for cmake.
 $(call gb_ExternalProject_get_state_target,libxml2,build):
 	$(call gb_Trace_StartRange,libxml2,EXTERNAL)
-<<<<<<< HEAD
 	+$(call gb_ExternalProject_run,build,\
 		export INCLUDE="$(gb_ExternalProject_INCLUDE)" \
 		&& export LIB="$(ILIB)" \
@@ -33,7 +36,7 @@ $(call gb_ExternalProject_get_state_target,libxml2,build):
 			-G Ninja \
 			-DCMAKE_MAKE_PROGRAM=$(NINJA) \
 			-DCMAKE_BUILD_TYPE=$(if $(MSVC_USE_DEBUG_RUNTIME),Debug,Release) \
-			-DCMAKE_C_COMPILER=$(lastword $(filter-out -%,$(CC))) \
+			-DCMAKE_C_COMPILER=$(shell cygpath -m $(lastword $(filter-out -%,$(CC)))) \
 			$(if $(CCACHE),-DCMAKE_C_COMPILER_LAUNCHER=$(CCACHE)) \
 			-DLIBXML2_WITH_TESTS=OFF \
 			-DLIBXML2_WITH_ICONV=OFF \
@@ -48,14 +51,6 @@ $(call gb_ExternalProject_get_state_target,libxml2,build):
 		&& $(CMAKE) --build . \
 		&& rm VERSION \
 	)
-=======
-	$(call gb_ExternalProject_run,build,\
-		cscript //E:JScript configure.js \
-			iconv=no icu=yes sax1=yes $(if $(MSVC_USE_DEBUG_RUNTIME),cruntime=/MDd) \
-			$(if $(filter TRUE,$(MSVC_USE_DEBUG_RUNTIME)),debug=yes) \
-		&& nmake \
-	,win32)
->>>>>>> pher217/master
 	$(call gb_Trace_EndRange,libxml2,EXTERNAL)
 else # OS!=WNT
 $(call gb_ExternalProject_get_state_target,libxml2,build):

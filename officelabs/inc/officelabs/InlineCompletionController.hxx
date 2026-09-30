@@ -93,6 +93,15 @@ public:
     /// Synchronously start a completion request (used by timer and tests).
     void requestNow();
 
+    /// Show an externally produced suggestion (e.g. a panel rewrite) as ghost
+    /// text at the current caret. Unlike fetched suggestions there is no
+    /// in-flight request and no stillValid() gate: Tab accepts it, Escape or
+    /// any other key/mouse move dismisses it. When |bReplaceSelection| is
+    /// true, Tab replaces the current selection (the rewrite case); the
+    /// suggestion is discarded instead of inserted if the selection is gone
+    /// by then. VCL thread only. Returns false when nothing could be shown.
+    bool showExternalSuggestion(const OUString& rSuggestion, bool bReplaceSelection);
+
     // Test accessors.
     bool isGhostVisible() const { return m_pGhost && m_pGhost->isShowing(); }
     const OUString& ghostText() const { return m_sSuggestion; }
@@ -161,6 +170,14 @@ private:
     // the typed character may not be in the document yet, so stillValid()
     // could wrongly pass.
     bool m_bTypeThroughPending;
+    // True while the shown ghost came from showExternalSuggestion() (rewrite)
+    // rather than a fetch. Such a ghost is anchored to the selection that was
+    // current when it was shown: Tab replaces that selection (when
+    // m_bExternalReplacesSelection) and type-through is disabled -- the
+    // suggestion does not continue typed text, so consuming a matching key
+    // would be wrong.
+    bool m_bExternalSuggestion;
+    bool m_bExternalReplacesSelection;
 
     int m_nFailures;
     sal_uInt64 m_nBackoffUntilMs;

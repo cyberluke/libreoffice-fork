@@ -96,6 +96,8 @@ InlineCompletionController::InlineCompletionController(
     , m_bRequestPending(false)
     , m_bDisposed(false)
     , m_bTypeThroughPending(false)
+    , m_bExternalSuggestion(false)
+    , m_bExternalReplacesSelection(false)
     , m_nFailures(0)
     , m_nBackoffUntilMs(0)
     , m_nInFlightTimeoutMs(INFLIGHT_WATCHDOG_MS)
@@ -245,7 +247,15 @@ sal_Bool SAL_CALL InlineCompletionController::keyPressed(const css::awt::KeyEven
             // insert a literal tab at the caret would be an unintended edit
             // made at the exact moment the user tried to accept a suggestion,
             // which is the class of surprise this check exists to prevent.
-            if (m_bTypeThroughPending || !stillValid(m_aRequested, m_aDoc.getCursorContext()))
+            //
+            // External (rewrite) suggestions skip stillValid() -- m_aRequested
+            // is stale for them -- but get their own guard: a replace-
+            // selection ghost must not fire when the selection it was anchored
+            // to is gone.
+            if (m_bTypeThroughPending
+                || (!m_bExternalSuggestion && !stillValid(m_aRequested, m_aDoc.getCursorContext()))
+                || (m_bExternalSuggestion && m_bExternalReplacesSelection
+                    && !m_aDoc.getCursorContext().hasSelection))
             {
                 hideGhost();
                 ++m_nGeneration;
@@ -253,8 +263,15 @@ sal_Bool SAL_CALL InlineCompletionController::keyPressed(const css::awt::KeyEven
             }
 
             OUString sText = m_sSuggestion;
+            // hideGhost() clears the external-suggestion flags, so read them
+            // before deciding how to apply the accepted text.
+            const bool bReplaceSelection
+                = m_bExternalSuggestion && m_bExternalReplacesSelection;
             hideGhost();
-            m_aDoc.insertAtCursor(sText);
+            if (bReplaceSelection)
+                m_aDoc.replaceSelection(sText);
+            else
+                m_aDoc.insertAtCursor(sText);
             return true;
         }
 
@@ -284,7 +301,7 @@ sal_Bool SAL_CALL InlineCompletionController::keyPressed(const css::awt::KeyEven
         const bool bOnlyShiftOrNoMods
             = (nMods & ~css::awt::KeyModifier::SHIFT) == 0;
         if (bOnlyShiftOrNoMods && cTyped >= 0x20 && !m_sSuggestion.isEmpty()
-            && m_sSuggestion[0] == cTyped)
+            && !m_bExternalSuggestion && m_sSuggestion[0] == cTyped)
         {
             const OUString sRemainder = m_sSuggestion.copy(1);
             SAL_INFO("officelabs.inline",
@@ -579,6 +596,37 @@ void InlineCompletionController::hideGhost()
     m_aTrackTimer.Stop();
     m_aShownRect.reset();
     m_sSuggestion.clear();
+    m_bExternalSuggestion = false;
+    m_bExternalReplacesSelection = false;
+}
+
+bool InlineCompletionController::showExternalSuggestion(const OUString& rSuggestion,
+                                                        bool bReplaceSelection)
+{
+    if (m_bDisposed || rSuggestion.isEmpty() || !m_pEditWin)
+        return false;
+
+    // Drop whatever was showing, and make a stale in-flight reply unable to
+    // overwrite the external suggestion: its generation no longer matches.
+    hideGhost();
+    ++m_nGeneration;
+
+    auto aRect = m_aCaretProvider();
+    if (!aRect)
+        return false;
+
+    if (!m_pGhost)
+        m_pGhost = VclPtr<GhostTextWindow>::Create(m_pEditWin.get());
+
+    if (!m_pGhost->showAt(*aRect, rSuggestion, m_aFontProvider()))
+        return false;
+
+    m_sSuggestion = rSuggestion;
+    m_aShownRect = aRect;
+    m_bExternalSuggestion = true;
+    m_bExternalReplacesSelection = bReplaceSelection;
+    m_aTrackTimer.Start();
+    return true;
 }
 
 bool InlineCompletionController::isComposing() const

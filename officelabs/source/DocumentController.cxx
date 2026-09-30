@@ -655,6 +655,62 @@ bool DocumentController::insertAtCursor(const OUString& rText)
     }
 }
 
+bool DocumentController::replaceSelection(const OUString& rText)
+{
+    if (rText.isEmpty())
+        return false;
+
+    if (getCursorContext().readOnly)
+        return false;
+
+    if (!m_xController.is() || !m_xModel.is())
+        return false;
+
+    try
+    {
+        uno::Reference<text::XTextViewCursorSupplier> xViewCursorSupplier(m_xController,
+                                                                          uno::UNO_QUERY);
+        if (!xViewCursorSupplier.is())
+            return false;
+
+        uno::Reference<text::XTextViewCursor> xViewCursor = xViewCursorSupplier->getViewCursor();
+        if (!xViewCursor.is())
+            return false;
+
+        uno::Reference<text::XTextCursor> xTextCursor(xViewCursor, uno::UNO_QUERY);
+        if (!xTextCursor.is())
+            return false;
+
+        uno::Reference<document::XUndoManagerSupplier> xUndoSupplier(m_xModel, uno::UNO_QUERY);
+        if (!xUndoSupplier.is())
+            return false;
+
+        uno::Reference<document::XUndoManager> xUndoManager = xUndoSupplier->getUndoManager();
+        if (!xUndoManager.is())
+            return false;
+
+        bool bEntered = false;
+        comphelper::ScopeGuard aGuard([&xUndoManager, &bEntered]() {
+            if (bEntered)
+                xUndoManager->leaveUndoContext();
+        });
+
+        xUndoManager->enterUndoContext(u"AI rewrite"_ustr);
+        bEntered = true;
+
+        // bAbsorb=true replaces the selected range; a collapsed caret just
+        // inserts (same as insertAtCursor, but in one code path).
+        xViewCursor->getText()->insertString(xViewCursor, rText, /*bAbsorb=*/true);
+
+        return true;
+    }
+    catch (const uno::Exception&)
+    {
+        SAL_WARN("officelabs", "DocumentController::replaceSelection failed");
+        return false;
+    }
+}
+
 } // namespace officelabs
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

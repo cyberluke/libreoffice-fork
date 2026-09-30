@@ -1,0 +1,11 @@
+--- builds/posix/Makefile.in
++++ builds/posix/Makefile.in
+@@ -598,8 +598,7 @@
+ 	$(EXE_LINK) $(EXE_LINK_OPTIONS) $^ -o $@ $(FIREBIRD_LIBRARY_LINK) $(LINK_LIBS)
+ 
+ examples: include_generic
+-	$(MAKE) -f Makefile.examples -C $(GEN_ROOT)/examples/
+-	$(MAKE) -f Makefile.plugins_examples
++	@echo "V271: firebird examples skipped (LOCAL patch, see external/firebird)"
+ 
+ message_file:	$(FIREBIRD_MSG)

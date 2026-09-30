@@ -14,10 +14,16 @@ include $(SRCDIR)/extras/template_files.mk
 define run_zip_template_recipe =
 $(call gb_Output_announce,$(subst $(gb_CustomTarget_workdir)/extras/source/,,$@),$(true),ZIP,2)
 $(call gb_Trace_StartRange,$(subst $(gb_CustomTarget_workdir)/extras/source/,,$@),ZIP)
+# LOCAL (V271): flock-serialize the zip chain per output directory. Info-ZIP
+# 3.0 names its temporary file from a tick-derived 8-hex value shared by all
+# processes started in the same moment, so parallel zips writing into one
+# directory (make -j24) steal each other's temp file and corrupt or delete
+# each other's archives ("Could not create output file", "Zip file structure
+# invalid", missing outputs). Serializing per $(dir $@) removes the race.
 cd $(dir $<) && \
-$(call gb_Helper_wsl_path,\
-$(WSL) zip -q0X --filesync --must-match $@ mimetype && \
-$(WSL) zip -qrX --must-match $@ $(subst $(dir $<),,$^) -x mimetype) \
+flock $(dir $@).zip-lock -c '$(call gb_Helper_wsl_path,\
+	$(WSL) zip -q0X --filesync --must-match $@ mimetype && \
+	$(WSL) zip -qrX --must-match $@ $(subst $(dir $<),,$^) -x mimetype)' \
 $(call gb_Helper_make_zip_deterministic,$@)
 $(call gb_Trace_EndRange,$(subst $(gb_CustomTarget_workdir)/extras/source/,,$@),ZIP)
 endef

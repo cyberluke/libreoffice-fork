@@ -1,0 +1,8 @@
+#!/bin/bash
+# Minimal wslpath shim for the LibreOffice build under MSYS2.
+# The top-level Makefile calls `wslpath -u <path>` when MSYSTEM is set;
+# MSYS2 has cygpath, not wslpath. cygpath -u yields the same /x/... shape.
+case "$1" in
+    -u) exec cygpath -u "$2" ;;
+    *)  exec cygpath "$@" ;;
+esac

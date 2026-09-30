@@ -105,6 +105,13 @@ public:
     // Access document controller (for message handler)
     DocumentController* getDocController() const { return m_pDocController.get(); }
 
+    // Access the Writer inline-completion controller (for the rewrite ghost
+    // preview). Null when the frame has no Writer controller or CEF is off.
+    InlineCompletionController* getInlineCompletion() const
+    {
+        return m_xInlineCompletion.get();
+    }
+
     // Recompute this panel's host geometry/visibility from the current VCL
     // layout and hand off to the native host. Public because the native
     // host's frame-tracking hook calls back into it (see

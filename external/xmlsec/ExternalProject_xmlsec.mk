@@ -32,13 +32,8 @@ $(eval $(call gb_ExternalProject_use_nmake,xmlsec,build))
 $(call gb_ExternalProject_get_state_target,xmlsec,build) :
 	$(call gb_Trace_StartRange,xmlsec,EXTERNAL)
 	$(call gb_ExternalProject_run,build,\
-<<<<<<< HEAD
 		cscript /e:javascript configure.js crypto=mscng xslt=no iconv=no static=no \
 			lib=$(gb_UnpackedTarball_workdir)/libxml2 \
-=======
-		cscript //E:JScript configure.js crypto=mscng xslt=no iconv=no static=no \
-			lib=$(gb_UnpackedTarball_workdir)/libxml2/win32/bin.msvc \
->>>>>>> pher217/master
 			$(if $(filter TRUE,$(ENABLE_DBGUTIL)),debug=yes cruntime=/MDd) \
 			cflags="$(SOLARINC) $(LIBXML_CFLAGS)" \
 		&& nmake \

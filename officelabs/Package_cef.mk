@@ -24,8 +24,11 @@ $(eval $(call gb_Package_add_files,cef,$(LIBO_BIN_FOLDER),\
     libEGL.dll \
     libGLESv2.dll \
     vk_swiftshader.dll \
+    vk_swiftshader_icd.json \
     vulkan-1.dll \
     v8_context_snapshot.bin \
+    dxcompiler.dll \
+    dxil.dll \
 ))
 endif
 

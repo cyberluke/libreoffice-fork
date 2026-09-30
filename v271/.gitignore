@@ -1,4 +1,2 @@
-__pycache__/
-*.pyc
-office-extension/v271-office.oxt
-office-extension/v271-office.oxt.zip
+# Build artifacts produced by v271/build_win.sh
+build.log

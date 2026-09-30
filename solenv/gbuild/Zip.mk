@@ -44,14 +44,19 @@ $(dir $(call gb_Zip_get_target,%))%/.dir :
 $(call gb_Zip_get_target,%) :
 	$(call gb_Output_announce,$*,$(true),ZIP,3)
 	$(call gb_Trace_StartRange,$*,ZIP)
+	# LOCAL (V271): flock-serialize the zip invocation per output directory --
+	# Info-ZIP 3.0's tick-derived temp file name collides across parallel
+	# zips in one directory (see run_zip_template_recipe in
+	# extras/CustomTarget_templates.mk), which can corrupt or delete
+	# packages built concurrently by make -j24.
 	$(call gb_Helper_abbreviate_dirs,\
 		$(if $(FILES),\
 			RESPONSEFILE=$(call gb_var2file,$(shell $(gb_MKTEMP)),\
                         $(FILES)) && \
 			cd $(LOCATION) && \
-			cat $${RESPONSEFILE} | tr "[:space:]" "\n" | \
+			flock $(dir $(call gb_Zip_get_target,$*)).zip-lock -c 'cat $${RESPONSEFILE} | tr "[:space:]" "\n" | \
 				$(call gb_Helper_wsl_path,$(WSL) $(gb_Zip_ZIPCOMMAND) -@rX --filesync --must-match \
-					$(call gb_Zip_get_target,$*)) && \
+					$(call gb_Zip_get_target,$*))' && \
 			rm -f $${RESPONSEFILE} && \
 			touch $@\
 			$(call gb_Helper_make_zip_deterministic,$@) \

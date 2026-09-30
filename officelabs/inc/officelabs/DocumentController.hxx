@@ -75,6 +75,13 @@ public:
     CursorContext getCursorContext();
     std::optional<CursorCharFont> getCursorCharFont();
     bool insertAtCursor(const OUString& rText);
+    /// Replaces the current selection with |rText| (undoable). A collapsed
+    /// caret falls back to insertAtCursor(). VCL thread only.
+    bool replaceSelection(const OUString& rText);
+
+    /// The document model, for callers that need it (e.g. the rewrite
+    /// dialog's controller setup).
+    css::uno::Reference<css::frame::XModel> model() const { return m_xModel; }
 };
 
 } // namespace officelabs

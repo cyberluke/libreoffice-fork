@@ -21,6 +21,9 @@
 #include <officelabs/DocumentController.hxx>
 #include <officelabs/AgentIdentity.hxx>
 #include <officelabs/ConsentBridge.hxx>
+#include <officelabs/InlineCompletionController.hxx>
+#include <officelabs/RewriteDialog.hxx>
+#include <officelabs/RewriteProtocol.hxx>
 
 #include <vcl/officelabstheme.hxx>
 
@@ -37,6 +40,7 @@
 #include <comphelper/processfactory.hxx>
 
 #include <functional>
+#include <thread>
 
 namespace {
 
@@ -298,6 +302,27 @@ bool WebViewMessageHandler::OnQuery(
         || req.find("\"type\": \"openExternalUrl\"") != std::string::npos)
     {
         handleOpenExternalUrl(req, callback);
+        return true;
+    }
+
+    if (req.find("\"type\":\"rewriteGenerate\"") != std::string::npos
+        || req.find("\"type\": \"rewriteGenerate\"") != std::string::npos)
+    {
+        handleRewriteGenerate(req, callback);
+        return true;
+    }
+
+    if (req.find("\"type\":\"rewriteApply\"") != std::string::npos
+        || req.find("\"type\": \"rewriteApply\"") != std::string::npos)
+    {
+        handleRewriteApply(req, callback);
+        return true;
+    }
+
+    if (req.find("\"type\":\"rewriteOpenDialog\"") != std::string::npos
+        || req.find("\"type\": \"rewriteOpenDialog\"") != std::string::npos)
+    {
+        handleRewriteOpenDialog(callback);
         return true;
     }
 
@@ -646,6 +671,153 @@ void WebViewMessageHandler::handleOpenExternalUrl(const std::string& json,
             SAL_WARN("officelabs.cef", "openExternalUrl: SystemShellExecute failed");
             cb->Failure(500, "failed to open URL");
         }
+    });
+}
+
+// Rewrite: generate a suggestion for the given text and style through the
+// agent (/completions/, mode=rewrite -- see RewriteProtocol). The fetch is
+// a blocking HTTP round trip with a 60 s budget, so it runs on a detached
+// worker; the reply is parsed and answered on the VCL thread.
+void WebViewMessageHandler::handleRewriteGenerate(const std::string& json,
+                                                  CefRefPtr<Callback> callback)
+{
+    const std::string sText = extractJsonString(json, "text");
+    const std::string sStyle = extractJsonString(json, "style");
+    if (sText.empty())
+    {
+        callback->Failure(400, "text required");
+        return;
+    }
+
+    const OUString sTextU
+        = OStringToOUString(OString(sText.c_str(), sText.size()), RTL_TEXTENCODING_UTF8);
+    const OUString sStyleU = sStyle.empty()
+        ? u"improve"_ustr
+        : OStringToOUString(OString(sStyle.c_str(), sStyle.size()), RTL_TEXTENCODING_UTF8);
+
+    CefRefPtr<Callback> cb = callback;
+    postToVclThread([cb, sTextU, sStyleU]() {
+        std::thread([cb, sTextU, sStyleU]() {
+            const AgentResponse aResp = fetchRewrite(sTextU, sStyleU);
+            auto* pFn = new std::function<void()>([cb, aResp]() {
+                if (aResp.nStatus != 200)
+                {
+                    cb->Failure(502, "agent error");
+                    return;
+                }
+                const OUString sSuggestion = parseRewriteSuggestion(aResp.aBody);
+                if (sSuggestion.isEmpty())
+                {
+                    cb->Failure(502, "empty suggestion");
+                    return;
+                }
+                cb->Success("{\"suggestion\":\"" + escapeJson(sSuggestion) + "\"}");
+            });
+            Application::PostUserEvent(LINK_NONMEMBER(pFn, VclDispatchCb));
+        }).detach();
+    });
+}
+
+// Rewrite: apply a suggestion. mode "replace" swaps the current selection
+// (undoable); mode "ghost" shows the suggestion as ghost text at the caret so
+// the user accepts it with Tab (replacing the selection) or dismisses it with
+// Escape -- the standard inline-completion interaction.
+void WebViewMessageHandler::handleRewriteApply(const std::string& json,
+                                               CefRefPtr<Callback> callback)
+{
+    const std::string sSuggestion = extractJsonString(json, "suggestion");
+    const std::string sMode = extractJsonString(json, "mode");
+    if (sSuggestion.empty())
+    {
+        callback->Failure(400, "suggestion required");
+        return;
+    }
+
+    const OUString sSuggestionU
+        = OStringToOUString(OString(sSuggestion.c_str(), sSuggestion.size()),
+                            RTL_TEXTENCODING_UTF8);
+    const OUString sModeU = sMode.empty()
+        ? u"replace"_ustr
+        : OStringToOUString(OString(sMode.c_str(), sMode.size()), RTL_TEXTENCODING_UTF8);
+
+    CefRefPtr<Callback> cb = callback;
+    postToVclThread([this, cb, sSuggestionU, sModeU]() {
+        WebViewPanel* p = m_pPanel.load(std::memory_order_acquire);
+        if (!p)
+        {
+            cb->Failure(500, "Panel destroyed during dispatch");
+            return;
+        }
+
+        p->detectDocument();
+
+        if (sModeU == "ghost")
+        {
+            InlineCompletionController* pIc = p->getInlineCompletion();
+            if (!pIc)
+            {
+                cb->Failure(409, "inline completion unavailable");
+                return;
+            }
+            // The rewrite replaces the selection, so Tab-accept must replace
+            // it too, not insert at the caret.
+            if (!pIc->showExternalSuggestion(sSuggestionU, /*bReplaceSelection=*/true))
+            {
+                cb->Failure(409, "cannot show ghost text");
+                return;
+            }
+            cb->Success("{\"status\":\"ghost\"}");
+            return;
+        }
+
+        DocumentController* dc = p->getDocController();
+        if (!dc || !dc->hasDocument())
+        {
+            cb->Failure(400, "No document open");
+            return;
+        }
+        if (!dc->replaceSelection(sSuggestionU))
+        {
+            cb->Failure(409, "replace failed");
+            return;
+        }
+        cb->Success("{\"status\":\"applied\"}");
+    });
+}
+
+// Rewrite: open the native dialog for the current document. Modal, so the
+// cefQuery callback answers only when the user closes it.
+void WebViewMessageHandler::handleRewriteOpenDialog(CefRefPtr<Callback> callback)
+{
+    CefRefPtr<Callback> cb = callback;
+    postToVclThread([this, cb]() {
+        WebViewPanel* p = m_pPanel.load(std::memory_order_acquire);
+        if (!p)
+        {
+            cb->Failure(500, "Panel destroyed during dispatch");
+            return;
+        }
+
+        p->detectDocument();
+
+        DocumentController* dc = p->getDocController();
+        if (!dc || !dc->hasDocument())
+        {
+            cb->Failure(400, "No document open");
+            return;
+        }
+
+        const css::uno::Reference<css::frame::XModel> xModel = dc->model();
+        if (!xModel.is())
+        {
+            cb->Failure(400, "No document model");
+            return;
+        }
+
+        std::unique_ptr<RewriteDialog> xDialog(
+            new RewriteDialog(Application::GetDefDialogParent(), xModel));
+        xDialog->run();
+        cb->Success("{\"status\":\"closed\"}");
     });
 }
 

@@ -19,6 +19,18 @@
  *                      agent's saved-but-possibly-pending theme.txt.
  *   openExternalUrl - Open an https:// URL in the user's default system
  *                      browser (device-grant sign-in, core#117).
+ *   rewriteGenerate - Generate a rewrite of the given text in the given
+ *                      style through the agent (/completions/, mode=rewrite).
+ *                      Returns {"suggestion": ...}.
+ *   rewriteApply    - Apply a rewrite suggestion. mode "replace" replaces
+ *                      the current selection (undoable); mode "ghost" shows
+ *                      the suggestion as ghost text at the caret -- Tab
+ *                      accepts it (replacing the selection), Escape or any
+ *                      other key dismisses it.
+ *   rewriteOpenDialog - Open the native Rewrite dialog for the current
+ *                      document (fallback entry point; the React UI can
+ *                      implement the same flow with rewriteGenerate +
+ *                      rewriteApply).
  *
  * THREADING: m_pPanel is std::atomic because it's read on the CEF IO
  *            thread (OnQuery) and written on the VCL thread (setPanel).
@@ -91,6 +103,9 @@ private:
     void handleRequestOfficeRestart(CefRefPtr<Callback> callback);
     void handleGetActiveTheme(CefRefPtr<Callback> callback);
     void handleOpenExternalUrl(const std::string& json, CefRefPtr<Callback> callback);
+    void handleRewriteGenerate(const std::string& json, CefRefPtr<Callback> callback);
+    void handleRewriteApply(const std::string& json, CefRefPtr<Callback> callback);
+    void handleRewriteOpenDialog(CefRefPtr<Callback> callback);
 
     std::atomic<WebViewPanel*> m_pPanel;
 };

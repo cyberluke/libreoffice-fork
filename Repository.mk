@@ -859,7 +859,7 @@ endif
 $(eval $(call gb_Helper_register_packages, \
 	test_unittest \
 	$(if $(ENABLE_CLI),cli_basetypes_copy) \
-	$(if $(ENABLE_CEF),cef) \
+	$(if $(ENABLE_CEF),cef cef_res) \
 	extras_wordbook \
 	instsetoo_native_setup \
 	$(if $(ENABLE_OOENV),instsetoo_native_ooenv) \

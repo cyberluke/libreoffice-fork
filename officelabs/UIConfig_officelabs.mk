@@ -7,6 +7,7 @@ $(eval $(call gb_UIConfig_UIConfig,officelabs))
 
 $(eval $(call gb_UIConfig_add_uifiles,officelabs,\
     officelabs/ui/webviewpanel \
+    officelabs/ui/rewrite \
 ))
 
 # vim: set noet sw=4 ts=4:

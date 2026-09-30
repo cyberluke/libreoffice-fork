@@ -43,6 +43,7 @@
 #include <cppuhelper/implbase.hxx>
 
 #include <cstdlib>
+#include <exception>
 #include <string>
 
 #include <officelabs/OfficelabsBrowserApp.hxx>
@@ -241,7 +242,22 @@ bool CefInit::initialize()
     // Chromium's own init log - the best explainer of init failures - was
     // never produced. Use an absolute path and verbose severity instead.
     settings.log_severity = LOGSEVERITY_VERBOSE;
+#ifdef _WIN32
+    // "/tmp/..." is not a valid Windows path (Chromium logs
+    // "Invalid logging destination" and falls back to stderr, which a GUI
+    // app never shows). Use the per-user temp directory instead.
+    {
+        std::string logPath;
+        const char* tmp = std::getenv("TEMP");
+        if (tmp && *tmp)
+            logPath = std::string(tmp) + "\\officelabs_cef_debug.log";
+        else
+            logPath = "C:\\Windows\\Temp\\officelabs_cef_debug.log";
+        CefString(&settings.log_file).FromASCII(logPath.c_str());
+    }
+#else
     CefString(&settings.log_file).FromASCII("/tmp/officelabs_cef_debug.log");
+#endif
 
     SAL_INFO("officelabs.cef", "Initializing CEF with subprocess: " << utf8Path);
 
@@ -306,30 +322,60 @@ void CefInit::shutdown()
     if (!m_bShuttingDown.compare_exchange_strong(bExpected, true))
         return;
 
-    std::lock_guard<std::mutex> lock(m_mutex);
+    // Early-out WITHOUT the lock when CEF was never started. shutdown() also
+    // runs from the static destructor during DLL_PROCESS_DETACH, where other
+    // module statics may already be destroyed; touching any std sync object
+    // in that state can throw, and an exception escaping DLL detach means
+    // terminate() -> abort() -> hard crash (fastfail 0xc0000409) at exit.
     if (!m_bInitialized)
         return;
 
-    SAL_INFO("officelabs.cef", "Shutting down CEF...");
+    // No exception may ever escape shutdown(): when invoked from ~CefInit at
+    // process-exit teardown there is no C++ handler in the unwind path, and
+    // an escaping exception terminates the process. Guard every stage so a
+    // failure in one teardown step still lets the rest run and logs instead
+    // of crashing LibreOffice on quit.
+    try
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_bInitialized)
+            return;
 
-    // The Studio window owns a browser CefShutdown() knows nothing about, and
-    // CEF requires every browser closed first. Do it while the message pump is
-    // still running, so the close can actually complete.
-    officelabs::closeStudioWindowAndWait();
+        SAL_INFO("officelabs.cef", "Shutting down CEF...");
 
-    // Release persistent browser/popup/router BEFORE CefShutdown().
-    // Static CefRefPtrs in WebViewPanel.cxx must be cleared while CEF
-    // is still alive, otherwise their destructors touch freed CEF state.
-    WebViewPanel::cleanupPersistentBrowser();
+        // The Studio window owns a browser CefShutdown() knows nothing about,
+        // and CEF requires every browser closed first. Do it while the message
+        // pump is still running, so the close can actually complete.
+        officelabs::closeStudioWindowAndWait();
+
+        // Release persistent browser/popup/router BEFORE CefShutdown().
+        // Static CefRefPtrs in WebViewPanel.cxx must be cleared while CEF
+        // is still alive, otherwise their destructors touch freed CEF state.
+        WebViewPanel::cleanupPersistentBrowser();
 
 #ifdef MACOSX
-    // Stop the heartbeat BEFORE CefShutdown so no CefDoMessageLoopWork can
-    // fire against a torn-down CEF.
-    StopCefPumpHeartbeat();
+        // Stop the heartbeat BEFORE CefShutdown so no CefDoMessageLoopWork can
+        // fire against a torn-down CEF.
+        StopCefPumpHeartbeat();
 #endif
-    CefShutdown();
-    m_bInitialized = false;
-    SAL_INFO("officelabs.cef", "CEF shutdown complete");
+        CefShutdown();
+        m_bInitialized = false;
+        SAL_INFO("officelabs.cef", "CEF shutdown complete");
+    }
+    catch (const std::exception& e)
+    {
+        // Log and continue: the process is exiting anyway. CefShutdown() may
+        // not have run, but nothing can retry shutdown (m_bShuttingDown is
+        // set), so at worst CEF's process-lifetime resources are released by
+        // the OS at exit.
+        SAL_WARN("officelabs.cef",
+                 "exception during CEF shutdown (ignored): " << e.what());
+    }
+    catch (...)
+    {
+        SAL_WARN("officelabs.cef",
+                 "unknown exception during CEF shutdown (ignored)");
+    }
 }
 
 OUString CefInit::getSubprocessPath() const

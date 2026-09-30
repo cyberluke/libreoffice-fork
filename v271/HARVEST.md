@@ -68,16 +68,35 @@ tree. Patch saved at `v271/harvest/211390-sidebar-crashfix.patch`.
 ## 3. Reference: abandoned upstream AI changes (gerrit, NOT merged)
 
 - **194671** "Add AI Writing Assistant for Writer (rewrite with AI)" (Sanjay
-  Karinje, abandoned 2026-03-06): full OpenAI-compatible C++ client —
-  libcurl POST to ApiURL with `Authorization: Bearer`, config group
-  `Linguistic/AIWritingAssistant` (ApiURL/AuthKey/ModelName/Enabled),
-  options page in `cui`, rewrite dialog (5 styles), parses
-  `choices[0].message.content`. 23 files.
-- **194673** "sc: Add AI Explain Formula" (same author, abandoned 2026-01-29):
-  same helper pattern for Calc. 16 files.
-- Fetch from gerrit web UI (Download → patch) — `refs/changes/*` is not
-  fetchable anonymously; the REST `/patch` endpoint is bot-gated for direct
-  clients.
+  Karinje, created 2025-11-27, abandoned 2026-03-06): full OpenAI-compatible
+  C++ client — libcurl POST to ApiURL with `Authorization: Bearer`, config
+  group `Linguistic/AIWritingAssistant` (ApiURL/AuthKey/ModelName/Enabled),
+  options page in `cui`, rewrite dialog (5 styles, apply as tracked
+  changes), parses `choices[0].message.content`. 24 files, +1371/-1.
+- **194673** "sc: Add AI Explain Formula" (same author, created 2025-11-27,
+  abandoned 2026-01-29): same helper pattern for Calc; dialog shows cell
+  ref + formula, auto-explains. 16 files, +686/-0. NOT standalone — reuses
+  the `Linguistic.xcs` schema added by 194671.
+- Both fetched anonymously into `refs/harvest/194671` + `refs/harvest/194673`
+  via `git fetch https://git.libreoffice.org/core refs/changes/71/194671/2`
+  (Gerrit advertises this ref in its own REST `fetch` metadata — earlier
+  failure was from trying the GitHub mirror instead of `git.libreoffice.org`).
+  Exported to `v271/harvest/194671-ai-writing-assistant.patch` (72 KB) and
+  `v271/harvest/194673-ai-explain-formula.patch` (36 KB).
+- Quality verdict (code inspected): **promising sketches, not merge-ready**.
+  CI never passed (PS1: macOS linker error; PS2: clang-format; 194673:
+  `-Werror=shadow` in `cellsh3.cxx` — never fixed). No human Code-Review
+  vote ever (+1/+2 absent); abandoned by the review bot for inactivity.
+  Code issues: blocking libcurl on the UI thread with `Application::Yield()`
+  (UI freeze, no cancel/streaming), hardcoded `/tmp/ai_debug.log` debug
+  logging, `boost::property_tree` temperature-as-string hack, generic error
+  strings. ~10 months stale vs current master.
+- Gap vs `officelabs/`: (1) rewrite-selection-with-style-presets incl.
+  tracked-changes apply — officelabs only has ghost-text inline completion;
+  (2) formula explanation — absent in officelabs; (3) user-configurable
+  endpoint/auth/model via Tools→Options — officelabs `AgentHttp` targets a
+  fixed local agent `http://127.0.0.1:8766` (env `OFFICELABS_AGENT_PORT`
+  only), no config UI, no key storage.
 
 ## 4. Corrected fact: no C++ WebView ever existed in LibreOffice
 
@@ -93,7 +112,49 @@ project (Tor Lillqvist, 2026-09) builds a WebView2-based window shell with a
 `origin/collaboraoffice/online` (not master). That branch is the reference for
 a native WebView2 embed without CEF.
 
-## 5. Other context
+## 6. Port: rewrite dialog + ghost-text integration (2026-09-28)
+
+The gap list in §3 was acted on: gap (1) is now implemented in-repo against
+the officelabs panel, using the 194671 dialog shape but **no sw dependency**
+(UNO-only document access) and **no blocking UI calls** (worker-thread fetch).
+All of it is CEF-gated (`ENABLE_CEF`), like the panel itself.
+
+- `officelabs/inc/officelabs/RewriteProtocol.hxx` + `source/RewriteProtocol.cxx`
+  (new): extends the agent `/completions/` protocol with `mode=rewrite` —
+  `{"text","style","mode":"rewrite","max_suggestions":1}` with
+  `X-OfficeLabs-Feature: rewrite`, 60 s budget; response parsed with the
+  existing `parseFirstSuggestion` shape (`{"suggestions":[{"text"}]}`);
+  newlines preserved (rewrite ≠ single-line completion). Styles: clarity,
+  formal, concise, simpler, grammar, improve.
+- `DocumentController::replaceSelection()` (new): undoable selection
+  replacement via `XText::insertString(range, text, bAbsorb=true)` inside an
+  undo context; collapsed caret falls back to insert.
+- `InlineCompletionController::showExternalSuggestion(text, bReplaceSelection)`
+  (new): shows an externally produced suggestion (rewrite) as ghost text at
+  the caret with the standard interaction — **Tab accepts** (replacing the
+  selection), Escape/typing/mouse dismisses. `stillValid()` is skipped for
+  external suggestions (stale request context), but Tab refuses when the
+  selection it was anchored to is gone; type-through is disabled (a rewrite
+  does not continue typed text). `hideGhost()` clears the external flags.
+- `WebViewMessageHandler`: new cefQuery types `rewriteGenerate`
+  ({text, style} → `{"suggestion": ...}`, fetch on a detached worker),
+  `rewriteApply` ({suggestion, mode: "replace"|"ghost"}), `rewriteOpenDialog`
+  (native modal dialog). The React UI (external repo) can drive the whole
+  flow with these three calls.
+- `RewriteDialog` (new, `officelabs/ui/rewrite.ui` — ported from 194671's
+  `airewritedialog.ui`): style combo, read-only original, editable
+  suggestion, Generate (async, status label), Replace (undoable). Tracked-
+  changes apply was dropped — no sw shell access from officelabs; redline
+  apply belongs to a future sw-side UNO service.
+- Build: `Library_officelabs.mk` (+2 objects, CEF block), `UIConfig_officelabs.mk`
+  (+rewrite.ui), `CppunitTest_officelabs_controller.mk` (+test_rewrite_protocol,
+  +curl external), new `qa/cppunit/test_rewrite_protocol.cxx` (5 pure-function
+  tests).
+- Agent-side contract (sidecar): implement `mode=rewrite` on `/completions/`
+  keyed off the `style` field; reply is the standard `suggestions[].text`
+  envelope. Not verified against a live agent yet (no build env).
+
+## 7. Other context
 
 - The GitHub mirror has 65 PRs, none merged (development is gerrit-only).
 - V271 baseline commit `2f2825a534ab` holds the officecfg branding + v271

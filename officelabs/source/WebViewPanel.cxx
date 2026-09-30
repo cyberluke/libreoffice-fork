@@ -68,6 +68,7 @@
 #include <toolkit/helper/vclunohelper.hxx>
 
 #include <com/sun/star/lang/IllegalArgumentException.hpp>
+#include <com/sun/star/frame/XModel3.hpp>
 #include <com/sun/star/text/XTextDocument.hpp>
 #include <com/sun/star/sheet/XSpreadsheetDocument.hpp>
 #include <com/sun/star/drawing/XDrawPagesSupplier.hpp>

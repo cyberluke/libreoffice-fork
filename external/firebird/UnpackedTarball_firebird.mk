@@ -59,6 +59,7 @@ ifeq ($(OS),WNT)
 $(eval $(call gb_UnpackedTarball_add_patches,firebird,\
 	external/firebird/firebird-cygwin-msvc.patch \
 	external/firebird/firebird-cygwin-msvc-warnings.patch \
+	external/firebird/firebird-skip-examples.patch \
 ))
 endif
 

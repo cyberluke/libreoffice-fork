@@ -1,0 +1,1690 @@
+From 0cbf648d548a9bd16d3a8ea24076954a1483537c Mon Sep 17 00:00:00 2001
+From: Sanjay Karinje <sanjay.karinje.8@gmail.com>
+Date: Wed, 26 Nov 2025 20:11:53 -0600
+Subject: [PATCH] Add AI Writing Assistant for Writer (rewrite with AI)
+
+Adds a new AI-powered text rewriting feature to LibreOffice Writer that
+allows users to select text and have it rewritten using an OpenAI-compatible
+API with different style options.
+
+Feature:
+- New menu entry: Format > Rewrite with AI
+- Context menu entry when text is selected
+- Dialog with style options (Improve clarity, More formal, More concise,
+  Simpler language, Fix grammar)
+- Shows original text and AI suggestion side-by-side
+- User can edit the suggestion before applying
+- Two apply modes:
+  - "Apply as Tracked Changes" - creates redlines for review
+  - "Replace Directly" - replaces without tracking
+
+Configuration:
+- Tools > Options > Language Settings > AI Writing Assistant
+- Configurable API URL (OpenAI-compatible endpoints)
+- API key and model name settings
+- Enable/disable toggle
+
+Technical:
+- Uses libcurl for HTTP requests (guarded by HAVE_FEATURE_CURL)
+- Configuration stored in officecfg Linguistic.xcs schema
+- Follows existing DeepL translation feature patterns
+
+Change-Id: I1a2f739baa4ec271a873c71c7101861332a2b496
+---
+ cui/Library_cui.mk                            |   1 +
+ cui/UIConfig_cui.mk                           |   1 +
+ cui/inc/treeopt.hrc                           |   3 +-
+ cui/source/options/optaiwritingassistant.cxx  |  89 +++++
+ cui/source/options/optaiwritingassistant.hxx  |  31 ++
+ cui/source/options/treeopt.cxx                |   2 +
+ cui/uiconfig/ui/optaiwritingassistantpage.ui  | 194 ++++++++++
+ include/sfx2/pageids.hxx                      |   1 +
+ .../openoffice/Office/UI/WriterCommands.xcu   |   8 +
+ .../org/openoffice/Office/Linguistic.xcs      |  32 ++
+ sw/Library_sw.mk                              |   3 +
+ sw/UIConfig_swriter.mk                        |   1 +
+ sw/inc/cmdid.h                                |   1 +
+ sw/inc/strings.hrc                            |   4 +
+ sw/sdi/_textsh.sdi                            |   6 +
+ sw/sdi/swriter.sdi                            |  18 +
+ sw/source/uibase/inc/aihelper.hxx             |  49 +++
+ sw/source/uibase/inc/airewritedialog.hxx      |  61 ++++
+ sw/source/uibase/misc/airewritedialog.cxx     | 283 +++++++++++++++
+ sw/source/uibase/shells/aihelper.cxx          | 333 ++++++++++++++++++
+ sw/source/uibase/shells/textsh1.cxx           |  33 ++
+ sw/uiconfig/swriter/menubar/menubar.xml       |   1 +
+ sw/uiconfig/swriter/popupmenu/text.xml        |   1 +
+ sw/uiconfig/swriter/ui/airewritedialog.ui     | 216 ++++++++++++
+ 24 files changed, 1371 insertions(+), 1 deletion(-)
+ create mode 100644 cui/source/options/optaiwritingassistant.cxx
+ create mode 100644 cui/source/options/optaiwritingassistant.hxx
+ create mode 100644 cui/uiconfig/ui/optaiwritingassistantpage.ui
+ create mode 100644 sw/source/uibase/inc/aihelper.hxx
+ create mode 100644 sw/source/uibase/inc/airewritedialog.hxx
+ create mode 100644 sw/source/uibase/misc/airewritedialog.cxx
+ create mode 100644 sw/source/uibase/shells/aihelper.cxx
+ create mode 100644 sw/uiconfig/swriter/ui/airewritedialog.ui
+
+diff --git a/cui/Library_cui.mk b/cui/Library_cui.mk
+index a20ca726d8f0..120ebf937584 100644
+--- a/cui/Library_cui.mk
++++ b/cui/Library_cui.mk
+@@ -195,6 +195,7 @@ $(eval $(call gb_Library_add_exception_objects,cui,\
+     cui/source/options/opthtml \
+     cui/source/options/optlanguagetool \
+     cui/source/options/optdeepl \
++    cui/source/options/optaiwritingassistant \
+     cui/source/options/optinet2 \
+     cui/source/options/optjava \
+     cui/source/options/optjsearch \
+diff --git a/cui/UIConfig_cui.mk b/cui/UIConfig_cui.mk
+index 5d1db7a5ad79..2b4f3df02ce7 100644
+--- a/cui/UIConfig_cui.mk
++++ b/cui/UIConfig_cui.mk
+@@ -138,6 +138,7 @@ $(eval $(call gb_UIConfig_add_uifiles,cui,\
+ 	cui/uiconfig/ui/optctlpage \
+ 	cui/uiconfig/ui/optchartcolorspage \
+ 	cui/uiconfig/ui/optdeeplpage \
++	cui/uiconfig/ui/optaiwritingassistantpage \
+ 	cui/uiconfig/ui/optemailpage \
+ 	cui/uiconfig/ui/optfltrpage \
+ 	cui/uiconfig/ui/optfltrembedpage \
+diff --git a/cui/inc/treeopt.hrc b/cui/inc/treeopt.hrc
+index 0edd9c3aa06d..db4890104c04 100644
+--- a/cui/inc/treeopt.hrc
++++ b/cui/inc/treeopt.hrc
+@@ -55,7 +55,8 @@ const std::pair<TranslateId, sal_uInt16> SID_LANGUAGE_OPTIONS_RES[] =
+     { NC_("SID_LANGUAGE_OPTIONS_RES", "Asian Layout"),  RID_SVXPAGE_ASIAN_LAYOUT },
+     { NC_("SID_LANGUAGE_OPTIONS_RES", "Complex Text Layout"),  RID_SVXPAGE_OPTIONS_CTL },
+     { NC_("SID_LANGUAGE_OPTIONS_RES", "LanguageTool Server"),  RID_SVXPAGE_LANGTOOL_OPTIONS },
+-    { NC_("SID_LANGUAGE_OPTIONS_RES", "DeepL Server"),  RID_SVXPAGE_DEEPL_OPTIONS }
++    { NC_("SID_LANGUAGE_OPTIONS_RES", "DeepL Server"),  RID_SVXPAGE_DEEPL_OPTIONS },
++    { NC_("SID_LANGUAGE_OPTIONS_RES", "AI Writing Assistant"),  RID_SVXPAGE_AIWRITING_OPTIONS }
+ };
+ 
+ const std::pair<TranslateId, sal_uInt16> SID_INET_DLG_RES[] =
+diff --git a/cui/source/options/optaiwritingassistant.cxx b/cui/source/options/optaiwritingassistant.cxx
+new file mode 100644
+index 000000000000..9fdb8364316d
+--- /dev/null
++++ b/cui/source/options/optaiwritingassistant.cxx
+@@ -0,0 +1,89 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++#include "optaiwritingassistant.hxx"
++#include <officecfg/Office/Linguistic.hxx>
++#include <comphelper/configuration.hxx>
++
++OptAIWritingAssistantTabPage::OptAIWritingAssistantTabPage(weld::Container* pPage,
++                                                           weld::DialogController* pController,
++                                                           const SfxItemSet& rSet)
++    : SfxTabPage(pPage, pController, u"cui/ui/optaiwritingassistantpage.ui"_ustr,
++                 u"OptAIWritingAssistantPage"_ustr, &rSet)
++    , m_xEnabled(m_xBuilder->weld_check_button(u"enabled"_ustr))
++    , m_xAPIUrl(m_xBuilder->weld_entry(u"apiurl"_ustr))
++    , m_xAuthKey(m_xBuilder->weld_entry(u"authkey"_ustr))
++    , m_xModelName(m_xBuilder->weld_entry(u"modelname"_ustr))
++{
++}
++
++OptAIWritingAssistantTabPage::~OptAIWritingAssistantTabPage() {}
++
++void OptAIWritingAssistantTabPage::Reset(const SfxItemSet*)
++{
++    // Load Enabled state
++    bool bEnabled = officecfg::Office::Linguistic::AIWritingAssistant::Enabled::get();
++    m_xEnabled->set_active(bEnabled);
++
++    // Load API URL
++    std::optional<OUString> oApiUrl
++        = officecfg::Office::Linguistic::AIWritingAssistant::ApiURL::get();
++    if (oApiUrl && !oApiUrl->isEmpty())
++        m_xAPIUrl->set_text(*oApiUrl);
++
++    // Load Auth Key
++    std::optional<OUString> oAuthKey
++        = officecfg::Office::Linguistic::AIWritingAssistant::AuthKey::get();
++    if (oAuthKey && !oAuthKey->isEmpty())
++        m_xAuthKey->set_text(*oAuthKey);
++
++    // Load Model Name
++    std::optional<OUString> oModelName
++        = officecfg::Office::Linguistic::AIWritingAssistant::ModelName::get();
++    if (oModelName && !oModelName->isEmpty())
++        m_xModelName->set_text(*oModelName);
++}
++
++OUString OptAIWritingAssistantTabPage::GetAllStrings()
++{
++    OUString sAllStrings;
++    OUString labels[] = { u"label1"_ustr, u"label2"_ustr, u"label3"_ustr,
++                          u"label4"_ustr, u"label5"_ustr, u"helplabel"_ustr };
++
++    for (const auto& label : labels)
++    {
++        if (const auto pString = m_xBuilder->weld_label(label))
++            sAllStrings += pString->get_label() + " ";
++    }
++
++    return sAllStrings.replaceAll("_", "");
++}
++
++bool OptAIWritingAssistantTabPage::FillItemSet(SfxItemSet*)
++{
++    std::shared_ptr<comphelper::ConfigurationChanges> batch(
++        comphelper::ConfigurationChanges::create());
++
++    officecfg::Office::Linguistic::AIWritingAssistant::Enabled::set(m_xEnabled->get_active(), batch);
++    officecfg::Office::Linguistic::AIWritingAssistant::ApiURL::set(m_xAPIUrl->get_text(), batch);
++    officecfg::Office::Linguistic::AIWritingAssistant::AuthKey::set(m_xAuthKey->get_text(), batch);
++    officecfg::Office::Linguistic::AIWritingAssistant::ModelName::set(m_xModelName->get_text(), batch);
++
++    batch->commit();
++    return false;
++}
++
++std::unique_ptr<SfxTabPage> OptAIWritingAssistantTabPage::Create(weld::Container* pPage,
++                                                                  weld::DialogController* pController,
++                                                                  const SfxItemSet* rAttrSet)
++{
++    return std::make_unique<OptAIWritingAssistantTabPage>(pPage, pController, *rAttrSet);
++}
++
++/* vim:set shiftwidth=4 softtabstop=4 expandtab: */
+diff --git a/cui/source/options/optaiwritingassistant.hxx b/cui/source/options/optaiwritingassistant.hxx
+new file mode 100644
+index 000000000000..5e83ce9f9e01
+--- /dev/null
++++ b/cui/source/options/optaiwritingassistant.hxx
+@@ -0,0 +1,31 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++#pragma once
++#include <sfx2/tabdlg.hxx>
++
++class OptAIWritingAssistantTabPage : public SfxTabPage
++{
++public:
++    OptAIWritingAssistantTabPage(weld::Container* pPage, weld::DialogController* pController,
++                                  const SfxItemSet& rSet);
++    virtual ~OptAIWritingAssistantTabPage() override;
++    static std::unique_ptr<SfxTabPage>
++    Create(weld::Container* pPage, weld::DialogController* pController, const SfxItemSet* rAttrSet);
++
++    virtual OUString GetAllStrings() override;
++
++    virtual bool FillItemSet(SfxItemSet* rSet) override;
++    virtual void Reset(const SfxItemSet* rSet) override;
++
++private:
++    std::unique_ptr<weld::CheckButton> m_xEnabled;
++    std::unique_ptr<weld::Entry> m_xAPIUrl;
++    std::unique_ptr<weld::Entry> m_xAuthKey;
++    std::unique_ptr<weld::Entry> m_xModelName;
++};
+diff --git a/cui/source/options/treeopt.cxx b/cui/source/options/treeopt.cxx
+index 7873134ba4d8..d43e92bedb72 100644
+--- a/cui/source/options/treeopt.cxx
++++ b/cui/source/options/treeopt.cxx
+@@ -60,6 +60,7 @@
+ #include "optbasic.hxx"
+ #include "optlanguagetool.hxx"
+ #include "optdeepl.hxx"
++#include "optaiwritingassistant.hxx"
+ 
+ // include search util
+ #include <com/sun/star/util/SearchFlags.hpp>
+@@ -268,6 +269,7 @@ static std::unique_ptr<SfxTabPage> CreateGeneralTabPage(sal_uInt16 nId, weld::Co
+         case RID_SVXPAGE_OPTIONS_CTL:               fnCreate = &SvxCTLOptionsPage::Create ; break;
+         case RID_SVXPAGE_LANGTOOL_OPTIONS:          fnCreate = &OptLanguageToolTabPage::Create ; break;
+         case RID_SVXPAGE_DEEPL_OPTIONS:             fnCreate = &OptDeeplTabPage::Create ; break;
++        case RID_SVXPAGE_AIWRITING_OPTIONS:         fnCreate = &OptAIWritingAssistantTabPage::Create ; break;
+         case RID_SVXPAGE_OPTIONS_JAVA:              fnCreate = &SvxJavaOptionsPage::Create ; break;
+         case RID_SVXPAGE_ONLINEUPDATE:              fnCreate = &SvxOnlineUpdateTabPage::Create; break;
+         case RID_OPTPAGE_CHART_DEFCOLORS:           fnCreate = &SvxDefaultColorOptPage::Create; break;
+diff --git a/cui/uiconfig/ui/optaiwritingassistantpage.ui b/cui/uiconfig/ui/optaiwritingassistantpage.ui
+new file mode 100644
+index 000000000000..b66de30e99d3
+--- /dev/null
++++ b/cui/uiconfig/ui/optaiwritingassistantpage.ui
+@@ -0,0 +1,194 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!-- Generated for LibreOffice AI Writing Assistant Options -->
++<interface domain="cui">
++  <requires lib="gtk+" version="3.24"/>
++  <object class="GtkBox" id="OptAIWritingAssistantPage">
++    <property name="visible">True</property>
++    <property name="can-focus">False</property>
++    <property name="hexpand">True</property>
++    <property name="vexpand">True</property>
++    <property name="border-width">6</property>
++    <property name="orientation">vertical</property>
++    <property name="spacing">12</property>
++    <child>
++      <object class="GtkFrame">
++        <property name="visible">True</property>
++        <property name="can-focus">False</property>
++        <property name="label-xalign">0</property>
++        <property name="shadow-type">none</property>
++        <child>
++          <!-- n-columns=1 n-rows=1 -->
++          <object class="GtkGrid" id="grid1">
++            <property name="visible">True</property>
++            <property name="can-focus">False</property>
++            <property name="margin-start">12</property>
++            <property name="margin-top">6</property>
++            <child>
++              <object class="GtkCheckButton" id="enabled">
++                <property name="label" translatable="yes" context="optaiwritingassistantpage|enabled">Enable AI Writing Assistant</property>
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="receives-default">False</property>
++                <property name="use-underline">True</property>
++                <property name="draw-indicator">True</property>
++              </object>
++              <packing>
++                <property name="left-attach">0</property>
++                <property name="top-attach">0</property>
++              </packing>
++            </child>
++          </object>
++        </child>
++        <child type="label">
++          <object class="GtkLabel" id="label1">
++            <property name="visible">True</property>
++            <property name="can-focus">False</property>
++            <property name="label" translatable="yes" context="optaiwritingassistantpage|label1">General</property>
++            <attributes>
++              <attribute name="weight" value="bold"/>
++            </attributes>
++          </object>
++        </child>
++      </object>
++      <packing>
++        <property name="expand">False</property>
++        <property name="fill">True</property>
++        <property name="position">0</property>
++      </packing>
++    </child>
++    <child>
++      <object class="GtkFrame">
++        <property name="visible">True</property>
++        <property name="can-focus">False</property>
++        <property name="label-xalign">0</property>
++        <property name="shadow-type">none</property>
++        <child>
++          <!-- n-columns=2 n-rows=3 -->
++          <object class="GtkGrid" id="grid2">
++            <property name="visible">True</property>
++            <property name="can-focus">False</property>
++            <property name="margin-start">12</property>
++            <property name="margin-top">6</property>
++            <property name="row-spacing">6</property>
++            <property name="column-spacing">12</property>
++            <child>
++              <object class="GtkLabel" id="label3">
++                <property name="visible">True</property>
++                <property name="can-focus">False</property>
++                <property name="halign">start</property>
++                <property name="label" translatable="yes" context="optaiwritingassistantpage|label3">API URL:</property>
++                <property name="use-underline">True</property>
++                <property name="mnemonic-widget">apiurl</property>
++              </object>
++              <packing>
++                <property name="left-attach">0</property>
++                <property name="top-attach">0</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkLabel" id="label4">
++                <property name="visible">True</property>
++                <property name="can-focus">False</property>
++                <property name="halign">start</property>
++                <property name="label" translatable="yes" context="optaiwritingassistantpage|label4">API Key:</property>
++                <property name="use-underline">True</property>
++                <property name="mnemonic-widget">authkey</property>
++              </object>
++              <packing>
++                <property name="left-attach">0</property>
++                <property name="top-attach">1</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkLabel" id="label5">
++                <property name="visible">True</property>
++                <property name="can-focus">False</property>
++                <property name="halign">start</property>
++                <property name="label" translatable="yes" context="optaiwritingassistantpage|label5">Model Name:</property>
++                <property name="use-underline">True</property>
++                <property name="mnemonic-widget">modelname</property>
++              </object>
++              <packing>
++                <property name="left-attach">0</property>
++                <property name="top-attach">2</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkEntry" id="apiurl">
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="hexpand">True</property>
++                <property name="truncate-multiline">True</property>
++                <property name="placeholder-text" translatable="yes" context="optaiwritingassistantpage|apiurl">e.g. https://api.openai.com/v1/chat/completions</property>
++              </object>
++              <packing>
++                <property name="left-attach">1</property>
++                <property name="top-attach">0</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkEntry" id="authkey">
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="hexpand">True</property>
++                <property name="visibility">False</property>
++                <property name="truncate-multiline">True</property>
++                <property name="placeholder-text" translatable="yes" context="optaiwritingassistantpage|authkey">Enter your API key</property>
++              </object>
++              <packing>
++                <property name="left-attach">1</property>
++                <property name="top-attach">1</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkEntry" id="modelname">
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="hexpand">True</property>
++                <property name="truncate-multiline">True</property>
++                <property name="placeholder-text" translatable="yes" context="optaiwritingassistantpage|modelname">e.g. gpt-3.5-turbo</property>
++              </object>
++              <packing>
++                <property name="left-attach">1</property>
++                <property name="top-attach">2</property>
++              </packing>
++            </child>
++          </object>
++        </child>
++        <child type="label">
++          <object class="GtkLabel" id="label2">
++            <property name="visible">True</property>
++            <property name="can-focus">False</property>
++            <property name="label" translatable="yes" context="optaiwritingassistantpage|label2">API Configuration</property>
++            <attributes>
++              <attribute name="weight" value="bold"/>
++            </attributes>
++          </object>
++        </child>
++      </object>
++      <packing>
++        <property name="expand">False</property>
++        <property name="fill">True</property>
++        <property name="position">1</property>
++      </packing>
++    </child>
++    <child>
++      <object class="GtkLabel" id="helplabel">
++        <property name="visible">True</property>
++        <property name="can-focus">False</property>
++        <property name="halign">start</property>
++        <property name="margin-start">12</property>
++        <property name="label" translatable="yes" context="optaiwritingassistantpage|helplabel">Configure your AI service provider credentials. Compatible with OpenAI API format.</property>
++        <property name="wrap">True</property>
++        <style>
++          <class name="dim-label"/>
++        </style>
++      </object>
++      <packing>
++        <property name="expand">False</property>
++        <property name="fill">True</property>
++        <property name="position">2</property>
++      </packing>
++    </child>
++  </object>
++</interface>
+diff --git a/include/sfx2/pageids.hxx b/include/sfx2/pageids.hxx
+index 97b9df8d868a..48d83b3d8287 100644
+--- a/include/sfx2/pageids.hxx
++++ b/include/sfx2/pageids.hxx
+@@ -57,6 +57,7 @@
+ #define RID_SVXPAGE_BASICIDE_OPTIONS        (RID_SVX_START + 209)
+ #define RID_SVXPAGE_LANGTOOL_OPTIONS        (RID_SVX_START + 210)
+ #define RID_SVXPAGE_DEEPL_OPTIONS           (RID_SVX_START + 211)
++#define RID_SVXPAGE_AIWRITING_OPTIONS       (RID_SVX_START + 212)
+ 
+ // Resource-Id's ------------------------------------------------------------
+ 
+diff --git a/officecfg/registry/data/org/openoffice/Office/UI/WriterCommands.xcu b/officecfg/registry/data/org/openoffice/Office/UI/WriterCommands.xcu
+index 634945d86b04..c195099cd38c 100644
+--- a/officecfg/registry/data/org/openoffice/Office/UI/WriterCommands.xcu
++++ b/officecfg/registry/data/org/openoffice/Office/UI/WriterCommands.xcu
+@@ -1567,6 +1567,14 @@
+           <value>1</value>
+         </prop>
+       </node>
++      <node oor:name=".uno:AIRewriteSelection" oor:op="replace">
++        <prop oor:name="Label" oor:type="xs:string">
++          <value xml:lang="en-US">Rewrite with AI...</value>
++        </prop>
++        <prop oor:name="Properties" oor:type="xs:int">
++          <value>1</value>
++        </prop>
++      </node>
+       <node oor:name=".uno:FormatColumns" oor:op="replace">
+         <prop oor:name="Label" oor:type="xs:string">
+           <value xml:lang="en-US">Co~lumns...</value>
+diff --git a/officecfg/registry/schema/org/openoffice/Office/Linguistic.xcs b/officecfg/registry/schema/org/openoffice/Office/Linguistic.xcs
+index 8fcb6a3ccd62..15e7041d3cb0 100644
+--- a/officecfg/registry/schema/org/openoffice/Office/Linguistic.xcs
++++ b/officecfg/registry/schema/org/openoffice/Office/Linguistic.xcs
+@@ -437,6 +437,38 @@
+         </prop>
+       </group>
+     </group>
++    <group oor:name="AIWritingAssistant">
++      <info>
++        <desc>Contains AI Writing Assistant settings for AI-powered text rewriting and review features.</desc>
++      </info>
++      <prop oor:name="ApiURL" oor:type="xs:string">
++        <info>
++          <desc>AI API endpoint URL (OpenAI-compatible chat completions endpoint)</desc>
++          <label>API URL for the AI writing assistant</label>
++        </info>
++        <value>https://api.openai.com/v1/chat/completions</value>
++      </prop>
++      <prop oor:name="AuthKey" oor:type="xs:string">
++        <info>
++          <desc>API authentication key for the AI service</desc>
++          <label>Auth key for the AI writing assistant API</label>
++        </info>
++      </prop>
++      <prop oor:name="ModelName" oor:type="xs:string">
++        <info>
++          <desc>AI model name to use for text generation</desc>
++          <label>Model name for the AI writing assistant</label>
++        </info>
++        <value>gpt-4o-mini</value>
++      </prop>
++      <prop oor:name="Enabled" oor:type="xs:boolean" oor:nillable="false">
++        <info>
++          <desc>Enable or disable AI writing assistant features</desc>
++          <label>Enable AI writing assistant</label>
++        </info>
++        <value>false</value>
++      </prop>
++    </group>
+     <group oor:name="Hyphenation">
+       <info>
+         <desc>Contains hyphenation relevant settings.</desc>
+diff --git a/sw/Library_sw.mk b/sw/Library_sw.mk
+index d3f93ee1bb17..39c79de47abf 100644
+--- a/sw/Library_sw.mk
++++ b/sw/Library_sw.mk
+@@ -91,6 +91,7 @@ $(eval $(call gb_Library_use_libraries,sw,\
+ 
+ $(eval $(call gb_Library_use_externals,sw,\
+ 	boost_headers \
++	$(if $(ENABLE_CURL),curl) \
+ 	frozen \
+ 	icui18n \
+ 	icuuc \
+@@ -688,6 +689,7 @@ $(eval $(call gb_Library_add_exception_objects,sw,\
+     sw/source/uibase/misc/numberingtypelistbox \
+     sw/source/uibase/misc/redlndlg \
+     sw/source/uibase/misc/swruler \
++    $(if $(ENABLE_CURL),sw/source/uibase/misc/airewritedialog) \
+     sw/source/uibase/ribbar/conarc \
+     sw/source/uibase/ribbar/concustomshape \
+     sw/source/uibase/ribbar/conform \
+@@ -711,6 +713,7 @@ $(eval $(call gb_Library_add_exception_objects,sw,\
+     sw/source/uibase/shells/grfshex \
+     sw/source/uibase/shells/langhelper \
+     sw/source/uibase/shells/translatehelper \
++    $(if $(ENABLE_CURL),sw/source/uibase/shells/aihelper) \
+     sw/source/uibase/shells/listsh \
+     sw/source/uibase/shells/mediash \
+     sw/source/uibase/shells/navsh \
+diff --git a/sw/UIConfig_swriter.mk b/sw/UIConfig_swriter.mk
+index 8c76e3d9dda3..aed093bd9712 100644
+--- a/sw/UIConfig_swriter.mk
++++ b/sw/UIConfig_swriter.mk
+@@ -192,6 +192,7 @@ $(eval $(call gb_UIConfig_add_uifiles,modules/swriter,\
+ 	sw/uiconfig/swriter/ui/insertbookmark \
+ 	sw/uiconfig/swriter/ui/insertbreak \
+ 	sw/uiconfig/swriter/ui/translationdialog \
++	sw/uiconfig/swriter/ui/airewritedialog \
+ 	sw/uiconfig/swriter/ui/insertcaption \
+ 	sw/uiconfig/swriter/ui/insertdbcolumnsdialog \
+ 	sw/uiconfig/swriter/ui/insertfootnote \
+diff --git a/sw/inc/cmdid.h b/sw/inc/cmdid.h
+index ce9293a0b4ef..83fb45da2f1f 100644
+--- a/sw/inc/cmdid.h
++++ b/sw/inc/cmdid.h
+@@ -683,6 +683,7 @@ class SwUINumRuleItem;
+ #define FN_UNO_LINEBREAK (FN_EXTRA2 + 131)
+ #define FN_UNO_CONTENT_CONTROL (FN_EXTRA2 + 132)
+ #define FN_UNO_IS_CONTENT_EMPTY  (FN_EXTRA2 + 133)
++#define FN_AI_REWRITE_SELECTION (FN_EXTRA2 + 134)
+ 
+ // Area: Help
+ // Region: Traveling & Selection
+diff --git a/sw/inc/strings.hrc b/sw/inc/strings.hrc
+index 65aae7f8d4f2..a846c4c30cc0 100644
+--- a/sw/inc/strings.hrc
++++ b/sw/inc/strings.hrc
+@@ -301,6 +301,10 @@
+ #define STR_HIDE_NOTE_AUTHOR                    NC_("STR_HIDE_NOTE_AUTHOR", "H~ide All Comments by $1")
+ #define STR_OUTLINE_NUMBERING                   NC_("STR_OUTLINE_NUMBERING", "Heading Numbering")
+ #define STR_STATSTR_SWTRANSLATE                 NC_("STR_STATSTR_SWTRANSLATE", "Translating document...")
++#define STR_AI_NOT_CONFIGURED                   NC_("STR_AI_NOT_CONFIGURED", "AI Writing Assistant is not configured. Please set API key in Tools > Options > Language Settings > AI Writing Assistant.")
++#define STR_AI_NO_SELECTION                     NC_("STR_AI_NO_SELECTION", "No text selected. Please select the text you want to rewrite.")
++#define STR_AI_GENERATION_FAILED                NC_("STR_AI_GENERATION_FAILED", "Failed to generate AI suggestion. Please check your API configuration and try again.")
++#define STR_AI_REGENERATE                       NC_("STR_AI_REGENERATE", "~Regenerate")
+ /* To translators: $1 == will be replaced by STR_WORDCOUNT_WORDARG, and $2 by STR_WORDCOUNT_COLARG
+    e.g. Selected: 1 word, 2 characters */
+ #define STR_WORDCOUNT                           NC_("STR_WORDCOUNT", "Selected: $1, $2")
+diff --git a/sw/sdi/_textsh.sdi b/sw/sdi/_textsh.sdi
+index 87aeb4c9935d..dc25c659b724 100644
+--- a/sw/sdi/_textsh.sdi
++++ b/sw/sdi/_textsh.sdi
+@@ -1970,5 +1970,11 @@ interface BaseText
+         StateMethod = GetState ;
+     ]
+ 
++    FN_AI_REWRITE_SELECTION
++    [
++        ExecMethod = Execute ;
++        StateMethod = GetState ;
++    ]
++
+ }  // end of interface text
+ 
+diff --git a/sw/sdi/swriter.sdi b/sw/sdi/swriter.sdi
+index 7209b09ed571..36419f1d6299 100644
+--- a/sw/sdi/swriter.sdi
++++ b/sw/sdi/swriter.sdi
+@@ -9033,3 +9033,21 @@ SfxVoidItem CopyFieldDialog FN_COPY_FIELD
+     ToolBoxConfig = FALSE,
+     GroupId = SfxGroupId::Edit;
+ ]
++
++SfxVoidItem AIRewriteSelection FN_AI_REWRITE_SELECTION
++()
++[
++    AutoUpdate = FALSE,
++    FastCall = FALSE,
++    ReadOnlyDoc = FALSE,
++    Toggle = FALSE,
++    Container = FALSE,
++    RecordAbsolute = FALSE,
++    RecordPerSet;
++    Asynchron;
++
++    AccelConfig = TRUE,
++    MenuConfig = TRUE,
++    ToolBoxConfig = TRUE,
++    GroupId = SfxGroupId::Edit;
++]
+diff --git a/sw/source/uibase/inc/aihelper.hxx b/sw/source/uibase/inc/aihelper.hxx
+new file mode 100644
+index 000000000000..ddb1eb32e0ba
+--- /dev/null
++++ b/sw/source/uibase/inc/aihelper.hxx
+@@ -0,0 +1,49 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++#pragma once
++
++#include <sal/config.h>
++
++#include <config_features.h>
++#include <config_wasm_strip.h>
++
++#include <swtypes.hxx>
++#include <rtl/ustring.hxx>
++
++#if HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++namespace SwAIHelper
++{
++struct SW_DLLPUBLIC AIConfig final
++{
++    OUString m_sApiUrl;
++    OUString m_sAuthKey;
++    OUString m_sModelName;
++};
++
++/// Get AI configuration from LibreOffice settings
++SW_DLLPUBLIC AIConfig GetAIConfig();
++
++/// Check if AI features are enabled and configured
++SW_DLLPUBLIC bool IsAIConfigured();
++
++/// Call the AI chat completion API with a system prompt and user prompt
++/// Returns the AI-generated response text
++SW_DLLPUBLIC OUString CallChatCompletion(const AIConfig& rConfig,
++                                          const OUString& rSystemPrompt,
++                                          const OUString& rUserPrompt);
++
++/// Build the system prompt for the rewrite feature based on the selected style
++SW_DLLPUBLIC OUString BuildRewriteSystemPrompt(const OUString& rStyle);
++
++} // namespace SwAIHelper
++
++#endif // HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++/* vim:set shiftwidth=4 softtabstop=4 expandtab: */
+diff --git a/sw/source/uibase/inc/airewritedialog.hxx b/sw/source/uibase/inc/airewritedialog.hxx
+new file mode 100644
+index 000000000000..e561d307baed
+--- /dev/null
++++ b/sw/source/uibase/inc/airewritedialog.hxx
+@@ -0,0 +1,61 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++#pragma once
++
++#include <sal/config.h>
++
++#include <config_features.h>
++#include <config_wasm_strip.h>
++
++#if HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++#include <vcl/weld.hxx>
++#include <rtl/ustring.hxx>
++
++class SwWrtShell;
++
++/// Dialog for AI-powered text rewriting
++class SwAIRewriteDialog final : public weld::GenericDialogController
++{
++public:
++    SwAIRewriteDialog(weld::Window* pParent, SwWrtShell& rSh);
++
++private:
++    SwWrtShell& m_rWrtSh;
++    OUString m_sOriginalText;
++    OUString m_sSuggestion;
++    bool m_bGenerating;
++    bool m_bHasGenerated;
++
++    std::unique_ptr<weld::ComboBox> m_xStyleBox;
++    std::unique_ptr<weld::TextView> m_xOriginalText;
++    std::unique_ptr<weld::TextView> m_xSuggestionText;
++    std::unique_ptr<weld::Button> m_xGenerateBtn;
++    std::unique_ptr<weld::Button> m_xApplyTrackedBtn;
++    std::unique_ptr<weld::Button> m_xReplaceBtn;
++    std::unique_ptr<weld::Button> m_xCancelBtn;
++
++    DECL_LINK(GenerateHdl, weld::Button&, void);
++    DECL_LINK(ApplyTrackedHdl, weld::Button&, void);
++    DECL_LINK(ReplaceHdl, weld::Button&, void);
++    DECL_LINK(CancelHdl, weld::Button&, void);
++
++    /// Apply the AI suggestion as tracked changes (redlines)
++    void ApplyAsTrackedChanges();
++
++    /// Replace the selection directly without tracking
++    void ReplaceDirectly();
++
++    /// Update button states based on whether we have a suggestion
++    void UpdateButtonStates();
++};
++
++#endif // HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++/* vim:set shiftwidth=4 softtabstop=4 expandtab: */
+diff --git a/sw/source/uibase/misc/airewritedialog.cxx b/sw/source/uibase/misc/airewritedialog.cxx
+new file mode 100644
+index 000000000000..ac92aef1bd1a
+--- /dev/null
++++ b/sw/source/uibase/misc/airewritedialog.cxx
+@@ -0,0 +1,283 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++#include <sal/config.h>
++
++#include <config_features.h>
++#include <config_wasm_strip.h>
++
++#if HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++#include <airewritedialog.hxx>
++#include <aihelper.hxx>
++#include <wrtsh.hxx>
++#include <view.hxx>
++#include <docsh.hxx>
++#include <doc.hxx>
++#include <IDocumentRedlineAccess.hxx>
++#include <redline.hxx>
++#include <sal/log.hxx>
++#include <vcl/svapp.hxx>
++#include <vcl/weld.hxx>
++#include <strings.hrc>
++#include <swtypes.hxx>
++#include <fstream>
++#include <ctime>
++
++// Debug logging helper
++static void DialogDebugLog(const char* msg)
++{
++    std::ofstream logFile("/tmp/ai_debug.log", std::ios::app);
++    if (logFile.is_open())
++    {
++        std::time_t now = std::time(nullptr);
++        char timeStr[64];
++        std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
++        logFile << "[" << timeStr << "] [Dialog] " << msg << std::endl;
++        logFile.close();
++    }
++}
++
++static void DialogDebugLog(const std::string& msg)
++{
++    DialogDebugLog(msg.c_str());
++}
++
++SwAIRewriteDialog::SwAIRewriteDialog(weld::Window* pParent, SwWrtShell& rSh)
++    : GenericDialogController(pParent, u"modules/swriter/ui/airewritedialog.ui"_ustr,
++                              u"AIRewriteDialog"_ustr)
++    , m_rWrtSh(rSh)
++    , m_bGenerating(false)
++    , m_bHasGenerated(false)
++    , m_xStyleBox(m_xBuilder->weld_combo_box(u"stylebox"_ustr))
++    , m_xOriginalText(m_xBuilder->weld_text_view(u"originaltext"_ustr))
++    , m_xSuggestionText(m_xBuilder->weld_text_view(u"suggestiontext"_ustr))
++    , m_xGenerateBtn(m_xBuilder->weld_button(u"generate"_ustr))
++    , m_xApplyTrackedBtn(m_xBuilder->weld_button(u"applytracked"_ustr))
++    , m_xReplaceBtn(m_xBuilder->weld_button(u"replace"_ustr))
++    , m_xCancelBtn(m_xBuilder->weld_button(u"cancel"_ustr))
++{
++    // Set fixed dialog size - width 660px, height 500px
++    // Wide enough to fit all buttons comfortably
++    m_xDialog->set_size_request(660, 500);
++
++    // Get selected text
++    m_sOriginalText = m_rWrtSh.GetSelText();
++    m_xOriginalText->set_text(m_sOriginalText);
++
++    // Set default style
++    m_xStyleBox->set_active(0);
++
++    // Connect button handlers
++    m_xGenerateBtn->connect_clicked(LINK(this, SwAIRewriteDialog, GenerateHdl));
++    m_xApplyTrackedBtn->connect_clicked(LINK(this, SwAIRewriteDialog, ApplyTrackedHdl));
++    m_xReplaceBtn->connect_clicked(LINK(this, SwAIRewriteDialog, ReplaceHdl));
++    m_xCancelBtn->connect_clicked(LINK(this, SwAIRewriteDialog, CancelHdl));
++
++    UpdateButtonStates();
++}
++
++void SwAIRewriteDialog::UpdateButtonStates()
++{
++    bool bHasSuggestion = !m_sSuggestion.isEmpty();
++
++    // Initially: only Generate button visible
++    // After generation: show Regenerate, Apply, Replace, Cancel
++    if (!m_bHasGenerated)
++    {
++        // Initial state: only Generate visible (highlighted as default)
++        m_xGenerateBtn->set_visible(true);
++        m_xGenerateBtn->set_sensitive(!m_bGenerating);
++        m_xApplyTrackedBtn->set_visible(false);
++        m_xReplaceBtn->set_visible(false);
++        m_xCancelBtn->set_visible(false);
++    }
++    else
++    {
++        // After generation: show all buttons
++        // Change Generate label to Regenerate
++        m_xGenerateBtn->set_label(SwResId(STR_AI_REGENERATE));
++        m_xGenerateBtn->set_visible(true);
++        m_xGenerateBtn->set_sensitive(!m_bGenerating);
++        m_xApplyTrackedBtn->set_visible(true);
++        m_xApplyTrackedBtn->set_sensitive(bHasSuggestion);
++        m_xReplaceBtn->set_visible(true);
++        m_xReplaceBtn->set_sensitive(bHasSuggestion);
++        m_xCancelBtn->set_visible(true);
++    }
++}
++
++IMPL_LINK_NOARG(SwAIRewriteDialog, GenerateHdl, weld::Button&, void)
++{
++    DialogDebugLog("=== GenerateHdl called ===");
++
++    if (m_bGenerating)
++    {
++        DialogDebugLog("Already generating, returning early");
++        return;
++    }
++
++    m_bGenerating = true;
++    UpdateButtonStates();
++
++    // Get selected style
++    OUString sStyle = m_xStyleBox->get_active_text();
++    DialogDebugLog(std::string("Selected style: ") + OUStringToOString(sStyle, RTL_TEXTENCODING_UTF8).getStr());
++
++    // Get AI config
++    SwAIHelper::AIConfig aConfig = SwAIHelper::GetAIConfig();
++
++    if (aConfig.m_sApiUrl.isEmpty() || aConfig.m_sAuthKey.isEmpty())
++    {
++        SAL_WARN("sw.ui", "SwAIRewriteDialog: AI not configured");
++        std::unique_ptr<weld::MessageDialog> xBox(
++            Application::CreateMessageDialog(m_xDialog.get(),
++                VclMessageType::Warning, VclButtonsType::Ok,
++                SwResId(STR_AI_NOT_CONFIGURED)));
++        xBox->run();
++        m_bGenerating = false;
++        UpdateButtonStates();
++        return;
++    }
++
++    // Build the prompt
++    OUString sSystemPrompt = SwAIHelper::BuildRewriteSystemPrompt(sStyle);
++    DialogDebugLog("Calling AI API...");
++
++    // Call the AI API
++    m_sSuggestion = SwAIHelper::CallChatCompletion(aConfig, sSystemPrompt, m_sOriginalText);
++
++    DialogDebugLog(std::string("API returned, suggestion length: ") + std::to_string(m_sSuggestion.getLength()));
++
++    if (m_sSuggestion.isEmpty())
++    {
++        DialogDebugLog("ERROR: Suggestion is empty!");
++        SAL_WARN("sw.ui", "SwAIRewriteDialog: AI returned empty response");
++        std::unique_ptr<weld::MessageDialog> xBox(
++            Application::CreateMessageDialog(m_xDialog.get(),
++                VclMessageType::Warning, VclButtonsType::Ok,
++                SwResId(STR_AI_GENERATION_FAILED)));
++        xBox->run();
++    }
++    else
++    {
++        DialogDebugLog(std::string("Setting suggestion text, first 100 chars: ") +
++                       OUStringToOString(m_sSuggestion.copy(0, std::min<sal_Int32>(100, m_sSuggestion.getLength())),
++                                         RTL_TEXTENCODING_UTF8).getStr());
++        SAL_WARN("sw.ui", "SwAIRewriteDialog: Setting suggestion text, length=" << m_sSuggestion.getLength());
++
++        // Set the new text
++        m_xSuggestionText->set_text(m_sSuggestion);
++        DialogDebugLog("set_text called");
++
++        // Select all text to make it visible (workaround for rendering issue)
++        m_xSuggestionText->select_region(0, -1);
++        DialogDebugLog("select_region(0, -1) called");
++
++        // Grab focus to force the widget to redraw
++        m_xSuggestionText->grab_focus();
++        DialogDebugLog("grab_focus called");
++
++        // Force UI to process pending events and redraw after CURL blocked the main thread
++        Application::Yield();
++        DialogDebugLog("Application::Yield() called");
++
++        // Verify what was actually set
++        OUString sVerify = m_xSuggestionText->get_text();
++        DialogDebugLog(std::string("VERIFY: get_text() returned length=") + std::to_string(sVerify.getLength()));
++
++        SAL_WARN("sw.ui", "SwAIRewriteDialog: Suggestion text set successfully");
++
++        // Mark that we've generated at least once
++        m_bHasGenerated = true;
++    }
++
++    m_bGenerating = false;
++    UpdateButtonStates();
++    DialogDebugLog("GenerateHdl completed");
++}
++
++void SwAIRewriteDialog::ApplyAsTrackedChanges()
++{
++    // Get the current suggestion (might have been edited by user)
++    OUString sSuggestion = m_xSuggestionText->get_text();
++
++    if (sSuggestion.isEmpty())
++        return;
++
++    // Get the document's redline access
++    IDocumentRedlineAccess& rRedlineAccess = m_rWrtSh.GetDoc()->getIDocumentRedlineAccess();
++
++    // Save current redline state
++    RedlineFlags eOldFlags = rRedlineAccess.GetRedlineFlags();
++
++    // Enable recording of changes
++    rRedlineAccess.SetRedlineFlags(RedlineFlags::On | RedlineFlags::ShowInsert | RedlineFlags::ShowDelete);
++
++    // Start an undo group
++    m_rWrtSh.StartAllAction();
++    m_rWrtSh.StartUndo(SwUndoId::REPLACE);
++
++    // Delete the selected text (will create a delete redline)
++    m_rWrtSh.Delete(false);
++
++    // Insert the new text (will create an insert redline)
++    m_rWrtSh.Insert(sSuggestion);
++
++    // End undo group
++    m_rWrtSh.EndUndo();
++    m_rWrtSh.EndAllAction();
++
++    // Restore previous redline state (but keep showing changes)
++    rRedlineAccess.SetRedlineFlags(eOldFlags | RedlineFlags::ShowInsert | RedlineFlags::ShowDelete);
++}
++
++void SwAIRewriteDialog::ReplaceDirectly()
++{
++    // Get the current suggestion (might have been edited by user)
++    OUString sSuggestion = m_xSuggestionText->get_text();
++
++    if (sSuggestion.isEmpty())
++        return;
++
++    // Start an undo group
++    m_rWrtSh.StartAllAction();
++    m_rWrtSh.StartUndo(SwUndoId::REPLACE);
++
++    // Delete the selected text
++    m_rWrtSh.Delete(false);
++
++    // Insert the new text
++    m_rWrtSh.Insert(sSuggestion);
++
++    // End undo group
++    m_rWrtSh.EndUndo();
++    m_rWrtSh.EndAllAction();
++}
++
++IMPL_LINK_NOARG(SwAIRewriteDialog, ApplyTrackedHdl, weld::Button&, void)
++{
++    ApplyAsTrackedChanges();
++    m_xDialog->response(RET_OK);
++}
++
++IMPL_LINK_NOARG(SwAIRewriteDialog, ReplaceHdl, weld::Button&, void)
++{
++    ReplaceDirectly();
++    m_xDialog->response(RET_OK);
++}
++
++IMPL_LINK_NOARG(SwAIRewriteDialog, CancelHdl, weld::Button&, void)
++{
++    m_xDialog->response(RET_CANCEL);
++}
++
++#endif // HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++/* vim:set shiftwidth=4 softtabstop=4 expandtab: */
+diff --git a/sw/source/uibase/shells/aihelper.cxx b/sw/source/uibase/shells/aihelper.cxx
+new file mode 100644
+index 000000000000..b1306066a729
+--- /dev/null
++++ b/sw/source/uibase/shells/aihelper.cxx
+@@ -0,0 +1,333 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4; fill-column: 100 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++#include <sal/config.h>
++
++#include <config_features.h>
++#include <config_wasm_strip.h>
++
++#if HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++#include <aihelper.hxx>
++#include <sal/log.hxx>
++#include <curl/curl.h>
++#include <rtl/string.h>
++#include <boost/property_tree/ptree.hpp>
++#include <boost/property_tree/json_parser.hpp>
++#include <systools/curlinit.hxx>
++#include <tools/long.hxx>
++#include <officecfg/Office/Linguistic.hxx>
++#include <fstream>
++#include <ctime>
++
++namespace SwAIHelper
++{
++
++// File-based debug logging helper
++static void DebugLog(const char* msg)
++{
++    std::ofstream logFile("/tmp/ai_debug.log", std::ios::app);
++    if (logFile.is_open())
++    {
++        std::time_t now = std::time(nullptr);
++        char timeStr[64];
++        std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
++        logFile << "[" << timeStr << "] " << msg << std::endl;
++        logFile.close();
++    }
++}
++
++static void DebugLog(const std::string& msg)
++{
++    DebugLog(msg.c_str());
++}
++
++AIConfig GetAIConfig()
++{
++    DebugLog("=== GetAIConfig() called ===");
++    AIConfig aConfig;
++
++    std::optional<OUString> oApiUrl = officecfg::Office::Linguistic::AIWritingAssistant::ApiURL::get();
++    std::optional<OUString> oAuthKey = officecfg::Office::Linguistic::AIWritingAssistant::AuthKey::get();
++    std::optional<OUString> oModelName = officecfg::Office::Linguistic::AIWritingAssistant::ModelName::get();
++
++    DebugLog(std::string("GetAIConfig: ApiURL has value: ") + (oApiUrl.has_value() ? "yes" : "no"));
++    DebugLog(std::string("GetAIConfig: AuthKey has value: ") + (oAuthKey.has_value() ? "yes" : "no"));
++    DebugLog(std::string("GetAIConfig: ModelName has value: ") + (oModelName.has_value() ? "yes" : "no"));
++
++    SAL_INFO("sw.ai", "GetAIConfig: ApiURL has value: " << (oApiUrl.has_value() ? "yes" : "no"));
++    SAL_INFO("sw.ai", "GetAIConfig: AuthKey has value: " << (oAuthKey.has_value() ? "yes" : "no"));
++    SAL_INFO("sw.ai", "GetAIConfig: ModelName has value: " << (oModelName.has_value() ? "yes" : "no"));
++
++    if (oApiUrl)
++    {
++        aConfig.m_sApiUrl = *oApiUrl;
++        DebugLog(std::string("GetAIConfig: ApiURL = ") + OUStringToOString(aConfig.m_sApiUrl, RTL_TEXTENCODING_UTF8).getStr());
++        SAL_INFO("sw.ai", "GetAIConfig: ApiURL = " << aConfig.m_sApiUrl);
++    }
++    if (oAuthKey)
++    {
++        aConfig.m_sAuthKey = *oAuthKey;
++        DebugLog(std::string("GetAIConfig: AuthKey length = ") + std::to_string(aConfig.m_sAuthKey.getLength()));
++        SAL_INFO("sw.ai", "GetAIConfig: AuthKey length = " << aConfig.m_sAuthKey.getLength());
++    }
++    if (oModelName)
++    {
++        aConfig.m_sModelName = *oModelName;
++        DebugLog(std::string("GetAIConfig: ModelName = ") + OUStringToOString(aConfig.m_sModelName, RTL_TEXTENCODING_UTF8).getStr());
++        SAL_INFO("sw.ai", "GetAIConfig: ModelName = " << aConfig.m_sModelName);
++    }
++
++    DebugLog("GetAIConfig() returning");
++    return aConfig;
++}
++
++bool IsAIConfigured()
++{
++    bool bEnabled = officecfg::Office::Linguistic::AIWritingAssistant::Enabled::get();
++    SAL_INFO("sw.ai", "IsAIConfigured: Enabled = " << (bEnabled ? "true" : "false"));
++
++    if (!bEnabled)
++    {
++        SAL_WARN("sw.ai", "IsAIConfigured: AI is DISABLED in configuration");
++        return false;
++    }
++
++    AIConfig aConfig = GetAIConfig();
++    bool bApiUrlOk = !aConfig.m_sApiUrl.isEmpty();
++    bool bAuthKeyOk = !aConfig.m_sAuthKey.isEmpty();
++
++    SAL_INFO("sw.ai", "IsAIConfigured: ApiURL empty=" << (bApiUrlOk ? "no" : "yes")
++             << ", AuthKey empty=" << (bAuthKeyOk ? "no" : "yes"));
++
++    if (!bApiUrlOk || !bAuthKeyOk)
++    {
++        SAL_WARN("sw.ai", "IsAIConfigured: Missing config - ApiURL ok=" << bApiUrlOk
++                 << ", AuthKey ok=" << bAuthKeyOk);
++    }
++
++    return bApiUrlOk && bAuthKeyOk;
++}
++
++OUString BuildRewriteSystemPrompt(const OUString& rStyle)
++{
++    OUString sPrompt = u"You are a writing assistant. Your task is to rewrite the given text "_ustr;
++
++    if (rStyle == "Improve clarity")
++    {
++        sPrompt += u"to make it clearer and easier to understand. "_ustr;
++    }
++    else if (rStyle == "More formal")
++    {
++        sPrompt += u"in a more formal, professional tone. "_ustr;
++    }
++    else if (rStyle == "More concise")
++    {
++        sPrompt += u"to be more concise and shorter while preserving the meaning. "_ustr;
++    }
++    else if (rStyle == "Simpler language")
++    {
++        sPrompt += u"using simpler words and shorter sentences for easier reading. "_ustr;
++    }
++    else if (rStyle == "Fix grammar")
++    {
++        sPrompt += u"by fixing any grammar, spelling, and punctuation errors. "_ustr;
++    }
++    else
++    {
++        sPrompt += u"to improve it. "_ustr;
++    }
++
++    sPrompt += u"Return ONLY the rewritten text without any explanations, comments, or additional text. "_ustr;
++    sPrompt += u"Preserve the original language of the text."_ustr;
++
++    return sPrompt;
++}
++
++OUString CallChatCompletion(const AIConfig& rConfig,
++                             const OUString& rSystemPrompt,
++                             const OUString& rUserPrompt)
++{
++    DebugLog("=== CallChatCompletion() called ===");
++
++    // Debug logging of config values
++    DebugLog(std::string("CallChatCompletion: ApiURL = '") + OUStringToOString(rConfig.m_sApiUrl, RTL_TEXTENCODING_UTF8).getStr() + "'");
++    DebugLog(std::string("CallChatCompletion: AuthKey length = ") + std::to_string(rConfig.m_sAuthKey.getLength()));
++    DebugLog(std::string("CallChatCompletion: ModelName = '") + OUStringToOString(rConfig.m_sModelName, RTL_TEXTENCODING_UTF8).getStr() + "'");
++    DebugLog(std::string("CallChatCompletion: UserPrompt length = ") + std::to_string(rUserPrompt.getLength()));
++
++    SAL_WARN("sw.ui", "CallChatCompletion: ApiURL = '" << rConfig.m_sApiUrl << "'");
++    SAL_WARN("sw.ui", "CallChatCompletion: AuthKey length = " << rConfig.m_sAuthKey.getLength());
++    SAL_WARN("sw.ui", "CallChatCompletion: ModelName = '" << rConfig.m_sModelName << "'");
++    SAL_WARN("sw.ui", "CallChatCompletion: UserPrompt length = " << rUserPrompt.getLength());
++
++    constexpr tools::Long CURL_TIMEOUT = 60L; // Longer timeout for AI responses
++
++    DebugLog("Initializing CURL...");
++    std::unique_ptr<CURL, std::function<void(CURL*)>> curl(curl_easy_init(),
++                                                           [](CURL* p) { curl_easy_cleanup(p); });
++    if (!curl)
++    {
++        DebugLog("ERROR: Failed to initialize CURL");
++        SAL_WARN("sw.ui", "AIHelper: Failed to initialize CURL");
++        return {};
++    }
++    DebugLog("CURL initialized successfully");
++
++    ::InitCurl_easy(curl.get());
++
++    OString aApiUrl = OUStringToOString(rConfig.m_sApiUrl, RTL_TEXTENCODING_UTF8);
++    SAL_WARN("sw.ui", "CallChatCompletion: Setting URL to: " << aApiUrl);
++    (void)curl_easy_setopt(curl.get(), CURLOPT_URL, aApiUrl.getStr());
++    // Don't use FAILONERROR - we want to see the response body even on errors
++    (void)curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, CURL_TIMEOUT);
++
++    // Set up response handling
++    std::string response_body;
++    (void)curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION,
++                           +[](void* buffer, size_t size, size_t nmemb, void* userp) -> size_t {
++                               if (!userp)
++                                   return 0;
++                               std::string* response = static_cast<std::string*>(userp);
++                               size_t real_size = size * nmemb;
++                               response->append(static_cast<char*>(buffer), real_size);
++                               return real_size;
++                           });
++    (void)curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, static_cast<void*>(&response_body));
++
++    // Set up headers
++    struct curl_slist* headers = nullptr;
++    headers = curl_slist_append(headers, "Content-Type: application/json");
++
++    OString aAuthHeader = "Authorization: Bearer " + OUStringToOString(rConfig.m_sAuthKey, RTL_TEXTENCODING_UTF8);
++    headers = curl_slist_append(headers, aAuthHeader.getStr());
++
++    (void)curl_easy_setopt(curl.get(), CURLOPT_HTTPHEADER, headers);
++
++    // Build JSON request body using boost::property_tree
++    boost::property_tree::ptree requestBody;
++    requestBody.put("model", OUStringToOString(rConfig.m_sModelName, RTL_TEXTENCODING_UTF8).getStr());
++
++    boost::property_tree::ptree messages;
++
++    // System message
++    boost::property_tree::ptree systemMsg;
++    systemMsg.put("role", "system");
++    systemMsg.put("content", OUStringToOString(rSystemPrompt, RTL_TEXTENCODING_UTF8).getStr());
++    messages.push_back(std::make_pair("", systemMsg));
++
++    // User message
++    boost::property_tree::ptree userMsg;
++    userMsg.put("role", "user");
++    userMsg.put("content", OUStringToOString(rUserPrompt, RTL_TEXTENCODING_UTF8).getStr());
++    messages.push_back(std::make_pair("", userMsg));
++
++    requestBody.add_child("messages", messages);
++    requestBody.put("temperature", 0.7);
++
++    std::stringstream ss;
++    boost::property_tree::write_json(ss, requestBody);
++    std::string jsonBody = ss.str();
++
++    // Fix: boost::property_tree writes numbers as strings in JSON
++    // OpenAI API requires temperature to be a number, not a string
++    // Replace "temperature": "0.7" with "temperature": 0.7
++    size_t tempPos = jsonBody.find("\"temperature\": \"");
++    if (tempPos != std::string::npos)
++    {
++        size_t valueStart = tempPos + 16; // length of "\"temperature\": \""
++        size_t valueEnd = jsonBody.find("\"", valueStart);
++        if (valueEnd != std::string::npos)
++        {
++            std::string tempValue = jsonBody.substr(valueStart, valueEnd - valueStart);
++            jsonBody = jsonBody.substr(0, tempPos) + "\"temperature\": " + tempValue +
++                       jsonBody.substr(valueEnd + 1);
++        }
++    }
++
++    DebugLog(std::string("JSON body after temperature fix (first 300 chars): ") + jsonBody.substr(0, std::min<size_t>(300, jsonBody.length())));
++    SAL_WARN("sw.ui", "CallChatCompletion: JSON request body length: " << jsonBody.length());
++    // Log first 500 chars of request for debugging (don't log full body as it may contain sensitive text)
++    SAL_WARN("sw.ui", "CallChatCompletion: JSON request (first 500 chars): "
++             << jsonBody.substr(0, std::min<size_t>(500, jsonBody.length())));
++
++    (void)curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, jsonBody.c_str());
++
++    // Perform the request
++    DebugLog("Performing CURL request...");
++    CURLcode cc = curl_easy_perform(curl.get());
++    DebugLog(std::string("CURL perform returned code: ") + std::to_string(static_cast<int>(cc)));
++
++    // Clean up headers
++    curl_slist_free_all(headers);
++
++    if (cc != CURLE_OK)
++    {
++        const char* pError = curl_easy_strerror(cc);
++        DebugLog(std::string("ERROR: CURL failed with code ") + std::to_string(static_cast<int>(cc)) + ": " + (pError ? pError : "unknown"));
++        DebugLog(std::string("Response body (if any): ") + response_body);
++        SAL_WARN("sw.ui", "AIHelper: CURL perform returned with error code " << static_cast<sal_Int32>(cc)
++                 << ": " << (pError ? pError : "unknown"));
++        SAL_WARN("sw.ui", "AIHelper: Response body (if any): " << response_body.c_str());
++        return {};
++    }
++
++    tools::Long nStatusCode = 0;
++    curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &nStatusCode);
++    DebugLog(std::string("HTTP response code: ") + std::to_string(nStatusCode));
++    DebugLog(std::string("Response body length: ") + std::to_string(response_body.length()));
++    SAL_WARN("sw.ui", "AIHelper: HTTP response code: " << nStatusCode);
++    SAL_WARN("sw.ui", "AIHelper: Response body length: " << response_body.length());
++
++    if (nStatusCode != 200)
++    {
++        DebugLog(std::string("ERROR: Non-200 status code: ") + std::to_string(nStatusCode));
++        DebugLog(std::string("Response body: ") + response_body);
++        SAL_WARN("sw.ui", "AIHelper: CURL request returned with status code: " << nStatusCode);
++        SAL_WARN("sw.ui", "AIHelper: Response body: " << response_body.c_str());
++        return {};
++    }
++
++    DebugLog("Parsing JSON response...");
++    // Parse the response
++    try
++    {
++        boost::property_tree::ptree root;
++        std::stringstream aStream(response_body);
++        boost::property_tree::read_json(aStream, root);
++
++        // Navigate to choices[0].message.content
++        boost::property_tree::ptree& choices = root.get_child("choices");
++        if (choices.empty())
++        {
++            DebugLog("ERROR: API did not return any choices");
++            SAL_WARN("sw.ui", "AIHelper: API did not return any choices");
++            return {};
++        }
++
++        const boost::property_tree::ptree& firstChoice = choices.begin()->second;
++        const boost::property_tree::ptree& message = firstChoice.get_child("message");
++        const std::string content = message.get<std::string>("content");
++
++        DebugLog(std::string("SUCCESS: Got response content, length=") + std::to_string(content.length()));
++        return OUString::fromUtf8(content);
++    }
++    catch (const boost::property_tree::ptree_error& e)
++    {
++        DebugLog(std::string("ERROR: Failed to parse JSON: ") + e.what());
++        SAL_WARN("sw.ui", "AIHelper: Failed to parse JSON response: " << e.what());
++        return {};
++    }
++}
++
++} // namespace SwAIHelper
++
++#endif // HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++/* vim:set shiftwidth=4 softtabstop=4 expandtab cinoptions=b1,g0,N-s cinkeys+=0=break: */
+diff --git a/sw/source/uibase/shells/textsh1.cxx b/sw/source/uibase/shells/textsh1.cxx
+index 08178e04ab73..b6be70a333cc 100644
+--- a/sw/source/uibase/shells/textsh1.cxx
++++ b/sw/source/uibase/shells/textsh1.cxx
+@@ -125,6 +125,8 @@
+ #include <officecfg/Office/Linguistic.hxx>
+ #include <svl/visitem.hxx>
+ #include <translatelangselect.hxx>
++#include <airewritedialog.hxx>
++#include <aihelper.hxx>
+ #endif // HAVE_FEATURE_CURL && ENABLE_WASM_STRIP_EXTRA
+ #include <translatehelper.hxx>
+ #include <IDocumentContentOperations.hxx>
+@@ -2324,6 +2326,37 @@ void SwTextShell::Execute(SfxRequest &rReq)
+             weld::DialogController::runAsync(pDialogController, [] (sal_Int32 /*nResult*/) { });
+         }
+ #endif // HAVE_FEATURE_CURL && ENABLE_WASM_STRIP_EXTRA
++    }
++    break;
++    case FN_AI_REWRITE_SELECTION:
++    {
++#if HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++        // Check if AI is configured
++        if (!SwAIHelper::IsAIConfigured())
++        {
++            std::unique_ptr<weld::MessageDialog> xBox(
++                Application::CreateMessageDialog(GetView().GetFrameWeld(),
++                    VclMessageType::Info, VclButtonsType::Ok,
++                    SwResId(STR_AI_NOT_CONFIGURED)));
++            xBox->run();
++            break;
++        }
++
++        // Check if there's a selection
++        if (!rWrtSh.HasSelection())
++        {
++            std::unique_ptr<weld::MessageDialog> xBox(
++                Application::CreateMessageDialog(GetView().GetFrameWeld(),
++                    VclMessageType::Info, VclButtonsType::Ok,
++                    SwResId(STR_AI_NO_SELECTION)));
++            xBox->run();
++            break;
++        }
++
++        // Open the AI Rewrite dialog
++        SwAIRewriteDialog aDlg(GetView().GetFrameWeld(), rWrtSh);
++        aDlg.run();
++#endif // HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
+     }
+     break;
+     case SID_SPELLCHECK_IGNORE:
+diff --git a/sw/uiconfig/swriter/menubar/menubar.xml b/sw/uiconfig/swriter/menubar/menubar.xml
+index a0e0dd1b27a4..534d5a7aa2fc 100644
+--- a/sw/uiconfig/swriter/menubar/menubar.xml
++++ b/sw/uiconfig/swriter/menubar/menubar.xml
+@@ -764,6 +764,7 @@
+       <menu:menuitem menu:id=".uno:AccessibilityCheckOnline" menu:style="text"/>
+       <menu:menuseparator/>
+       <menu:menuitem menu:id=".uno:Translate" menu:style="text"/>
++      <menu:menuitem menu:id=".uno:AIRewriteSelection" menu:style="text"/>
+       <menu:menuseparator/>
+       <menu:menu menu:id=".uno:AutoFormatMenu">
+         <menu:menupopup>
+diff --git a/sw/uiconfig/swriter/popupmenu/text.xml b/sw/uiconfig/swriter/popupmenu/text.xml
+index cc2ce4932741..f54737c2c5da 100644
+--- a/sw/uiconfig/swriter/popupmenu/text.xml
++++ b/sw/uiconfig/swriter/popupmenu/text.xml
+@@ -95,6 +95,7 @@
+   <menu:menuitem menu:id=".uno:OpenLocalURL"/>
+   <menu:menuitem menu:id=".uno:OpenSmartTagMenuOnCursor"/>
+   <menu:menuitem menu:id=".uno:ThesaurusFromContext"/>
++  <menu:menuitem menu:id=".uno:AIRewriteSelection"/>
+   <menu:menuseparator/>
+   <menu:menuitem menu:id=".uno:CurrentFootnoteDialog"/>
+   <menu:menuitem menu:id=".uno:EditCurrentRegion"/>
+diff --git a/sw/uiconfig/swriter/ui/airewritedialog.ui b/sw/uiconfig/swriter/ui/airewritedialog.ui
+new file mode 100644
+index 000000000000..27f96586dc6d
+--- /dev/null
++++ b/sw/uiconfig/swriter/ui/airewritedialog.ui
+@@ -0,0 +1,216 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!-- Generated for LibreOffice AI Rewrite feature -->
++<interface domain="sw">
++  <requires lib="gtk+" version="3.24"/>
++  <object class="GtkDialog" id="AIRewriteDialog">
++    <property name="can-focus">False</property>
++    <property name="border-width">6</property>
++    <property name="title" translatable="yes" context="AIRewriteDialog">Rewrite with AI</property>
++    <property name="resizable">True</property>
++    <property name="modal">True</property>
++    <property name="type-hint">dialog</property>
++    <child internal-child="vbox">
++      <object class="GtkBox" id="dialog-vbox1">
++        <property name="can-focus">False</property>
++        <property name="orientation">vertical</property>
++        <property name="spacing">12</property>
++        <child internal-child="action_area">
++          <object class="GtkButtonBox" id="action-area1">
++            <property name="can-focus">False</property>
++            <property name="layout-style">end</property>
++            <child>
++              <object class="GtkButton" id="generate">
++                <property name="label" translatable="yes" context="AIRewriteDialog">_Generate</property>
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="receives-default">True</property>
++                <property name="use-underline">True</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">0</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkButton" id="applytracked">
++                <property name="label" translatable="yes" context="AIRewriteDialog">Apply as _Tracked Changes</property>
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="receives-default">True</property>
++                <property name="use-underline">True</property>
++                <property name="sensitive">False</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">1</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkButton" id="replace">
++                <property name="label" translatable="yes" context="AIRewriteDialog">_Replace Directly</property>
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="receives-default">True</property>
++                <property name="use-underline">True</property>
++                <property name="sensitive">False</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">2</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkButton" id="cancel">
++                <property name="label" translatable="yes" context="stock">_Cancel</property>
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="receives-default">True</property>
++                <property name="use-underline">True</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">3</property>
++              </packing>
++            </child>
++          </object>
++          <packing>
++            <property name="expand">False</property>
++            <property name="fill">False</property>
++            <property name="position">1</property>
++          </packing>
++        </child>
++        <child>
++          <object class="GtkBox" id="content-box">
++            <property name="visible">True</property>
++            <property name="can-focus">False</property>
++            <property name="orientation">vertical</property>
++            <property name="spacing">6</property>
++            <child>
++              <object class="GtkLabel" id="stylelabel">
++                <property name="visible">True</property>
++                <property name="can-focus">False</property>
++                <property name="halign">start</property>
++                <property name="label" translatable="yes" context="AIRewriteDialog">Rewrite _style:</property>
++                <property name="use-underline">True</property>
++                <property name="mnemonic-widget">stylebox</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">0</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkComboBoxText" id="stylebox">
++                <property name="visible">True</property>
++                <property name="can-focus">False</property>
++                <items>
++                  <item translatable="yes" context="AIRewriteDialog">Improve clarity</item>
++                  <item translatable="yes" context="AIRewriteDialog">More formal</item>
++                  <item translatable="yes" context="AIRewriteDialog">More concise</item>
++                  <item translatable="yes" context="AIRewriteDialog">Simpler language</item>
++                  <item translatable="yes" context="AIRewriteDialog">Fix grammar</item>
++                </items>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">1</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkLabel" id="originallabel">
++                <property name="visible">True</property>
++                <property name="can-focus">False</property>
++                <property name="halign">start</property>
++                <property name="margin-top">6</property>
++                <property name="label" translatable="yes" context="AIRewriteDialog">_Original text:</property>
++                <property name="use-underline">True</property>
++                <property name="mnemonic-widget">originaltext</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">2</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkScrolledWindow" id="originalscroll">
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="vexpand">True</property>
++                <property name="shadow-type">in</property>
++                <child>
++                  <object class="GtkTextView" id="originaltext">
++                    <property name="visible">True</property>
++                    <property name="can-focus">True</property>
++                    <property name="editable">False</property>
++                    <property name="wrap-mode">word-char</property>
++                    <property name="cursor-visible">False</property>
++                  </object>
++                </child>
++              </object>
++              <packing>
++                <property name="expand">True</property>
++                <property name="fill">True</property>
++                <property name="position">3</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkLabel" id="suggestionlabel">
++                <property name="visible">True</property>
++                <property name="can-focus">False</property>
++                <property name="halign">start</property>
++                <property name="margin-top">6</property>
++                <property name="label" translatable="yes" context="AIRewriteDialog">AI _suggestion:</property>
++                <property name="use-underline">True</property>
++                <property name="mnemonic-widget">suggestiontext</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">4</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkScrolledWindow" id="suggestionscroll">
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="vexpand">True</property>
++                <property name="shadow-type">in</property>
++                <child>
++                  <object class="GtkTextView" id="suggestiontext">
++                    <property name="visible">True</property>
++                    <property name="can-focus">True</property>
++                    <property name="editable">True</property>
++                    <property name="wrap-mode">word-char</property>
++                  </object>
++                </child>
++              </object>
++              <packing>
++                <property name="expand">True</property>
++                <property name="fill">True</property>
++                <property name="position">5</property>
++              </packing>
++            </child>
++          </object>
++          <packing>
++            <property name="expand">True</property>
++            <property name="fill">True</property>
++            <property name="position">0</property>
++          </packing>
++        </child>
++      </object>
++    </child>
++    <action-widgets>
++      <action-widget response="101">generate</action-widget>
++      <action-widget response="102">applytracked</action-widget>
++      <action-widget response="103">replace</action-widget>
++      <action-widget response="-6">cancel</action-widget>
++    </action-widgets>
++  </object>
++</interface>
+-- 
+2.55.0.windows.3
+

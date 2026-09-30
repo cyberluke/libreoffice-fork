@@ -1,0 +1,898 @@
+From 50d81443fe736fa6e972c102bceb9e3527563952 Mon Sep 17 00:00:00 2001
+From: Sanjay Karinje <sanjay.karinje.8@gmail.com>
+Date: Thu, 27 Nov 2025 00:57:10 -0600
+Subject: [PATCH] sc: Add AI Explain Formula feature for Calc
+
+Adds AI-powered formula explanation accessible via:
+- Tools menu: Explain Formula with AI
+- Right-click context menu on formula cells
+
+Features:
+- Auto-explains when dialog opens (streamlined UX)
+- Shows cell reference, formula, and plain English explanation
+- Uses shared AI configuration (OpenAI-compatible API)
+- Menu item disabled when cell has no formula
+
+Uses same ENABLE_CURL conditional pattern as translate feature.
+
+Change-Id: I54b79ad4ad38cda3e05035d8caf6a584d94a2f5d
+---
+ .../org/openoffice/Office/UI/CalcCommands.xcu |   8 +
+ sc/Library_sc.mk                              |   3 +
+ sc/UIConfig_scalc.mk                          |   1 +
+ sc/inc/globstr.hrc                            |   6 +
+ sc/inc/sc.hrc                                 |   3 +
+ sc/sdi/cellsh.sdi                             |   1 +
+ sc/sdi/scalc.sdi                              |  17 ++
+ sc/source/ui/inc/aiexplainformula.hxx         |  50 ++++
+ sc/source/ui/inc/scaihelper.hxx               |  49 ++++
+ sc/source/ui/miscdlgs/aiexplainformula.cxx    | 106 ++++++++
+ sc/source/ui/miscdlgs/scaihelper.cxx          | 243 ++++++++++++++++++
+ sc/source/ui/view/cellsh.cxx                  |   8 +
+ sc/source/ui/view/cellsh3.cxx                 |  34 +++
+ sc/uiconfig/scalc/menubar/menubar.xml         |   2 +
+ sc/uiconfig/scalc/popupmenu/cell.xml          |   2 +
+ sc/uiconfig/scalc/ui/aiexplainformula.ui      | 153 +++++++++++
+ 16 files changed, 686 insertions(+)
+ create mode 100644 sc/source/ui/inc/aiexplainformula.hxx
+ create mode 100644 sc/source/ui/inc/scaihelper.hxx
+ create mode 100644 sc/source/ui/miscdlgs/aiexplainformula.cxx
+ create mode 100644 sc/source/ui/miscdlgs/scaihelper.cxx
+ create mode 100644 sc/uiconfig/scalc/ui/aiexplainformula.ui
+
+diff --git a/officecfg/registry/data/org/openoffice/Office/UI/CalcCommands.xcu b/officecfg/registry/data/org/openoffice/Office/UI/CalcCommands.xcu
+index 7d3e943b92a3..377f6cddc18d 100644
+--- a/officecfg/registry/data/org/openoffice/Office/UI/CalcCommands.xcu
++++ b/officecfg/registry/data/org/openoffice/Office/UI/CalcCommands.xcu
+@@ -528,6 +528,14 @@
+           <value>1</value>
+         </prop>
+       </node>
++      <node oor:name=".uno:AIExplainFormula" oor:op="replace">
++        <prop oor:name="Label" oor:type="xs:string">
++          <value xml:lang="en-US">Explain Formula with AI...</value>
++        </prop>
++        <prop oor:name="Properties" oor:type="xs:int">
++          <value>1</value>
++        </prop>
++      </node>
+       <node oor:name=".uno:SolverDialog" oor:op="replace">
+         <prop oor:name="Label" oor:type="xs:string">
+           <value xml:lang="en-US">Sol~ver...</value>
+diff --git a/sc/Library_sc.mk b/sc/Library_sc.mk
+index eb705ac493db..381b739f915d 100644
+--- a/sc/Library_sc.mk
++++ b/sc/Library_sc.mk
+@@ -50,6 +50,7 @@ $(eval $(call gb_Library_use_externals,sc,\
+     boost_headers \
+     $(call gb_Helper_optional,OPENCL, \
+         clew) \
++    $(if $(ENABLE_CURL),curl) \
+     icu_headers \
+     icui18n \
+     icuuc \
+@@ -498,6 +499,7 @@ $(eval $(call gb_Library_add_exception_objects,sc,\
+     sc/source/ui/formdlg/formdata \
+     sc/source/ui/formdlg/formula \
+     sc/source/ui/miscdlgs/acredlin \
++    $(if $(ENABLE_CURL),sc/source/ui/miscdlgs/aiexplainformula) \
+     sc/source/ui/miscdlgs/anyrefdg \
+     sc/source/ui/miscdlgs/autofmt \
+     sc/source/ui/miscdlgs/conflictsdlg \
+@@ -513,6 +515,7 @@ $(eval $(call gb_Library_add_exception_objects,sc,\
+     sc/source/ui/miscdlgs/duplicaterecordsdlg \
+     sc/source/ui/miscdlgs/redcom \
+     sc/source/ui/miscdlgs/retypepassdlg \
++    $(if $(ENABLE_CURL),sc/source/ui/miscdlgs/scaihelper) \
+     sc/source/ui/miscdlgs/sharedocdlg \
+     sc/source/ui/miscdlgs/simpref \
+     sc/source/ui/miscdlgs/solveroptions \
+diff --git a/sc/UIConfig_scalc.mk b/sc/UIConfig_scalc.mk
+index e1e03bb2f099..d4d486c940ed 100644
+--- a/sc/UIConfig_scalc.mk
++++ b/sc/UIConfig_scalc.mk
+@@ -91,6 +91,7 @@ $(eval $(call gb_UIConfig_add_toolbarfiles,modules/scalc,\
+ 
+ $(eval $(call gb_UIConfig_add_uifiles,modules/scalc,\
+ 	sc/uiconfig/scalc/ui/advancedfilterdialog \
++	sc/uiconfig/scalc/ui/aiexplainformula \
+ 	sc/uiconfig/scalc/ui/allheaderfooterdialog \
+ 	sc/uiconfig/scalc/ui/analysisofvariancedialog \
+ 	sc/uiconfig/scalc/ui/autoformattable \
+diff --git a/sc/inc/globstr.hrc b/sc/inc/globstr.hrc
+index 0a7c84dd4f05..29827e1e6ffb 100644
+--- a/sc/inc/globstr.hrc
++++ b/sc/inc/globstr.hrc
+@@ -592,6 +592,12 @@
+ #define STR_SHEET_VIEW_DEFAULT_VIEW_NAME        NC_("STR_SHEET_VIEW_DEFAULT_VIEW_NAME", "Default View")
+ #define STR_SHEET_VIEW_TEMPORARY_NAME_TEMPLATE  NC_("STR_SHEET_VIEW_TEMPORARY_NAME_TEMPLATE", "Temporary View %1")
+ 
++// AI Features
++#define STR_AI_NOT_CONFIGURED                   NC_("STR_AI_NOT_CONFIGURED", "AI is not configured. Please set API key in Tools → Options → Language Settings → AI Writing Assistant.")
++#define STR_AI_NO_FORMULA                       NC_("STR_AI_NO_FORMULA", "Selected cell does not contain a formula.")
++#define STR_AI_EXPLAINING                       NC_("STR_AI_EXPLAINING", "Explaining formula with AI...")
++#define STR_AI_ERROR                            NC_("STR_AI_ERROR", "Failed to get AI explanation. Please check your API settings.")
++
+ #endif
+ 
+ /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
+diff --git a/sc/inc/sc.hrc b/sc/inc/sc.hrc
+index 629289aef0bf..1e370c20e954 100644
+--- a/sc/inc/sc.hrc
++++ b/sc/inc/sc.hrc
+@@ -108,6 +108,9 @@ class SvxZoomSliderItem;
+ #define SID_NUMBER_DECDEC       (SC_VIEW_START + 58)
+ #define SID_NUMBER_THOUSANDS    (SC_VIEW_START + 59)
+ 
++// AI Features
++#define SID_AI_EXPLAIN_FORMULA  (SC_VIEW_START + 80)
++
+ // misc:
+ #define SID_LINKS               (SC_VIEW_START + 60)
+ #define SID_SC_INPUT_WARNACTIVESHEET    TypedWhichId<SfxBoolItem>(SC_VIEW_START + 61)
+diff --git a/sc/sdi/cellsh.sdi b/sc/sdi/cellsh.sdi
+index 0f16536d1c42..664f0e04a30b 100644
+--- a/sc/sdi/cellsh.sdi
++++ b/sc/sdi/cellsh.sdi
+@@ -35,6 +35,7 @@ interface CellSelection
+     SID_VIEW_DATA_SOURCE_BROWSER [ ExecMethod = ExecuteDB; StateMethod = GetDBState; ]
+     SID_OPENDLG_FUNCTION        [ ExecMethod = Execute; StateMethod = GetCellState; ]
+     SID_INS_FUNCTION            [ ExecMethod = ExecuteEdit; StateMethod = GetState; ]
++    SID_AI_EXPLAIN_FORMULA      [ ExecMethod = Execute; StateMethod = GetCellState; ]
+ 
+     // no Exec/StateMethod needed, but SfxDispatcher complains if the slot is not included in the shell
+     SID_VALIDITY_REFERENCE []
+diff --git a/sc/sdi/scalc.sdi b/sc/sdi/scalc.sdi
+index a241c6c15086..b78c8c6dcb96 100644
+--- a/sc/sdi/scalc.sdi
++++ b/sc/sdi/scalc.sdi
+@@ -6939,3 +6939,20 @@ SfxVoidItem CopyDelete SID_COPYDELETE
+     ToolBoxConfig = TRUE,
+     GroupId = SfxGroupId::Edit;
+ ]
++
++SfxVoidItem AIExplainFormula SID_AI_EXPLAIN_FORMULA
++()
++[
++    AutoUpdate = FALSE,
++    FastCall = FALSE,
++    ReadOnlyDoc = TRUE,
++    Toggle = FALSE,
++    Container = FALSE,
++    RecordAbsolute = FALSE,
++    RecordPerSet;
++
++    AccelConfig = TRUE,
++    MenuConfig = TRUE,
++    ToolBoxConfig = FALSE,
++    GroupId = SfxGroupId::Data;
++]
+diff --git a/sc/source/ui/inc/aiexplainformula.hxx b/sc/source/ui/inc/aiexplainformula.hxx
+new file mode 100644
+index 000000000000..a7d17dd74d13
+--- /dev/null
++++ b/sc/source/ui/inc/aiexplainformula.hxx
+@@ -0,0 +1,50 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++#pragma once
++
++#include <sal/config.h>
++
++#include <config_features.h>
++#include <config_wasm_strip.h>
++
++#if HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++#include <vcl/weld.hxx>
++#include <address.hxx>
++
++class ScDocShell;
++
++/// Dialog for AI-powered formula explanation
++class ScAIExplainFormulaDialog final : public weld::GenericDialogController
++{
++public:
++    ScAIExplainFormulaDialog(weld::Window* pParent, ScDocShell* pDocSh,
++                              const ScAddress& rPos, const OUString& rFormula);
++
++private:
++    ScDocShell* m_pDocSh;
++    ScAddress m_aPos;
++    OUString m_sFormula;
++    OUString m_sExplanation;
++    bool m_bExplaining;
++
++    std::unique_ptr<weld::Entry> m_xCellRef;
++    std::unique_ptr<weld::Entry> m_xFormula;
++    std::unique_ptr<weld::TextView> m_xExplanation;
++    std::unique_ptr<weld::Button> m_xCloseBtn;
++
++    DECL_LINK(CloseHdl, weld::Button&, void);
++
++    void DoExplain();
++};
++
++#endif // HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++/* vim:set shiftwidth=4 softtabstop=4 expandtab: */
++
+diff --git a/sc/source/ui/inc/scaihelper.hxx b/sc/source/ui/inc/scaihelper.hxx
+new file mode 100644
+index 000000000000..008c8af8416a
+--- /dev/null
++++ b/sc/source/ui/inc/scaihelper.hxx
+@@ -0,0 +1,49 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++#pragma once
++
++#include <sal/config.h>
++
++#include <config_features.h>
++#include <config_wasm_strip.h>
++
++#include <rtl/ustring.hxx>
++
++#if HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++namespace ScAIHelper
++{
++struct AIConfig final
++{
++    OUString m_sApiUrl;
++    OUString m_sAuthKey;
++    OUString m_sModelName;
++};
++
++/// Get AI configuration from LibreOffice settings
++AIConfig GetAIConfig();
++
++/// Check if AI features are enabled and configured
++bool IsAIConfigured();
++
++/// Call the AI chat completion API with a system prompt and user prompt
++/// Returns the AI-generated response text
++OUString CallChatCompletion(const AIConfig& rConfig,
++                             const OUString& rSystemPrompt,
++                             const OUString& rUserPrompt);
++
++/// Build the system prompt for the formula explanation feature
++OUString BuildExplainFormulaSystemPrompt();
++
++} // namespace ScAIHelper
++
++#endif // HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++/* vim:set shiftwidth=4 softtabstop=4 expandtab: */
++
+diff --git a/sc/source/ui/miscdlgs/aiexplainformula.cxx b/sc/source/ui/miscdlgs/aiexplainformula.cxx
+new file mode 100644
+index 000000000000..706fe80bb112
+--- /dev/null
++++ b/sc/source/ui/miscdlgs/aiexplainformula.cxx
+@@ -0,0 +1,106 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4; fill-column: 100 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++#include <sal/config.h>
++
++#include <config_features.h>
++#include <config_wasm_strip.h>
++
++#if HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++#include <aiexplainformula.hxx>
++#include <scaihelper.hxx>
++#include <docsh.hxx>
++#include <globstr.hrc>
++#include <scresid.hxx>
++#include <vcl/svapp.hxx>
++#include <vcl/weld.hxx>
++#include <sal/log.hxx>
++
++ScAIExplainFormulaDialog::ScAIExplainFormulaDialog(weld::Window* pParent,
++                                                     ScDocShell* pDocSh,
++                                                     const ScAddress& rPos,
++                                                     const OUString& rFormula)
++    : GenericDialogController(pParent, u"modules/scalc/ui/aiexplainformula.ui"_ustr,
++                              u"AIExplainFormulaDialog"_ustr)
++    , m_pDocSh(pDocSh)
++    , m_aPos(rPos)
++    , m_sFormula(rFormula)
++    , m_bExplaining(false)
++    , m_xCellRef(m_xBuilder->weld_entry(u"cellref"_ustr))
++    , m_xFormula(m_xBuilder->weld_entry(u"formula"_ustr))
++    , m_xExplanation(m_xBuilder->weld_text_view(u"explanation"_ustr))
++    , m_xCloseBtn(m_xBuilder->weld_button(u"close"_ustr))
++{
++    // Set dialog size (UI file default-width not always respected)
++    m_xDialog->set_size_request(550, 450);
++
++    // Show cell reference
++    OUString sCellRef = rPos.Format(ScRefFlags::ADDR_ABS);
++    m_xCellRef->set_text(sCellRef);
++    m_xFormula->set_text(m_sFormula);
++
++    m_xCloseBtn->connect_clicked(LINK(this, ScAIExplainFormulaDialog, CloseHdl));
++
++    // Auto-explain on dialog open
++    DoExplain();
++}
++
++void ScAIExplainFormulaDialog::DoExplain()
++{
++    if (m_bExplaining)
++        return;
++
++    m_bExplaining = true;
++
++    // Show "Explaining..." message
++    m_xExplanation->set_text(ScResId(STR_AI_EXPLAINING));
++    Application::Yield();
++
++    // Check if AI is configured
++    if (!ScAIHelper::IsAIConfigured())
++    {
++        m_xExplanation->set_text(ScResId(STR_AI_NOT_CONFIGURED));
++        m_bExplaining = false;
++        return;
++    }
++
++    // Get AI config and make the API call
++    ScAIHelper::AIConfig aConfig = ScAIHelper::GetAIConfig();
++    OUString sSystemPrompt = ScAIHelper::BuildExplainFormulaSystemPrompt();
++    OUString sUserPrompt = u"Explain this spreadsheet formula: "_ustr + m_sFormula;
++
++    SAL_INFO("sc.ai", "Explaining formula: " << m_sFormula);
++
++    m_sExplanation = ScAIHelper::CallChatCompletion(aConfig, sSystemPrompt, sUserPrompt);
++
++    if (m_sExplanation.isEmpty())
++    {
++        m_xExplanation->set_text(ScResId(STR_AI_ERROR));
++    }
++    else
++    {
++        m_xExplanation->set_text(m_sExplanation);
++    }
++
++    m_bExplaining = false;
++
++    // Force UI update
++    Application::Yield();
++}
++
++IMPL_LINK_NOARG(ScAIExplainFormulaDialog, CloseHdl, weld::Button&, void)
++{
++    m_xDialog->response(RET_CLOSE);
++}
++
++#endif // HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++/* vim:set shiftwidth=4 softtabstop=4 expandtab cinoptions=b1,g0,N-s cinkeys+=0=break: */
++
+diff --git a/sc/source/ui/miscdlgs/scaihelper.cxx b/sc/source/ui/miscdlgs/scaihelper.cxx
+new file mode 100644
+index 000000000000..5a0ea3305c13
+--- /dev/null
++++ b/sc/source/ui/miscdlgs/scaihelper.cxx
+@@ -0,0 +1,243 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4; fill-column: 100 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++#include <sal/config.h>
++
++#include <config_features.h>
++#include <config_wasm_strip.h>
++
++#if HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++#include <scaihelper.hxx>
++#include <sal/log.hxx>
++#include <curl/curl.h>
++#include <rtl/string.h>
++#include <boost/property_tree/ptree.hpp>
++#include <boost/property_tree/json_parser.hpp>
++#include <systools/curlinit.hxx>
++#include <tools/long.hxx>
++#include <officecfg/Office/Linguistic.hxx>
++
++namespace ScAIHelper
++{
++
++AIConfig GetAIConfig()
++{
++    AIConfig aConfig;
++
++    std::optional<OUString> oApiUrl = officecfg::Office::Linguistic::AIWritingAssistant::ApiURL::get();
++    std::optional<OUString> oAuthKey = officecfg::Office::Linguistic::AIWritingAssistant::AuthKey::get();
++    std::optional<OUString> oModelName = officecfg::Office::Linguistic::AIWritingAssistant::ModelName::get();
++
++    SAL_INFO("sc.ai", "GetAIConfig: ApiURL has value: " << (oApiUrl.has_value() ? "yes" : "no"));
++    SAL_INFO("sc.ai", "GetAIConfig: AuthKey has value: " << (oAuthKey.has_value() ? "yes" : "no"));
++    SAL_INFO("sc.ai", "GetAIConfig: ModelName has value: " << (oModelName.has_value() ? "yes" : "no"));
++
++    if (oApiUrl)
++    {
++        aConfig.m_sApiUrl = *oApiUrl;
++        SAL_INFO("sc.ai", "GetAIConfig: ApiURL = " << aConfig.m_sApiUrl);
++    }
++    if (oAuthKey)
++    {
++        aConfig.m_sAuthKey = *oAuthKey;
++        SAL_INFO("sc.ai", "GetAIConfig: AuthKey length = " << aConfig.m_sAuthKey.getLength());
++    }
++    if (oModelName)
++    {
++        aConfig.m_sModelName = *oModelName;
++        SAL_INFO("sc.ai", "GetAIConfig: ModelName = " << aConfig.m_sModelName);
++    }
++
++    return aConfig;
++}
++
++bool IsAIConfigured()
++{
++    bool bEnabled = officecfg::Office::Linguistic::AIWritingAssistant::Enabled::get();
++    SAL_INFO("sc.ai", "IsAIConfigured: Enabled = " << (bEnabled ? "true" : "false"));
++
++    if (!bEnabled)
++    {
++        SAL_WARN("sc.ai", "IsAIConfigured: AI is DISABLED in configuration");
++        return false;
++    }
++
++    AIConfig aConfig = GetAIConfig();
++    bool bApiUrlOk = !aConfig.m_sApiUrl.isEmpty();
++    bool bAuthKeyOk = !aConfig.m_sAuthKey.isEmpty();
++
++    SAL_INFO("sc.ai", "IsAIConfigured: ApiURL empty=" << (bApiUrlOk ? "no" : "yes")
++             << ", AuthKey empty=" << (bAuthKeyOk ? "no" : "yes"));
++
++    return bApiUrlOk && bAuthKeyOk;
++}
++
++OUString BuildExplainFormulaSystemPrompt()
++{
++    return u"You are an expert at explaining spreadsheet formulas. When given a formula:\n"
++           "1. Explain what the formula does in plain English\n"
++           "2. Break down each function used and what it does\n"
++           "3. Explain any cell references and what they likely represent\n"
++           "4. If possible, give an example of what the formula would return\n\n"
++           "Be concise but thorough. Use bullet points for clarity. "
++           "Do not use markdown formatting."_ustr;
++}
++
++OUString CallChatCompletion(const AIConfig& rConfig,
++                             const OUString& rSystemPrompt,
++                             const OUString& rUserPrompt)
++{
++    SAL_INFO("sc.ai", "CallChatCompletion: ApiURL = '" << rConfig.m_sApiUrl << "'");
++    SAL_INFO("sc.ai", "CallChatCompletion: AuthKey length = " << rConfig.m_sAuthKey.getLength());
++    SAL_INFO("sc.ai", "CallChatCompletion: ModelName = '" << rConfig.m_sModelName << "'");
++    SAL_INFO("sc.ai", "CallChatCompletion: UserPrompt length = " << rUserPrompt.getLength());
++
++    constexpr tools::Long CURL_TIMEOUT = 60L;
++
++    std::unique_ptr<CURL, std::function<void(CURL*)>> curl(curl_easy_init(),
++                                                           [](CURL* p) { curl_easy_cleanup(p); });
++    if (!curl)
++    {
++        SAL_WARN("sc.ai", "AIHelper: Failed to initialize CURL");
++        return {};
++    }
++
++    ::InitCurl_easy(curl.get());
++
++    OString aApiUrl = OUStringToOString(rConfig.m_sApiUrl, RTL_TEXTENCODING_UTF8);
++    (void)curl_easy_setopt(curl.get(), CURLOPT_URL, aApiUrl.getStr());
++    (void)curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, CURL_TIMEOUT);
++
++    // Set up response handling
++    std::string response_body;
++    (void)curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION,
++                           +[](void* buffer, size_t size, size_t nmemb, void* userp) -> size_t {
++                               if (!userp)
++                                   return 0;
++                               std::string* response = static_cast<std::string*>(userp);
++                               size_t real_size = size * nmemb;
++                               response->append(static_cast<char*>(buffer), real_size);
++                               return real_size;
++                           });
++    (void)curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, static_cast<void*>(&response_body));
++
++    // Set up headers
++    struct curl_slist* headers = nullptr;
++    headers = curl_slist_append(headers, "Content-Type: application/json");
++
++    OString aAuthHeader = "Authorization: Bearer " + OUStringToOString(rConfig.m_sAuthKey, RTL_TEXTENCODING_UTF8);
++    headers = curl_slist_append(headers, aAuthHeader.getStr());
++
++    (void)curl_easy_setopt(curl.get(), CURLOPT_HTTPHEADER, headers);
++
++    // Build JSON request body using boost::property_tree
++    boost::property_tree::ptree requestBody;
++    requestBody.put("model", OUStringToOString(rConfig.m_sModelName, RTL_TEXTENCODING_UTF8).getStr());
++
++    boost::property_tree::ptree messages;
++
++    // System message
++    boost::property_tree::ptree systemMsg;
++    systemMsg.put("role", "system");
++    systemMsg.put("content", OUStringToOString(rSystemPrompt, RTL_TEXTENCODING_UTF8).getStr());
++    messages.push_back(std::make_pair("", systemMsg));
++
++    // User message
++    boost::property_tree::ptree userMsg;
++    userMsg.put("role", "user");
++    userMsg.put("content", OUStringToOString(rUserPrompt, RTL_TEXTENCODING_UTF8).getStr());
++    messages.push_back(std::make_pair("", userMsg));
++
++    requestBody.add_child("messages", messages);
++    requestBody.put("temperature", 0.7);
++
++    std::stringstream ss;
++    boost::property_tree::write_json(ss, requestBody);
++    std::string jsonBody = ss.str();
++
++    // Fix: boost::property_tree writes numbers as strings in JSON
++    // OpenAI API requires temperature to be a number, not a string
++    size_t tempPos = jsonBody.find("\"temperature\": \"");
++    if (tempPos != std::string::npos)
++    {
++        size_t valueStart = tempPos + 16;
++        size_t valueEnd = jsonBody.find("\"", valueStart);
++        if (valueEnd != std::string::npos)
++        {
++            std::string tempValue = jsonBody.substr(valueStart, valueEnd - valueStart);
++            jsonBody = jsonBody.substr(0, tempPos) + "\"temperature\": " + tempValue +
++                       jsonBody.substr(valueEnd + 1);
++        }
++    }
++
++    SAL_INFO("sc.ai", "CallChatCompletion: JSON request body length: " << jsonBody.length());
++
++    (void)curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, jsonBody.c_str());
++
++    // Perform the request
++    CURLcode cc = curl_easy_perform(curl.get());
++
++    // Clean up headers
++    curl_slist_free_all(headers);
++
++    if (cc != CURLE_OK)
++    {
++        const char* pError = curl_easy_strerror(cc);
++        SAL_WARN("sc.ai", "AIHelper: CURL perform returned with error code " << static_cast<sal_Int32>(cc)
++                 << ": " << (pError ? pError : "unknown"));
++        return {};
++    }
++
++    tools::Long nStatusCode = 0;
++    curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &nStatusCode);
++    SAL_INFO("sc.ai", "AIHelper: HTTP response code: " << nStatusCode);
++
++    if (nStatusCode != 200)
++    {
++        SAL_WARN("sc.ai", "AIHelper: CURL request returned with status code: " << nStatusCode);
++        SAL_WARN("sc.ai", "AIHelper: Response body: " << response_body.c_str());
++        return {};
++    }
++
++    // Parse the response
++    try
++    {
++        boost::property_tree::ptree root;
++        std::stringstream aStream(response_body);
++        boost::property_tree::read_json(aStream, root);
++
++        // Navigate to choices[0].message.content
++        boost::property_tree::ptree& choices = root.get_child("choices");
++        if (choices.empty())
++        {
++            SAL_WARN("sc.ai", "AIHelper: API did not return any choices");
++            return {};
++        }
++
++        const boost::property_tree::ptree& firstChoice = choices.begin()->second;
++        const boost::property_tree::ptree& message = firstChoice.get_child("message");
++        const std::string content = message.get<std::string>("content");
++
++        SAL_INFO("sc.ai", "AIHelper: Got response content, length=" << content.length());
++        return OUString::fromUtf8(content);
++    }
++    catch (const boost::property_tree::ptree_error& e)
++    {
++        SAL_WARN("sc.ai", "AIHelper: Failed to parse JSON response: " << e.what());
++        return {};
++    }
++}
++
++} // namespace ScAIHelper
++
++#endif // HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++
++/* vim:set shiftwidth=4 softtabstop=4 expandtab cinoptions=b1,g0,N-s cinkeys+=0=break: */
++
+diff --git a/sc/source/ui/view/cellsh.cxx b/sc/source/ui/view/cellsh.cxx
+index d5ea064f1e0b..809bad067195 100644
+--- a/sc/source/ui/view/cellsh.cxx
++++ b/sc/source/ui/view/cellsh.cxx
+@@ -423,6 +423,14 @@ void ScCellShell::GetCellState( SfxItemSet& rSet )
+                     bDisable = rDoc.GetNote(aPos) == nullptr;
+                 }
+                 break;
++            case SID_AI_EXPLAIN_FORMULA:
++                {
++                    // Enable only when cell contains a formula
++                    CellType eType = rDoc.GetCellType( aCursor );
++                    bDisable = ( eType != CELLTYPE_FORMULA );
++                    bNeedEdit = false;  // Read-only operation, doesn't need edit permission
++                }
++                break;
+         }
+         if (!bDisable && bNeedEdit)
+             if (!rDoc.IsBlockEditable( aCursor.Tab(), aCursor.Col(),aCursor.Row(),
+diff --git a/sc/source/ui/view/cellsh3.cxx b/sc/source/ui/view/cellsh3.cxx
+index e7f405cc9340..e3b86a39c10b 100644
+--- a/sc/source/ui/view/cellsh3.cxx
++++ b/sc/source/ui/view/cellsh3.cxx
+@@ -50,6 +50,11 @@
+ #include <LibreOfficeKit/LibreOfficeKitEnums.h>
+ #include <inputwin.hxx>
+ #include <officecfg/Office/Calc.hxx>
++#include <config_features.h>
++#include <config_wasm_strip.h>
++#if HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++#include <aiexplainformula.hxx>
++#endif
+ 
+ #include <memory>
+ 
+@@ -529,6 +534,35 @@ void ScCellShell::Execute( SfxRequest& rReq )
+             }
+             break;
+ 
++#if HAVE_FEATURE_CURL && !ENABLE_WASM_STRIP_EXTRA
++        case SID_AI_EXPLAIN_FORMULA:
++            {
++                ScViewData& rViewData = GetViewData();
++                ScDocument& rDoc = rViewData.GetDocument();
++                ScAddress aPos(rViewData.GetCurX(), rViewData.GetCurY(), rViewData.CurrentTabForData());
++
++                // Check if cell has a formula
++                CellType eType = rDoc.GetCellType(aPos);
++                if (eType != CELLTYPE_FORMULA)
++                {
++                    std::unique_ptr<weld::MessageDialog> xBox(
++                        Application::CreateMessageDialog(pTabViewShell->GetFrameWeld(),
++                            VclMessageType::Info, VclButtonsType::Ok,
++                            ScResId(STR_AI_NO_FORMULA)));
++                    xBox->run();
++                    break;
++                }
++
++                OUString sFormula = rDoc.GetFormula(aPos.Col(), aPos.Row(), aPos.Tab());
++
++                ScAIExplainFormulaDialog aDlg(pTabViewShell->GetFrameWeld(),
++                                               &rViewData.GetDocShell(),
++                                               aPos, sFormula);
++                aDlg.run();
++            }
++            break;
++#endif
++
+         case SID_OPENDLG_TABOP:
+             {
+                 sal_uInt16          nId  = ScTabOpDlgWrapper::GetChildWindowId();
+diff --git a/sc/uiconfig/scalc/menubar/menubar.xml b/sc/uiconfig/scalc/menubar/menubar.xml
+index 97b9a8b1ad43..e5adebf9667f 100644
+--- a/sc/uiconfig/scalc/menubar/menubar.xml
++++ b/sc/uiconfig/scalc/menubar/menubar.xml
+@@ -682,6 +682,8 @@
+       <menu:menuseparator/>
+       <menu:menuitem menu:id=".uno:GoalSeekDialog"/>
+       <menu:menuitem menu:id=".uno:SolverDialog"/>
++      <menu:menuseparator/>
++      <menu:menuitem menu:id=".uno:AIExplainFormula"/>
+       <menu:menu menu:id=".uno:AuditMenu">
+         <menu:menupopup>
+           <menu:menuitem menu:id=".uno:ShowPrecedents"/>
+diff --git a/sc/uiconfig/scalc/popupmenu/cell.xml b/sc/uiconfig/scalc/popupmenu/cell.xml
+index 66cd2eb0e10a..c8ca4cb03b81 100644
+--- a/sc/uiconfig/scalc/popupmenu/cell.xml
++++ b/sc/uiconfig/scalc/popupmenu/cell.xml
+@@ -69,4 +69,6 @@
+   <menu:menuitem menu:id=".uno:CurrentConditionalFormatDialog"/>
+   <menu:menuitem menu:id=".uno:CurrentConditionalFormatManagerDialog"/>
+   <menu:menuitem menu:id=".uno:FormatCellDialog"/>
++  <menu:menuseparator/>
++  <menu:menuitem menu:id=".uno:AIExplainFormula"/>
+ </menu:menupopup>
+diff --git a/sc/uiconfig/scalc/ui/aiexplainformula.ui b/sc/uiconfig/scalc/ui/aiexplainformula.ui
+new file mode 100644
+index 000000000000..3acf74ee4971
+--- /dev/null
++++ b/sc/uiconfig/scalc/ui/aiexplainformula.ui
+@@ -0,0 +1,153 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!-- This file is part of the LibreOffice project. -->
++<interface domain="sc">
++  <requires lib="gtk+" version="3.24"/>
++  <object class="GtkDialog" id="AIExplainFormulaDialog">
++    <property name="can-focus">False</property>
++    <property name="border-width">6</property>
++    <property name="title" translatable="yes" context="aiexplainformula|AIExplainFormulaDialog">Explain Formula with AI</property>
++    <property name="resizable">True</property>
++    <property name="modal">True</property>
++    <property name="default-width">550</property>
++    <property name="default-height">400</property>
++    <property name="type-hint">dialog</property>
++    <child internal-child="vbox">
++      <object class="GtkBox" id="dialog-vbox1">
++        <property name="can-focus">False</property>
++        <property name="orientation">vertical</property>
++        <property name="spacing">12</property>
++        <child internal-child="action_area">
++          <object class="GtkButtonBox" id="dialog-action_area1">
++            <property name="can-focus">False</property>
++            <property name="layout-style">end</property>
++            <child>
++              <object class="GtkButton" id="close">
++                <property name="label" translatable="yes" context="aiexplainformula|close">Close</property>
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="receives-default">True</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">0</property>
++              </packing>
++            </child>
++          </object>
++          <packing>
++            <property name="expand">False</property>
++            <property name="fill">False</property>
++            <property name="position">0</property>
++          </packing>
++        </child>
++        <child>
++          <object class="GtkBox" id="content">
++            <property name="visible">True</property>
++            <property name="can-focus">False</property>
++            <property name="orientation">vertical</property>
++            <property name="spacing">6</property>
++            <property name="margin-start">6</property>
++            <property name="margin-end">6</property>
++            <property name="margin-top">6</property>
++            <child>
++              <object class="GtkLabel" id="cellreflabel">
++                <property name="visible">True</property>
++                <property name="can-focus">False</property>
++                <property name="halign">start</property>
++                <property name="label" translatable="yes" context="aiexplainformula|cellreflabel">_Cell:</property>
++                <property name="use-underline">True</property>
++                <property name="mnemonic-widget">cellref</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">0</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkEntry" id="cellref">
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="editable">False</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">1</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkLabel" id="formulalabel">
++                <property name="visible">True</property>
++                <property name="can-focus">False</property>
++                <property name="halign">start</property>
++                <property name="label" translatable="yes" context="aiexplainformula|formulalabel">_Formula:</property>
++                <property name="use-underline">True</property>
++                <property name="mnemonic-widget">formula</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">2</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkEntry" id="formula">
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="editable">False</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">3</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkLabel" id="explainlabel">
++                <property name="visible">True</property>
++                <property name="can-focus">False</property>
++                <property name="halign">start</property>
++                <property name="label" translatable="yes" context="aiexplainformula|explainlabel">_Explanation:</property>
++                <property name="use-underline">True</property>
++                <property name="mnemonic-widget">explanation</property>
++              </object>
++              <packing>
++                <property name="expand">False</property>
++                <property name="fill">True</property>
++                <property name="position">4</property>
++              </packing>
++            </child>
++            <child>
++              <object class="GtkScrolledWindow" id="explanationscroll">
++                <property name="visible">True</property>
++                <property name="can-focus">True</property>
++                <property name="vexpand">True</property>
++                <property name="shadow-type">in</property>
++                <child>
++                  <object class="GtkTextView" id="explanation">
++                    <property name="visible">True</property>
++                    <property name="can-focus">True</property>
++                    <property name="editable">False</property>
++                    <property name="wrap-mode">word-char</property>
++                  </object>
++                </child>
++              </object>
++              <packing>
++                <property name="expand">True</property>
++                <property name="fill">True</property>
++                <property name="position">5</property>
++              </packing>
++            </child>
++          </object>
++          <packing>
++            <property name="expand">True</property>
++            <property name="fill">True</property>
++            <property name="position">1</property>
++          </packing>
++        </child>
++      </object>
++    </child>
++  </object>
++</interface>
++
+-- 
+2.55.0.windows.3
+

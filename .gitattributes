@@ -26,3 +26,19 @@ schema/*/* export-ignore
 # rule here, core.autocrlf=true on Windows flips these files back to CRLF on every
 # checkout in this repo and endlessly re-dirties officelabs-core's working tree.
 officelabs/** text=auto eol=lf
+
+# Patch files are applied to unpacked tarballs with GNU patch --binary --fuzz=0
+# (solenv/gbuild/UnpackedTarball.mk), which requires byte-exact line endings.
+# Tarball sources are LF, so a CRLF working-tree copy of a patch (core.autocrlf=true
+# on Windows) makes every hunk fail ("Patch FAILED", e.g. lcms2 0002/0003 in the
+# 2.19.1 upgrade). Force LF for all patches; the few files whose committed content
+# is genuinely mixed-EOL are excluded so git never normalizes them.
+*.patch* text eol=lf
+external/skia/vk_mem_alloc.patch.1 -text
+external/skia/0001-Added-missing-include-cstdio.patch -text
+external/breakpad/breakpad-dump_syms.patch.1 -text
+external/coinmp/coinmp-msvc-disable-sse2.patch.1 -text
+external/python3/decimal.patch.1 -text
+external/python3/lzma.patch.1 -text
+external/python3/python-3.7.6-msvc-ssl.patch.1 -text
+external/python3/sqlite3.patch.1 -text
