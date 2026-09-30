@@ -4842,7 +4842,8 @@
             </info>
           </enumeration>
         </constraints>
-        <value>0</value>
+        <!-- V271 fork: application theming enabled by default. -->
+        <value>1</value>
       </prop>
       <prop oor:name="ApplicationAppearance" oor:type="xs:short" oor:nillable="false">
         <info>
@@ -4875,7 +4876,8 @@
           the theme change it.</desc>
           <label>Use white document background</label>
         </info>
-        <value>true</value>
+        <!-- V271 fork: let the theme control the document background by default. -->
+        <value>false</value>
       </prop>
       <prop oor:name="UseBmpForAppBack" oor:type="xs:boolean" oor:nillable="false">
         <info>
