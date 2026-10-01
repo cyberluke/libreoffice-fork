@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+# check-setup.sh — Verify the WriterAgent development stack.
+#
+# Usage:
+#   ./scripts/check-setup.sh          Check everything
+#   bash scripts/check-setup.sh       Same (no +x needed)
+
+set -uo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+ERRORS=0
+WARNINGS=0
+BRIEF=""
+
+ok()   { echo -e "  ${GREEN}OK${NC}   $1"; BRIEF+="OK   $1"$'\n'; }
+warn() { echo -e "  ${YELLOW}WARN${NC} $1"; WARNINGS=$((WARNINGS+1)); BRIEF+="WARN $1"$'\n'; }
+fail() { echo -e "  ${RED}FAIL${NC} $1"; ERRORS=$((ERRORS+1)); BRIEF+="FAIL $1"$'\n'; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+# shellcheck source=lo_paths.sh
+source "$SCRIPT_DIR/lo_paths.sh"
+
+echo ""
+echo -e "${BOLD}WriterAgent — Development Stack Check${NC}"
+echo "======================================"
+echo ""
+
+# ── OS ─────────────────────────────────────────────────────────────────
+
+OS_INFO="unknown"
+if [[ -f /etc/os-release ]]; then
+    OS_INFO=$(. /etc/os-release && echo "$PRETTY_NAME")
+elif [[ "$(uname)" == "Darwin" ]]; then
+    OS_INFO="macOS $(sw_vers -productVersion 2>/dev/null || echo 'unknown')"
+fi
+ok "OS: $OS_INFO"
+
+# ── Python ─────────────────────────────────────────────────────────────
+
+PYTHON=""
+for cmd in python3 python; do
+    if command -v "$cmd" &>/dev/null; then
+        PYTHON="$cmd"
+        break
+    fi
+done
+
+if [[ -n "$PYTHON" ]]; then
+    PY_VER=$("$PYTHON" --version 2>&1 | head -1)
+    PY_PATH=$(command -v "$PYTHON")
+    ok "$PY_VER ($PY_PATH)"
+
+    PY_MAJOR=$("$PYTHON" -c "import sys; print(sys.version_info.major)" 2>/dev/null || echo "0")
+    PY_MINOR=$("$PYTHON" -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
+    if [[ "$PY_MAJOR" -eq 3 && "$PY_MINOR" -ge 14 ]]; then
+        warn "Python 3.14+ detected — dev dependencies may fail to install. Use: uv python install 3.13 && uv sync (see README)"
+    fi
+
+    # Check it's not inside a venv (unopkg issue)
+    if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+        warn "Python is inside a venv ($VIRTUAL_ENV) — unopkg may fail with std::bad_alloc"
+    fi
+else
+    fail "Python 3.8+ not found"
+fi
+
+# ── pip or uv ──────────────────────────────────────────────────────────
+
+UV=""
+if command -v uv &>/dev/null; then
+    UV_VER=$(uv --version 2>&1 | head -1)
+    ok "uv: $UV_VER"
+    UV="uv"
+fi
+
+if [[ -n "$PYTHON" ]] && "$PYTHON" -m pip --version &>/dev/null; then
+    PIP_VER=$("$PYTHON" -m pip --version 2>&1 | head -1 | awk '{print $1, $2}')
+    ok "pip: $PIP_VER"
+elif [[ -z "$UV" ]]; then
+    fail "Neither pip nor uv found — cannot install dependencies"
+fi
+
+# ── PyYAML ─────────────────────────────────────────────────────────────
+
+if [[ -n "$PYTHON" ]] && "$PYTHON" -c "import yaml" 2>/dev/null; then
+    YAML_VER=$("$PYTHON" -c "import yaml; print(yaml.__version__)" 2>/dev/null || echo "?")
+    ok "PyYAML: $YAML_VER"
+else
+    fail "PyYAML not installed — run: ./install.sh"
+fi
+
+# ── LibreOffice ────────────────────────────────────────────────────────
+
+LO=$(find_soffice)
+
+if [[ -n "$LO" ]]; then
+    LO_VER=$("$LO" --version 2>&1 | head -1 || echo "?")
+    ok "LibreOffice: $LO_VER"
+else
+    if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+        fail "LibreOffice (soffice) not found — install: brew install --cask libreoffice"
+    else
+        fail "LibreOffice (soffice) not found"
+    fi
+fi
+
+# ── unopkg ─────────────────────────────────────────────────────────────
+
+UNOPKG=$(find_unopkg)
+
+if [[ -n "$UNOPKG" ]]; then
+    ok "unopkg: $UNOPKG"
+else
+    if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+        fail "unopkg not found — install LibreOffice .app (brew install --cask libreoffice)"
+    else
+        fail "unopkg not found — check LibreOffice installation"
+    fi
+fi
+
+# ── make ───────────────────────────────────────────────────────────────
+
+if command -v make &>/dev/null; then
+    MAKE_VER=$(make --version 2>&1 | head -1)
+    ok "make: $MAKE_VER"
+else
+    if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+        fail "make not found — install: xcode-select --install or brew install make"
+    else
+        fail "make not found — install: sudo dnf install make / sudo apt install make"
+    fi
+fi
+
+# ── gettext (msgfmt for make build) ───────────────────────────────────
+
+if command -v msgfmt &>/dev/null; then
+    ok "msgfmt: $(command -v msgfmt)"
+else
+    if [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+        warn "msgfmt not found — install: brew install gettext (needed for make build translations)"
+    else
+        warn "msgfmt not found — install gettext (needed for make build translations)"
+    fi
+fi
+
+# ── Opengrep (Layer C UNO thread lint; required for make test) ───────────
+
+PYTHON_FOR_HELPERS="${PYTHON:-python}"
+OPENGREP_PATH="$("$PYTHON_FOR_HELPERS" "$PROJECT_ROOT/scripts/opengrep_path.py" 2>/dev/null || true)"
+if [[ -n "$OPENGREP_PATH" && -x "$OPENGREP_PATH" ]]; then
+    OG_VER=$("$OPENGREP_PATH" --version 2>&1 | head -1)
+    ok "opengrep: $OG_VER ($OPENGREP_PATH)"
+else
+    fail "opengrep not found — run: make opengrep-install (required for make test opengrep-lint)"
+fi
+
+if [[ -f "$PROJECT_ROOT/tests/semgrep/third_party/SOURCES.json" ]]; then
+    ok "vendored Opengrep rules: tests/semgrep/third_party/SOURCES.json"
+else
+    warn "vendored Opengrep rules missing — run: make opengrep-rules-sync"
+fi
+
+# ── git ────────────────────────────────────────────────────────────────
+
+if command -v git &>/dev/null; then
+    GIT_VER=$(git --version 2>&1)
+    ok "git: $GIT_VER"
+else
+    fail "git not found"
+fi
+
+# ── openssl (optional) ────────────────────────────────────────────────
+
+if command -v openssl &>/dev/null; then
+    SSL_VER=$(openssl version 2>&1)
+    ok "openssl: $SSL_VER (optional, for MCP HTTPS)"
+else
+    warn "openssl not found (optional, for MCP HTTPS)"
+fi
+
+# ── Project files ──────────────────────────────────────────────────────
+
+echo ""
+echo -e "${BOLD}Project${NC}"
+echo "-------"
+
+if [[ -f "$PROJECT_ROOT/plugin/version.py" ]]; then
+    EXT_VER=$("$PYTHON" -c "
+import sys; sys.path.insert(0, '$PROJECT_ROOT')
+from plugin.version import EXTENSION_VERSION
+print(EXTENSION_VERSION)
+" 2>/dev/null || echo "?")
+    ok "Extension version: $EXT_VER"
+else
+    warn "plugin/version.py not found"
+fi
+
+if [[ -d "$PROJECT_ROOT/vendor" ]] && [[ "$(ls -A "$PROJECT_ROOT/vendor" 2>/dev/null)" ]]; then
+    ok "vendor/ populated"
+else
+    warn "vendor/ empty — run: make vendor"
+fi
+
+if [[ -f "$PROJECT_ROOT/build/WriterAgent.oxt" ]]; then
+    OXT_SIZE=$(stat -c%s "$PROJECT_ROOT/build/WriterAgent.oxt" 2>/dev/null || stat -f%z "$PROJECT_ROOT/build/WriterAgent.oxt" 2>/dev/null || echo "?")
+    ok "build/WriterAgent.oxt exists ($OXT_SIZE bytes)"
+else
+    warn "No .oxt built yet — run: make build"
+fi
+
+# ── Extension installed? ──────────────────────────────────────────────
+
+if [[ -n "$UNOPKG" ]]; then
+    if $UNOPKG list 2>&1 | grep -q "org.extension.writeragent"; then
+        ok "Extension registered in LibreOffice"
+    else
+        warn "Extension not registered — run: make deploy"
+    fi
+fi
+
+# ── Log symlinks ─────────────────────────────────────────────────────
+
+LOG_FILES="writeragent_debug.log soffice-debug.log"
+for f in $LOG_FILES; do
+    target="$HOME/$f"
+    link="$PROJECT_ROOT/$f"
+    if [[ -L "$link" ]]; then
+        ok "Symlink $f already exists"
+    elif [[ -e "$link" ]]; then
+        warn "$f exists but is not a symlink — skipping"
+    else
+        # Create the target if it doesn't exist yet
+        touch "$target" 2>/dev/null || true
+        if ln -s "$target" "$link" 2>/dev/null; then
+            ok "Symlink created: $f -> $target"
+        else
+            warn "Could not create symlink $f"
+        fi
+    fi
+done
+
+# ── Summary ───────────────────────────────────────────────────────────
+
+echo ""
+echo "======================================"
+if [[ $ERRORS -gt 0 ]]; then
+    echo -e "${RED}${BOLD}$ERRORS error(s)${NC}, $WARNINGS warning(s)"
+    echo ""
+    echo "Fix the errors above before building. See DEVEL.md for instructions."
+elif [[ $WARNINGS -gt 0 ]]; then
+    echo -e "${GREEN}${BOLD}All required tools found${NC}, $WARNINGS warning(s)"
+else
+    echo -e "${GREEN}${BOLD}Everything looks good!${NC}"
+fi
+
+echo ""
+echo -e "${BOLD}--- Copy-paste brief ---${NC}"
+echo ""
+echo "$BRIEF"
+echo "OS:   $OS_INFO"
+echo "Errors: $ERRORS / Warnings: $WARNINGS"
+
+exit $ERRORS

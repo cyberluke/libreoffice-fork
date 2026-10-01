@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""Generate _manifest.py and XCS/XCU from module.yaml files.
+
+Reads each module.yaml under plugin/, validates it, and produces:
+  - build/generated/_manifest.py     — Python dict for runtime
+  - build/generated/registry/*.xcs   — LO config schemas
+  - build/generated/registry/*.xcu   — LO config defaults
+  - Generates description.xml from description.xml.tpl with version
+
+Usage:
+    python3 scripts/generate_manifest.py
+    python3 scripts/generate_manifest.py --modules core mcp ai_openai
+"""
+
+import argparse
+import json
+import os
+import sys
+
+# Ensure project root is importable
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
+try:
+    import yaml
+except ImportError:
+    print("ERROR: PyYAML is required. Install with: pip install pyyaml",
+          file=sys.stderr)
+    sys.exit(1)
+
+
+def find_modules(modules_dir, filter_names=None):
+    """Find all module.yaml files recursively and return parsed manifests.
+
+    Module name comes from the ``name`` field in module.yaml.
+    Directory convention: dots map to underscores (tunnel.bore -> tunnel_bore/).
+    Falls back to directory-derived name if ``name`` is absent.
+    """
+    manifests = []
+    for dirpath, dirnames, filenames in os.walk(modules_dir):
+        if "module.yaml" not in filenames:
+            continue
+        # Build dotted module name from relative path
+        rel = os.path.relpath(dirpath, modules_dir)
+        module_name = rel.replace(os.sep, ".")
+
+        if filter_names:
+            top_level = module_name.split(".")[0]
+            if module_name not in filter_names and top_level not in filter_names:
+                continue
+
+        yaml_path = os.path.join(dirpath, "module.yaml")
+        with open(yaml_path) as f:
+            manifest = yaml.safe_load(f)
+        manifest.setdefault("name", module_name)
+        manifests.append(manifest)
+
+    manifests.sort(key=lambda m: m["name"])
+    return manifests
+
+
+def topo_sort(modules):
+    """Sort modules by dependency order (core first)."""
+    by_name = {m["name"]: m for m in modules}
+    provides = {}
+    for m in modules:
+        for svc in m.get("provides_services", []):
+            provides[svc] = m["name"]
+
+    visited = set()
+    order = []
+
+    def visit(name):
+        if name in visited:
+            return
+        visited.add(name)
+        m = by_name.get(name)
+        if m is None:
+            return
+        for req in m.get("requires", []):
+            provider = provides.get(req, req)
+            if provider in by_name:
+                visit(provider)
+        order.append(m)
+
+    if "core" in by_name:
+        visit("core")
+    for name in sorted(by_name):
+        visit(name)
+
+    return order
+
+
+
+def _json_to_python(text):
+    """Convert JSON literals to Python literals (true->True, false->False, null->None)."""
+    # Only replace JSON keywords when they appear as values, not inside strings
+    result = []
+    in_string = False
+    escape = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if escape:
+            result.append(ch)
+            escape = False
+            i += 1
+            continue
+        if ch == '\\' and in_string:
+            result.append(ch)
+            escape = True
+            i += 1
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            i += 1
+            continue
+        if in_string:
+            result.append(ch)
+            i += 1
+            continue
+        # Outside string: replace JSON keywords
+        for jval, pyval in (("true", "True"), ("false", "False"), ("null", "None")):
+            if text[i:i+len(jval)] == jval:
+                # Check it's a whole word (not part of a larger identifier)
+                before_ok = (i == 0 or not text[i-1].isalnum())
+                after_ok = (i + len(jval) >= len(text) or not text[i+len(jval)].isalnum())
+                if before_ok and after_ok:
+                    result.append(pyval)
+                    i += len(jval)
+                    break
+        else:
+            result.append(ch)
+            i += 1
+    return "".join(result)
+
+
+def _filter_librepy_config(config):
+    """Drop WriterAgent-only settings keys from LibrePy manifest/XDL generation."""
+    if not isinstance(config, dict):
+        return config
+    return {
+        field_name: schema
+        for field_name, schema in config.items()
+        if not (isinstance(schema, dict) and schema.get("librepy_exclude"))
+    }
+
+
+def generate_manifest_py(modules, output_path, *, librepy_flavor=False):
+    """Generate _manifest.py with module descriptors and pre-computed config defaults."""
+    from plugin.version import EXTENSION_VERSION
+    from manifest_common import write_if_changed
+
+    lines = [
+        '"""Auto-generated module manifest. DO NOT EDIT."""',
+        "",
+        "VERSION = %r" % EXTENSION_VERSION,
+        "",
+        "MODULES = [",
+    ]
+    config_defaults = {}
+    config_schemas = {}
+    dotted_fallbacks = {}
+
+    for m in modules:
+        config = m.get("config", {})
+        if librepy_flavor:
+            config = _filter_librepy_config(config)
+        mod_name = m.get("name", "")
+        if isinstance(config, dict) and mod_name:
+            for fname, schema in config.items():
+                if isinstance(schema, dict):
+                    full_key = "%s.%s" % (mod_name, fname)
+                    if "default" in schema:
+                        config_defaults[full_key] = schema["default"]
+                        if fname not in config_defaults:
+                            config_defaults[fname] = schema["default"]
+                    config_schemas[full_key] = schema
+                    if fname not in config_schemas:
+                        config_schemas[fname] = schema
+                    dotted_fallbacks.setdefault(fname, []).append(full_key)
+
+        # Clean repr — only keep runtime-relevant keys
+        entry = {
+            "name": m["name"],
+            "title": m.get("title", ""),
+            "requires": m.get("requires", []),
+            "provides_services": m.get("provides_services", []),
+            "config": config,
+            "config_inline": m.get("config_inline"),
+            "actions": list(m.get("actions", {}).keys()),
+            "action_icons": {k: v["icon"] for k, v in m.get("actions", {}).items() if v.get("icon")},
+        }
+        if m.get("settings_tab") is False:
+            entry["settings_tab"] = False
+        if m.get("config_dialog"):
+            entry["config_dialog"] = m["config_dialog"]
+        # json.dumps then convert true/false/null to Python True/False/None
+        json_text = json.dumps(entry, indent=8, ensure_ascii=False)
+        lines.append("    %s," % _json_to_python(json_text))
+    lines.append("]")
+    lines.append("")
+    lines.append("CONFIG_DEFAULTS = %s" % _json_to_python(json.dumps(config_defaults, indent=4, ensure_ascii=False)))
+    lines.append("")
+    lines.append("CONFIG_SCHEMAS = %s" % _json_to_python(json.dumps(config_schemas, indent=4, ensure_ascii=False)))
+    lines.append("")
+    lines.append("DOTTED_FALLBACKS = %s" % _json_to_python(json.dumps(dotted_fallbacks, indent=4, ensure_ascii=False)))
+    lines.append("")
+
+    write_if_changed(output_path, "\n".join(lines))
+    print("  Generated %s (%d modules)" % (output_path, len(modules)))
+
+
+# Ensure scripts/ is on path for manifest_xdl and manifest_registry
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts"))
+
+from manifest_xdl import generate_standalone_config_dialogs, generate_xdl_files, update_dialog_xlb
+from manifest_registry import (
+    generate_addons_xcu,
+    generate_accelerators_xcu,
+    generate_settings_dialog_tabs,
+    generate_manifest_xml,
+    patch_description_xml,
+)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate _manifest.py and XCS/XCU from module.yaml files")
+    parser.add_argument(
+        "--modules", nargs="*", default=None,
+        help="Only process these modules (default: all)")
+    parser.add_argument(
+        "--manifest-output", default=None,
+        help="Write _manifest.py to this path (default: plugin/_manifest.py)")
+    parser.add_argument(
+        "--skip-writeragent-extension", action="store_true",
+        help="Do not update extension/ description.xml or META-INF")
+    parser.add_argument(
+        "--skip-addons", action="store_true",
+        help="Do not generate build/generated/Addons.xcu or Accelerators.xcu")
+    args = parser.parse_args()
+
+    modules_dir = os.path.join(PROJECT_ROOT, "plugin")
+    if not os.path.isdir(modules_dir):
+        print("ERROR: plugin/ not found at %s" % modules_dir,
+              file=sys.stderr)
+        return 1
+
+    # Load framework-level plugin.yaml (if present)
+    plugin_yaml_path = os.path.join(PROJECT_ROOT, "plugin", "plugin.yaml")
+    framework_manifest = None
+    if os.path.isfile(plugin_yaml_path):
+        with open(plugin_yaml_path) as f:
+            framework_manifest = yaml.safe_load(f)
+        framework_manifest.setdefault("name", "main")
+        print("  Loaded framework config: plugin/plugin.yaml")
+
+    print("Scanning modules in %s..." % modules_dir)
+    manifests = find_modules(modules_dir, args.modules)
+    
+    if not manifests:
+        print("  No modules found!")
+        return 1
+
+    sorted_modules = topo_sort(manifests)
+
+    # Prepend framework manifest (always first, before all modules)
+    if framework_manifest:
+        sorted_modules.insert(0, framework_manifest)
+    names = [m["name"] for m in sorted_modules]
+    print("  Module order: %s" % " -> ".join(names))
+
+    librepy_flavor = args.skip_writeragent_extension
+
+    build_dir = os.path.join(PROJECT_ROOT, "build", "generated")
+
+    # Read Tools -> Options enable flag
+    enable_options = os.environ.get("WRITERAGENT_ENABLE_OPTIONS", "1") == "1"
+    if not enable_options:
+        print("  WRITERAGENT_ENABLE_OPTIONS is false. Skipping Tools -> Options generation.")
+
+    # 1. Addons.xcu (menus) — run first to collect conditional menus
+    if not args.skip_addons:
+        addons_xcu_path = os.path.join(build_dir, "Addons.xcu")
+        generate_addons_xcu(
+            sorted_modules, framework_manifest, addons_xcu_path)
+
+    # 2. _manifest.py
+    manifest_path = args.manifest_output or os.path.join(PROJECT_ROOT, "plugin", "_manifest.py")
+    generate_manifest_py(sorted_modules, manifest_path, librepy_flavor=librepy_flavor)
+
+    # 4. XDL dialog pages (single Dialogs/ tree — lowercase dialogs/ collides on Windows)
+    dialogs_dir = os.path.join(build_dir, "Dialogs")
+    generate_xdl_files(sorted_modules, dialogs_dir)
+    standalone_dialog_ids = generate_standalone_config_dialogs(sorted_modules, build_dir)
+    wa_dialogs_ext = os.path.join(PROJECT_ROOT, "extension", "Dialogs")
+    wa_dialogs_gen = os.path.join(build_dir, "Dialogs")
+    update_dialog_xlb(wa_dialogs_ext, standalone_dialog_ids, tpl_path=os.path.join(wa_dialogs_ext, "dialog.xlb.tpl"))
+    update_dialog_xlb(wa_dialogs_gen, standalone_dialog_ids, tpl_path=os.path.join(wa_dialogs_ext, "dialog.xlb.tpl"))
+
+    # 5. Accelerators.xcu (shortcuts)
+    if not args.skip_addons:
+        accel_xcu_path = os.path.join(build_dir, "Accelerators.xcu")
+        generate_accelerators_xcu(sorted_modules, accel_xcu_path)
+
+    # 6. META-INF/manifest.xml
+    if not args.skip_writeragent_extension:
+        manifest_xml_path = os.path.join(PROJECT_ROOT, "extension", "META-INF", "manifest.xml")
+        generate_manifest_xml(sorted_modules, manifest_xml_path)
+
+    # 7. SettingsDialog Tabs
+    generate_settings_dialog_tabs(
+        sorted_modules,
+        os.path.join(PROJECT_ROOT, "extension", "Dialogs", "SettingsDialog.xdl.tpl"),
+        os.path.join(PROJECT_ROOT, "build", "generated", "Dialogs", "SettingsDialog.xdl"),
+        librepy_flavor=librepy_flavor,
+    )
+
+    # 8. Patch version
+    if not args.skip_writeragent_extension:
+        patch_description_xml(os.path.join(PROJECT_ROOT, "extension"))
+
+    print("Done.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

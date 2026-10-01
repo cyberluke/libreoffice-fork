@@ -1,0 +1,133 @@
+name: doc
+title: Doc
+requires: [document, config, events]
+
+config:
+  grammar_proofreader_enabled:
+    type: string
+    default: "off"
+    widget: select
+    label: Enable grammar checker (Writer)
+    helper: "Off = disabled. AI (LLM) = use your configured text model/API. LanguageTool / Vale = local engines via Settings → Python venv. Harper = offline Rust binary auto-downloaded to your profile (no venv required)."
+    options:
+      - value: "off"
+        label: "Off"
+      - value: "llm"
+        label: "AI (LLM)"
+      - value: "harper"
+        label: "Harper"
+      - value: "languagetool"
+        label: "LanguageTool (Local)"
+      - value: "vale"
+        label: "Vale (Local Style) (WIP)"
+    inline: true
+    label_x: 8
+    label_width: 100
+    x: 110
+    width: 100
+
+
+  grammar_proofreader_model:
+    type: string
+    default: ""
+    widget: text
+    label: Model (optional)
+    helper: "Leave empty to use the same text model as chat."
+    label_x: 220
+    label_width: 95
+    x: 318
+    width: 106
+
+  grammar_proofreader_recheck:
+    type: string
+    default: ""
+    widget: button
+    label: Recheck this document
+    button_text: Recheck
+    helper: "Clears cached grammar results for this document and asks Writer to check again. Use after changing checker or model."
+    show_button_label: true
+    settings_persist: false
+    inline: true
+    label_width: 100
+    x: 110
+    width: 70
+
+  grammar_proofreader_pause_during_agent:
+    type: boolean
+    default: false
+    widget: checkbox
+    label: Pause grammar while chat/agent runs
+    helper: "When on, AI grammar skips background requests while sidebar chat or agent runs, to avoid concurrent API calls."
+    x: 220
+    width: 204
+
+
+
+  grammar_proofreader_batch_sentences:
+    type: int
+    default: 1
+    min: 1
+    max: 8
+    widget: number
+    label: Batch sentences
+    helper: "Number of sentences to send per LLM request (1-8). 1 (default) is most reliable; higher values are faster and cheaper but may hit token limits or cause model errors."
+    inline: true
+    x: 110
+    width: 100
+
+  grammar_proofreader_max_in_flight:
+    type: int
+    default: 1
+    min: 1
+    max: 8
+    widget: number
+    label: Concurrent requests
+    helper: "Max simultaneous background grammar API calls (1-8). 1 matches prior behavior. Raise for OpenRouter or other providers that allow parallel requests; use with care alongside sidebar chat."
+    label_x: 220
+    label_width: 100
+    x: 322
+    width: 100
+
+  grammar_proofreader_detect_language:
+    type: string
+    default: "off"
+    widget: select
+    label: Sentence language detection
+    helper: "Verify each complete sentence's language against the document locale. AI uses your grammar/chat API; Local uses langdetect in your Python venv (Settings → Python; no API call). Mismatches update CharLocale and re-check grammar."
+    options:
+      - value: "off"
+        label: "Off"
+      - value: "llm"
+        label: "AI (LLM)"
+      - value: "langdetect"
+        label: "Local (langdetect)"
+
+  chat_enter_key_sends_message:
+    type: boolean
+    default: true
+    widget: checkbox
+    label: Enter key sends sidebar chat message
+    helper: "When on, Enter in the sidebar query runs the same action as Send; Shift+Enter inserts a newline. When off, Enter inserts a newline."
+
+  agent_edit_review_mode:
+    type: string
+    default: "off"
+    widget: select
+    label: Agent edit review
+    helper: "Off = direct edits. Record = tracked changes you accept/reject yourself. Wait = apply_document_content blocks (on chat/MCP worker thread) until you review."
+    options:
+      - value: "off"
+        label: "Off"
+      - value: "record"
+        label: "Record (track changes)"
+      - value: "wait"
+        label: "Wait for review"
+
+  edit_review_timeout:
+    type: int
+    default: 900
+    min: 0
+    widget: number
+    internal: true
+    label: Edit review max wait (seconds)
+    helper: "Only used when mode is Wait. Max time apply_document_content blocks before returning with pending changes."

@@ -1,0 +1,493 @@
+# WriterAgent - AI Writing Assistant for LibreOffice
+# Copyright (c) 2024 John Balis
+# Copyright (c) 2026 KeithCu (modifications and relicensing)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+"""TreeService — heading tree and content strategies.
+
+Ported from mcp-libre services/writer/tree.py.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from plugin.framework.errors import ToolExecutionError
+from plugin.framework.service import ServiceBase
+from plugin.doc.document_helpers import is_cacheable_doc_key
+from plugin.doc.text_helpers import (
+    apply_chapter_number,
+    clone_text_range,
+    find_heading_by_chapter_number,
+    get_string_without_tracked_deletions,
+)
+
+
+log = logging.getLogger("writeragent.writer.nav.tree")
+
+
+def _heading_tree_fingerprint(doc: Any) -> int | None:
+    """Cheap stale-cache check when XModifyListener misses a programmatic edit.
+
+    Windows leftover Writer reuse (GHA 35466498641) can leave a live
+    RuntimeUID listener that does not fire on ``insertString``;
+    ``CharacterCount`` still moves. ``None`` means no signal — keep
+    listener-only caching (WriterDocStub / missing property).
+    """
+    try:
+        count = getattr(doc, "CharacterCount", None)
+        if count is not None:
+            return int(count)
+    except Exception:
+        pass
+    return None
+
+
+class TreeService(ServiceBase):
+    """Heading tree navigation with per-document caching."""
+
+    name: str | None = "writer_tree"
+
+    _doc_svc: Any
+    _bm_svc: Any
+
+    def __init__(self, services: Any) -> None:
+        self._doc_svc = services.document
+        self._bm_svc = services.writer_bookmarks
+        events = services.events
+        self._tree_cache: dict[Any, Any] = {}  # doc_key -> root node
+        self._tree_fp: dict[Any, Any] = {}  # doc_key -> CharacterCount at cache time
+        events.subscribe("document:cache_invalidated", self._on_cache_invalidated)
+
+    def _drop_tree_cache(self, key: Any | None = None) -> None:
+        if key is None:
+            self._tree_cache.clear()
+            self._tree_fp.clear()
+            return
+        self._tree_cache.pop(key, None)
+        self._tree_fp.pop(key, None)
+
+    def _on_cache_invalidated(self, doc: Any | None = None, key: Any | None = None, **_kw: Any) -> None:
+        # Prefer the stored key so close/unload can pop without calling
+        # doc_key() on a disposed model. key= must be checked before
+        # doc is None (emit(key=...) leaves doc defaulted to None).
+        if key is not None:
+            self._drop_tree_cache(key)
+        elif doc is None:
+            self._drop_tree_cache()
+        else:
+            self._drop_tree_cache(self._doc_svc.doc_key(doc))
+
+    # ── Tree building ──────────────────────────────────────────────
+
+    def build_heading_tree(self, doc: Any) -> dict[str, Any]:
+        """Build heading tree from paragraph enumeration. Single pass.
+
+        Returns root node dict:
+            {"level": 0, "text": "root", "para_index": -1,
+             "children": [...], "body_paragraphs": N}
+
+        Heading children may include ``chapter_number`` (Chapter Numbering
+        paint label). The key is omitted when numbering is off.
+        """
+        key = self._doc_svc.doc_key(doc)
+        fingerprint = _heading_tree_fingerprint(doc)
+        if is_cacheable_doc_key(key) and key in self._tree_cache:
+            cached_fp = self._tree_fp.get(key)
+            # No fingerprint (stubs) → listener-only. Same count → still valid.
+            # A moved CharacterCount means the modify listener missed the edit.
+            if fingerprint is None or fingerprint == cached_fp:
+                return self._tree_cache[key]
+
+        text = doc.getText()
+        enum = text.createEnumeration()
+        root: dict[str, Any] = {"level": 0, "text": "root", "para_index": -1, "children": [], "body_paragraphs": 0}
+        stack: list[dict[str, Any]] = [root]
+        para_index = 0
+
+        while enum.hasMoreElements():
+            element = enum.nextElement()
+            is_para = element.supportsService("com.sun.star.text.Paragraph")
+            is_table = element.supportsService("com.sun.star.text.TextTable")
+
+            if is_para:
+                outline_level = 0
+                try:
+                    outline_level = element.getPropertyValue("OutlineLevel")
+                except Exception:
+                    pass
+                if outline_level > 0:
+                    while len(stack) > 1 and stack[-1]["level"] >= outline_level:
+                        stack.pop()
+                    node = {"level": outline_level, "text": get_string_without_tracked_deletions(element), "para_index": para_index, "children": [], "body_paragraphs": 0}
+                    # Chapter Numbering paint label only — omit key when ListLabelString is empty.
+                    apply_chapter_number(node, element)
+                    stack[-1]["children"].append(node)
+                    stack.append(node)
+                else:
+                    stack[-1]["body_paragraphs"] += 1
+            elif is_table:
+                stack[-1]["body_paragraphs"] += 1
+
+            para_index += 1
+            self._doc_svc.yield_to_gui()
+
+        if is_cacheable_doc_key(key):
+            self._tree_cache[key] = root
+            self._tree_fp[key] = fingerprint
+        return root
+
+    def _count_all_children(self, node: dict[str, Any]) -> int:
+        count = len(node.get("children", []))
+        for child in node.get("children", []):
+            if "children" in child:
+                count += self._count_all_children(child)
+        return count + node.get("body_paragraphs", 0)
+
+    def _find_node_by_para_index(self, node: dict[str, Any], para_index: int) -> dict[str, Any] | None:
+        if node.get("para_index") == para_index:
+            return node
+        for child in node.get("children", []):
+            found = self._find_node_by_para_index(child, para_index)
+            if found is not None:
+                return found
+        return None
+
+    # ── Content strategies ─────────────────────────────────────────
+
+    def _get_body_preview(self, doc: Any, heading_para_index: int, max_chars: int = 100) -> str:
+        text = doc.getText()
+        enum = text.createEnumeration()
+        idx = 0
+        preview_parts = []
+        current_len = 0
+        found_heading = heading_para_index == -1
+
+        while enum.hasMoreElements():
+            element = enum.nextElement()
+            is_para = element.supportsService("com.sun.star.text.Paragraph")
+            if idx == heading_para_index:
+                found_heading = True
+                idx += 1
+                continue
+            if found_heading and is_para:
+                outline_level = 0
+                try:
+                    outline_level = element.getPropertyValue("OutlineLevel")
+                except Exception:
+                    pass
+                if outline_level > 0:
+                    break
+                para_text = get_string_without_tracked_deletions(element).strip()
+                if para_text:
+                    preview_parts.append(para_text)
+                    current_len += len(para_text)
+                    if current_len >= max_chars:
+                        break
+            idx += 1
+
+        full_preview = " ".join(preview_parts)
+        if len(full_preview) > max_chars:
+            full_preview = full_preview[:max_chars] + "..."
+        return full_preview
+
+    def _get_full_body_text(self, doc: Any, heading_para_index: int) -> str:
+        text = doc.getText()
+        enum = text.createEnumeration()
+        idx = 0
+        parts = []
+        found_heading = heading_para_index == -1
+
+        while enum.hasMoreElements():
+            element = enum.nextElement()
+            is_para = element.supportsService("com.sun.star.text.Paragraph")
+            if idx == heading_para_index:
+                found_heading = True
+                idx += 1
+                continue
+            if found_heading and is_para:
+                outline_level = 0
+                try:
+                    outline_level = element.getPropertyValue("OutlineLevel")
+                except Exception:
+                    pass
+                if outline_level > 0:
+                    break
+                parts.append(get_string_without_tracked_deletions(element))
+            idx += 1
+
+        return "\n".join(parts)
+
+    def _apply_content_strategy(self, node: dict[str, Any], doc: Any, strategy: str, max_chars: int = 100) -> None:
+        para_idx = node.get("para_index", -1)
+        if strategy in ("none", "heading_only"):
+            pass
+        elif strategy == "first_lines":
+            node["body_preview"] = self._get_body_preview(doc, para_idx, max_chars)
+        elif strategy == "full":
+            node["body_text"] = self._get_full_body_text(doc, para_idx)
+
+    def _serialize_tree_node(self, child: dict[str, Any], doc: Any, content_strategy: str, depth: int, current_depth: int = 1, bookmark_map: dict[Any, Any] | None = None) -> dict[str, Any]:
+        node = {"type": "heading", "level": child["level"], "text": child["text"], "para_index": child["para_index"], "bookmark": (bookmark_map or {}).get(child["para_index"]), "children_count": self._count_all_children(child), "body_paragraphs": child["body_paragraphs"]}
+        if child.get("chapter_number"):
+            node["chapter_number"] = child["chapter_number"]
+        self._apply_content_strategy(node, doc, content_strategy)
+        if depth == 0 or current_depth < depth:
+            if child.get("children"):
+                node["children"] = [self._serialize_tree_node(sub, doc, content_strategy, depth, current_depth + 1, bookmark_map) for sub in child["children"]]
+        return node
+
+    # ── Public tree API ────────────────────────────────────────────
+
+    def get_document_tree(self, doc: Any, content_strategy: str = "first_lines", depth: int = 1) -> dict[str, Any]:
+        """Get serialized document tree with content strategies."""
+        tree = self.build_heading_tree(doc)
+        bookmark_map = self._bm_svc.ensure_heading_bookmarks(doc)
+
+        children = [self._serialize_tree_node(child, doc, content_strategy, depth, bookmark_map=bookmark_map) for child in tree["children"]]
+
+        # Count total paragraphs
+        text = doc.getText()
+        enum = text.createEnumeration()
+        total = 0
+        while enum.hasMoreElements():
+            enum.nextElement()
+            total += 1
+
+        try:
+            self._doc_svc.annotate_pages(children, doc)
+        except Exception:
+            pass
+
+        page_count = self._doc_svc.get_page_count(doc)
+
+        return {"status": "ok", "content_strategy": content_strategy, "depth": depth, "children": children, "body_before_first_heading": tree["body_paragraphs"], "total_paragraphs": total, "page_count": page_count}
+
+    def get_heading_children(self, doc: Any, heading_para_index: int | None = None, heading_bookmark: str | None = None, locator: str | None = None, content_strategy: str = "first_lines", depth: int = 1) -> dict[str, Any]:
+        """Get children of a heading (body paragraphs + sub-headings)."""
+        if locator is not None and heading_para_index is None:
+            resolved = self._doc_svc.resolve_locator(doc, locator)
+            heading_para_index = resolved.get("para_index")
+        elif heading_bookmark is not None and heading_para_index is None:
+            if not hasattr(doc, "getBookmarks"):
+                raise ToolExecutionError("Document doesn't support bookmarks")
+            bm_sup = doc.getBookmarks()
+            if not bm_sup.hasByName(heading_bookmark):
+                raise ToolExecutionError("Bookmark '%s' not found" % heading_bookmark)
+            bm = bm_sup.getByName(heading_bookmark)
+            anchor = bm.getAnchor()
+            para_ranges = self._doc_svc.get_paragraph_ranges(doc)
+            heading_para_index = self._doc_svc.find_paragraph_for_range(anchor, para_ranges, doc.getText())
+
+        if heading_para_index is None:
+            raise ToolExecutionError("Provide locator, heading_para_index, or heading_bookmark")
+
+        tree = self.build_heading_tree(doc)
+        bookmark_map = self._bm_svc.ensure_heading_bookmarks(doc)
+        target = self._find_node_by_para_index(tree, heading_para_index)
+        if target is None:
+            raise ToolExecutionError("Heading at paragraph %d not found" % heading_para_index)
+
+        children = []
+        text = doc.getText()
+        enum = text.createEnumeration()
+        idx = 0
+        found_heading = False
+        parent_level = target["level"]
+
+        while enum.hasMoreElements():
+            element = enum.nextElement()
+            is_para = element.supportsService("com.sun.star.text.Paragraph")
+            if idx == heading_para_index:
+                found_heading = True
+                idx += 1
+                continue
+            if found_heading and is_para:
+                outline_level = 0
+                try:
+                    outline_level = element.getPropertyValue("OutlineLevel")
+                except Exception:
+                    pass
+                if outline_level > 0 and outline_level <= parent_level:
+                    break
+                if outline_level > 0:
+                    break
+                para_text = get_string_without_tracked_deletions(element)
+                preview = para_text[:100] + "..." if len(para_text) > 100 else para_text
+                if content_strategy == "full":
+                    children.append({"type": "body", "para_index": idx, "text": para_text})
+                elif content_strategy not in ("none", "heading_only"):
+                    children.append({"type": "body", "para_index": idx, "preview": preview})
+                else:
+                    children.append({"type": "body", "para_index": idx})
+            idx += 1
+            self._doc_svc.yield_to_gui()
+
+        for child in target["children"]:
+            node = self._serialize_tree_node(child, doc, content_strategy, depth, bookmark_map=bookmark_map)
+            children.append(node)
+
+        parent = {"level": target["level"], "text": target["text"], "para_index": target["para_index"], "bookmark": bookmark_map.get(target["para_index"])}
+        if target.get("chapter_number"):
+            parent["chapter_number"] = target["chapter_number"]
+        return {"status": "ok", "parent": parent, "content_strategy": content_strategy, "depth": depth, "children": children}
+
+    # ── Locator resolution (called by document.resolve_locator) ────
+
+    def resolve_writer_locator(self, doc: Any, loc_type: str, loc_value: Any) -> dict[str, Any]:
+        """Resolve Writer-specific locators to {para_index: N}."""
+        if loc_type == "bookmark":
+            return self._resolve_bookmark_locator(doc, loc_value)
+
+        if loc_type == "page":
+            page_num = int(loc_value)
+            try:
+                controller = doc.getCurrentController()
+                vc = controller.getViewCursor()
+                saved = None
+                try:
+                    saved = clone_text_range(vc)
+                except Exception:
+                    pass
+
+                doc.lockControllers()
+                try:
+                    vc.jumpToPage(page_num)
+                    vc.jumpToStartOfPage()
+                    anchor = vc.getStart()
+                finally:
+                    if saved is not None:
+                        vc.gotoRange(saved, False)
+                    doc.unlockControllers()
+                para_ranges = self._doc_svc.get_paragraph_ranges(doc)
+                text_obj = doc.getText()
+                para_idx = self._doc_svc.find_paragraph_for_range(anchor, para_ranges, text_obj)
+                return {"para_index": para_idx}
+            except Exception as e:
+                raise ToolExecutionError("Cannot resolve page:%s — %s" % (loc_value, e))
+
+        if loc_type == "section":
+            if not hasattr(doc, "getTextSections"):
+                raise ToolExecutionError("Document does not support sections")
+            sections = doc.getTextSections()
+            if not sections.hasByName(loc_value):
+                raise ToolExecutionError("Section '%s' not found" % loc_value)
+            section = sections.getByName(loc_value)
+            anchor = section.getAnchor()
+            para_ranges = self._doc_svc.get_paragraph_ranges(doc)
+            text_obj = doc.getText()
+            para_idx = self._doc_svc.find_paragraph_for_range(anchor, para_ranges, text_obj)
+            return {"para_index": para_idx, "section_name": loc_value}
+
+        if loc_type == "heading":
+            parts = [int(p) for p in loc_value.split(".")]
+            tree = self.build_heading_tree(doc)
+            node = tree
+            for part in parts:
+                children = node.get("children", [])
+                if part < 1 or part > len(children):
+                    raise ToolExecutionError("Heading index %d out of range (1..%d) in 'heading:%s'" % (part, len(children), loc_value))
+                node = children[part - 1]
+            return {"para_index": node["para_index"]}
+
+        if loc_type == "chapter_number":
+            # Exact match on the emitted field — never invent from sibling ordinals.
+            tree = self.build_heading_tree(doc)
+            found = find_heading_by_chapter_number(tree, str(loc_value))
+            if found is None:
+                raise ToolExecutionError(
+                    "No heading with chapter_number:%s. Chapter Numbering may be off "
+                    "(writer_tree omits chapter_number when the outline label is empty), "
+                    "or no heading has that label. heading: is the sibling-ordinal path, "
+                    "not the chapter label." % loc_value
+                )
+            return {"para_index": found["para_index"]}
+
+        if loc_type == "heading_text":
+            result = self._find_heading_by_text(doc, loc_value)
+            if result is None:
+                raise ToolExecutionError("No heading matching '%s' found" % loc_value)
+            return {"para_index": result["para_index"]}
+
+        raise ToolExecutionError("Unknown Writer locator type: '%s'" % loc_type)
+
+    def _resolve_bookmark_locator(self, doc: Any, bookmark_name: str) -> dict[str, Any]:
+        if not hasattr(doc, "getBookmarks"):
+            raise ToolExecutionError("Document doesn't support bookmarks")
+        bookmarks = doc.getBookmarks()
+        if not bookmarks.hasByName(bookmark_name):
+            hint = "Bookmark '%s' not found." % bookmark_name
+            if bookmark_name.startswith("_mcp_"):
+                hint += " Use heading_text:<text> locator for resilient heading addressing, or call get_document_tree to refresh bookmarks."
+                existing = [n for n in bookmarks.getElementNames() if n.startswith("_mcp_")]
+                if existing:
+                    hint += " Existing bookmarks: " + ", ".join(existing[:10])
+            raise ToolExecutionError(hint)
+        bm = bookmarks.getByName(bookmark_name)
+        anchor = bm.getAnchor()
+        para_ranges = self._doc_svc.get_paragraph_ranges(doc)
+        text_obj = doc.getText()
+        para_idx = self._doc_svc.find_paragraph_for_range(anchor, para_ranges, text_obj)
+        return {"para_index": para_idx}
+
+    def _find_heading_by_text(self, doc: Any, search_text: str) -> dict[str, Any] | None:
+        """Find heading by text (case-insensitive, fuzzy)."""
+        tree = self.build_heading_tree(doc)
+        bookmark_map = self._bm_svc.get_mcp_bookmark_map(doc)
+        headings = self._flatten_headings(tree)
+
+        search_lower = search_text.lower().strip()
+        if not search_lower:
+            return None
+
+        best_prefix = None
+        best_substring = None
+
+        for h in headings:
+            text_lower = h["text"].lower()
+            text_stripped = text_lower.strip()
+
+            # Exact match - highest priority, return immediately
+            if text_stripped == search_lower:
+                h["bookmark"] = bookmark_map.get(h["para_index"])
+                return h
+
+            # Prefix match - second priority
+            if best_prefix is None and text_stripped.startswith(search_lower):
+                best_prefix = h
+
+            # Substring match - third priority
+            if best_substring is None and search_lower in text_lower:
+                best_substring = h
+
+        if best_prefix:
+            best_prefix["bookmark"] = bookmark_map.get(best_prefix["para_index"])
+            return best_prefix
+
+        if best_substring:
+            best_substring["bookmark"] = bookmark_map.get(best_substring["para_index"])
+            return best_substring
+
+        return None
+
+    def _flatten_headings(self, node: dict[str, Any]) -> list[dict[str, Any]]:
+        result = []
+        for child in node.get("children", []):
+            flat = {"text": child["text"], "para_index": child["para_index"], "level": child["level"]}
+            if child.get("chapter_number"):
+                flat["chapter_number"] = child["chapter_number"]
+            result.append(flat)
+            result.extend(self._flatten_headings(child))
+        return result

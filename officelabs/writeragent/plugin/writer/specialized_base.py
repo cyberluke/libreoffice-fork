@@ -1,0 +1,319 @@
+# WriterAgent - AI Writing Assistant for LibreOffice
+# Copyright (c) 2024 John Balis
+# Copyright (c) 2026 KeithCu (modifications and relicensing)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+"""Specialized Writer toolset infrastructure and delegation."""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Any, ClassVar, Type
+
+from plugin.framework.tool import ToolBase
+
+if TYPE_CHECKING:
+    from plugin.framework.tool import ToolContext
+from plugin.calc.base import ToolCalcSpecialBase
+from plugin.draw.base import ToolDrawFormBase, ToolDrawImageBase, ToolDrawTableBase
+from plugin.doc.visual_helpers import SHAPE_TOOL_UNO_SERVICES
+from plugin.framework.constants import USE_SUB_AGENT
+from plugin.framework.prompts import DELEGATION_PUBLIC_WEB_HINT, DELEGATION_USER_FILE_DATA_HINT
+from plugin.doc.specialized_base import DelegateToSpecializedBase
+
+log = logging.getLogger("writeragent.writer")
+
+
+class ToolWriterSpecialBase(ToolBase):
+    """Base class for all specialized Writer tools.
+
+    Tools deriving from this base are NOT exposed directly to the main
+    agent's general toolset. Instead, they are exposed only to the
+    specialized sub-agent when the user delegates a task to that specific
+    domain (e.g., 'tables', 'charts').
+    """
+
+    # Not on the main chat default tool list (tier specialized); exposed via delegation only.
+    tier: str = "specialized"
+
+    # The domain name this tool belongs to (e.g., "tables").
+    # Subclasses MUST override this.
+    specialized_domain: ClassVar[str | None] = None
+    specialized_domain_description: ClassVar[str | None] = None
+    required_core_tools: ClassVar[frozenset[str] | None] = frozenset(["get_document_content", "get_document_tree"])
+    uno_services: list[str] | None = ["com.sun.star.text.TextDocument"]
+
+
+class DelegateToSpecializedWriter(DelegateToSpecializedBase):
+    """Gateway tool to delegate tasks to specialized Writer toolsets.
+
+    This spins up a sub-agent with a limited set of tools (e.g., only Table tools)
+    to focus on the user's specific request, preventing context pollution.
+    """
+
+    name: str | None = "delegate_to_specialized_writer_toolset"
+    description: str = (
+        "Delegates a specialized task with a focused toolset. "
+        f"document_research {DELEGATION_USER_FILE_DATA_HINT}; web_research {DELEGATION_PUBLIC_WEB_HINT}. "
+        "Also: charts, fields, styles, page, textframes, embedded (active doc OLE only), shapes, indexes, "
+        "bookmarks, tracking, footnotes, tables, forms, images, mail_merge, vision (extract text and structure from images when configured)."
+    )
+
+    uno_services: list[str] | None = ["com.sun.star.text.TextDocument"]
+    # Abstract: no execute(); stored for __subclasses__ discovery only.
+    _special_base_class: ClassVar[Type[ToolBase]] = ToolWriterSpecialBase  # type: ignore[type-abstract]
+    _agent_label: ClassVar[str] = "Writer"
+
+
+# --- Domain-Specific Base Classes ---
+
+
+class ToolWriterStyleBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "styles"
+    specialized_domain_description: ClassVar[str | None] = "Manage and edit paragraph, character, and list styles."
+    required_core_tools: ClassVar[frozenset[str] | None] = (ToolWriterSpecialBase.required_core_tools or frozenset()) | frozenset(["search_in_document"])
+    intent: str | None = "edit"
+
+
+class ToolWriterPageBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "page"
+    specialized_domain_description: ClassVar[str | None] = "Page layout, margins, columns, headers, footers, and page breaks."
+    intent: str | None = "edit"
+
+
+class ToolWriterTextFramesBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "textframes"
+    specialized_domain_description: ClassVar[str | None] = "Manage text frames, their content, and positioning."
+    intent: str | None = "edit"
+
+
+class ToolWriterEmbeddedBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "embedded"
+    specialized_domain_description: ClassVar[str | None] = "OLE in active doc only (not sibling files on disk)."
+    intent: str | None = "edit"
+
+
+class ToolWriterImageBase(ToolWriterSpecialBase, ToolDrawImageBase):
+    specialized_domain: ClassVar[str | None] = "images"
+    specialized_domain_description: ClassVar[str | None] = (
+        "In-document image operations (image_list) and nearby folder images (image_list_nearby_files); "
+        "generate new images, or edit a selected image with image_generate(source_image='selection')."
+    )
+    intent: str | None = "media"
+    # Writer + Draw/Impress graphic hosts; ignore keeps the shared constant assignable.
+    uno_services: list[str] | None = SHAPE_TOOL_UNO_SERVICES  # type: ignore[assignment]
+
+
+class ToolWriterVisionBase(ToolWriterSpecialBase):
+    """Marker for Writer delegation prompt listing (domain=vision); see plugin/vision/vision_tools.py."""
+
+    specialized_domain: ClassVar[str | None] = "vision"
+    specialized_domain_description: ClassVar[str | None] = (
+        "Extract text and structure (layout, tables) from embedded graphics; extract_structure_from_image."
+    )
+    intent: str | None = "media"
+
+
+class ToolWriterShapeBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "shapes"
+    specialized_domain_description: ClassVar[str | None] = "Create and edit drawing shapes, lines, and connectors."
+
+
+class ToolWriterPythonBase(ToolWriterSpecialBase):
+    """Marker for Writer delegation prompt listing (domain=python); see plugin/calc/python/venv.py."""
+
+    specialized_domain: ClassVar[str | None] = "python"
+    specialized_domain_description: ClassVar[str | None] = (
+        "Run Python / Numpy in the user-configured venv (subprocess)."
+    )
+
+
+class ToolWriterChartBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "charts"
+    specialized_domain_description: ClassVar[str | None] = "Create and edit data charts within the document."
+
+
+class ToolWriterIndexBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "indexes"
+    specialized_domain_description: ClassVar[str | None] = (
+        "Manage Table of Contents, alphabetical indexes, and native bibliography cites plus the reference table. "
+        "Customized TOC rows: indexes_insert_toc_entry, indexes_delete_toc_entry, and indexes_refresh_toc_entry "
+        "edit one entry and do not call update(). indexes_update_all rebuilds the TOC and drops custom formatting."
+    )
+
+
+class ToolWriterFieldBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "fields"
+    specialized_domain_description: ClassVar[str | None] = "Manage document fields, variables, and cross-references."
+    required_core_tools: ClassVar[frozenset[str] | None] = (ToolWriterSpecialBase.required_core_tools or frozenset()) | frozenset(["search_in_document"])
+
+
+class ToolWriterCommentBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "comments"
+    specialized_domain_description: ClassVar[str | None] = "View, add, and manage document comments and feedback."
+    intent: str | None = "review"
+
+
+class WriterAgentSpecialTracking(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "tracking"
+    specialized_domain_description: ClassVar[str | None] = "Manage and review tracked changes (redlines) in the document."
+    intent: str | None = "review"
+
+
+class ToolWriterBookmarkBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "bookmarks"
+    specialized_domain_description: ClassVar[str | None] = "Manage document bookmarks and navigation points."
+    required_core_tools: ClassVar[frozenset[str] | None] = (ToolWriterSpecialBase.required_core_tools or frozenset()) | frozenset(["search_in_document"])
+    intent: str | None = "navigate"
+
+
+class ToolWriterStructuralBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "structural"
+    specialized_domain_description: ClassVar[str | None] = "Document navigation, headings, and structural summary."
+    intent: str | None = "navigate"
+
+
+class ToolWriterTableBase(ToolWriterSpecialBase, ToolDrawTableBase):
+    specialized_domain: ClassVar[str | None] = "tables"
+    specialized_domain_description: ClassVar[str | None] = "Read and edit table structure and cell contents (rows, columns, cells)."
+    intent: str | None = "edit"
+    # Writer + Draw/Impress table hosts; ignore keeps the union assignable across mixins.
+    uno_services: list[str] | None = [  # type: ignore[assignment]
+        "com.sun.star.text.TextDocument",
+        "com.sun.star.drawing.DrawingDocument",
+        "com.sun.star.presentation.PresentationDocument",
+    ]
+
+
+class ToolWriterFootnoteBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "footnotes"
+    specialized_domain_description: ClassVar[str | None] = "Create and manage footnotes and endnotes."
+    required_core_tools: ClassVar[frozenset[str] | None] = (ToolWriterSpecialBase.required_core_tools or frozenset()) | frozenset(["search_in_document"])
+    intent: str | None = "edit"
+
+
+class ToolWriterFormBase(ToolWriterSpecialBase, ToolCalcSpecialBase, ToolDrawFormBase):
+    """Form tools for Writer, Calc, and Draw/Impress (single ``specialized_domain``; union ``uno_services`` on concrete tools)."""
+
+    # Same key on both ToolWriterSpecialBase / ToolCalcSpecialBase; explicit ClassVar for checkers.
+    specialized_domain: ClassVar[str | None] = "forms"
+    specialized_domain_description: ClassVar[str | None] = "Create and manage form templates and UI controls."
+    intent: str | None = "edit"
+    # Concrete form tools override this with the Writer/Calc/Draw union.
+    uno_services: list[str] | None = ["com.sun.star.text.TextDocument"]  # type: ignore[assignment]
+
+
+class ToolWriterWebResearchBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "web_research"
+    specialized_domain_description: ClassVar[str | None] = DELEGATION_PUBLIC_WEB_HINT
+
+
+class ToolWriterDocumentResearchBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "document_research"
+    specialized_domain_description: ClassVar[str | None] = f"{DELEGATION_USER_FILE_DATA_HINT}; one delegation for file(s), matching descriptions"
+
+
+class ToolWriterMailMergeBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "mail_merge"
+    specialized_domain_description: ClassVar[str | None] = "Configure data sources, insert database merge fields, and execute mail merge jobs."
+    required_core_tools: ClassVar[frozenset[str] | None] = (ToolWriterSpecialBase.required_core_tools or frozenset()) | frozenset(["search_in_document"])
+    intent: str | None = "edit"
+
+
+'''
+# Mock domain base classes: uncomment when implementations are ready.
+class ToolWriterSectionBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "sections"
+    specialized_domain_description: ClassVar[str | None] = "Manage document sections, protection, columns, and properties."
+    intent = "edit"
+
+
+class ToolWriterBibliographyBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "bibliography"
+    specialized_domain_description: ClassVar[str | None] = "Manage citations and generate document bibliographies."
+    intent = "edit"
+
+
+class ToolWriterWatermarkBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "watermark"
+    specialized_domain_description: ClassVar[str | None] = "Insert, configure, or remove page watermarks and backgrounds."
+    intent = "edit"
+
+
+class ToolWriterAutoTextBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "autotext"
+    specialized_domain_description: ClassVar[str | None] = "Insert, list, and manage AutoText quick-insert entries."
+    intent = "edit"
+
+
+class ToolWriterTocEnhancementBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "toc_enhancement"
+    specialized_domain_description: ClassVar[str | None] = "Advanced multi-level custom Table of Contents design and enhancement."
+    intent = "edit"
+
+
+class ToolWriterDocumentAutomationBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "document_automation"
+    specialized_domain_description: ClassVar[str | None] = "Run macros, register event bindings, and automate document scripting."
+    intent = "edit"
+
+
+class ToolWriterSecurityBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "security"
+    specialized_domain_description: ClassVar[str | None] = "Digital signatures, document encryption, and pattern-based content redaction."
+    intent = "review"
+
+
+class ToolWriterDocumentManagementBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "document_management"
+    specialized_domain_description: ClassVar[str | None] = "Read and write document metadata, compare documents, and assemble files."
+    intent = "review"
+
+
+class ToolWriterCollaborationBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "collaboration"
+    specialized_domain_description: ClassVar[str | None] = "Manage editing users, custom notifications, and conflict resolution."
+    intent = "review"
+
+
+class ToolWriterCustomizationBase(ToolWriterSpecialBase):
+    specialized_domain: ClassVar[str | None] = "customization"
+    specialized_domain_description: ClassVar[str | None] = "Customize keyboard shortcuts, menu items, and custom commands."
+    intent = "edit"
+'''
+
+
+class SpecializedWorkflowFinished(ToolBase):
+    """Tool called by the main chat model to indicate it has completed its specialized task.
+    This mimics the built-in 'final_answer' tool of smolagents for the in-place switching approach.
+    """
+
+    name: str | None = "specialized_workflow_finished"
+    description: str = "Provides a final answer to the given task and exits the specialized toolset mode."
+    parameters: dict[str, Any] | None = {"type": "object", "properties": {"answer": {"type": "string", "description": "The final answer to the task. Use only standard Python types (numbers, strings, lists), no Numpy types."}}, "required": ["answer"]}
+    tier: str = "specialized_control"
+    # Name-based detection treated this as a document write, so a read-only
+    # document_research target rejected the exit tool. It only clears the
+    # active domain. Sibling control tools already set this flag.
+    is_mutation: bool | None = False
+    is_final_answer_tool: bool = True
+
+    def execute(self, ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
+        # Allow the main LLM loop to exit specialized mode
+        if not USE_SUB_AGENT:
+            callback = getattr(ctx, "set_active_domain_callback", None)
+            if callback:
+                callback(None)
+
+        return {"status": "ok", "finished": True, "answer": kwargs.get("answer"), "message": "Specialized task complete. Normal toolset restored."}

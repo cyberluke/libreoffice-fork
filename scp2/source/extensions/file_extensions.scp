@@ -35,6 +35,22 @@ End
 
 #endif
 
+/* ** OfficeLabs AI (bundled WriterAgent) ** */
+/* The filelist is produced by gb_ExtensionPackage
+   (officelabs/ExtensionPackage_officelabs-ai.mk) and is resolved under
+   {filelistpath}/ExtensionPackage by the installer compiler. */
+
+#ifdef WITH_EXTENSION_OFFICELABS_AI
+
+File gid_File_Oxt_OfficeLabsAI
+    TXT_FILE_BODY;
+    Styles = (PACKED, FILELIST);
+    Dir = FILELIST_DIR;
+    Name = "officelabs-ai.filelist";
+End
+
+#endif
+
 /* ** NLPSolver ** */
 
 #ifdef WITH_EXTENSION_NLPSOLVER

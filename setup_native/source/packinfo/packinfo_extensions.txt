@@ -63,6 +63,20 @@ description = "NLPSolver extension for %PRODUCTNAME %PRODUCTVERSION"
 destpath = "/opt"
 packageversion = "%PACKAGEVERSION"
 End
+Start
+module = "gid_Module_Optional_Extensions_OFFICELABSAI"
+solarispackagename = "%BASISPACKAGEPREFIX%WITHOUTDOTPRODUCTVERSION-officelabs-ai"
+solarisrequires =  "%BASISPACKAGEPREFIX%WITHOUTDOTPRODUCTVERSION-core (Name="Core module for %PRODUCTNAME %PRODUCTVERSION")"
+packagename = "%BASISPACKAGEPREFIX%PRODUCTVERSION-officelabs-ai"
+requires = "%BASISPACKAGEPREFIX%PRODUCTVERSION-core %PACKAGEVERSION %PACKAGEVERSION-%PACKAGEREVISION"
+linuxpatchrequires = ""
+copyright = "2026 OfficeLabs"
+solariscopyright = "solariscopyrightfile"
+vendor = "OfficeLabs"
+description = "OfficeLabs AI assistant for %PRODUCTNAME %PRODUCTVERSION (bundled WriterAgent, see officelabs/writeragent/UPSTREAM)"
+destpath = "/opt"
+packageversion = "%PACKAGEVERSION"
+End
 
 Start
 module = "gid_Module_Optional_Extensions_Script_Provider_For_BS"

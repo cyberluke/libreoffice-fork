@@ -1,0 +1,149 @@
+# WriterAgent - AI Writing Assistant for LibreOffice
+# Copyright (c) 2026 KeithCu
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""Shared action dispatching and dialog helpers for main.py and main_core.py.
+
+Concurrency: menu action names map to Python callables in
+``_ACTION_HANDLERS``, filled at import/bootstrap, then only read when the
+user picks a menu item. No lock. ``open_dialog_safely`` talks to
+LibreOffice dialogs — call it from the UI thread, not from an HTTP or
+LLM worker.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Callable
+
+_ACTION_HANDLERS: dict[str, Callable[..., Any]] = {}
+log = logging.getLogger(__name__)
+
+
+def register_action_handler(module_name: str, action_name: str, handler_func: Callable[..., Any]) -> None:
+    """Register an action handler function."""
+    _ACTION_HANDLERS[f"{module_name}.{action_name}"] = handler_func
+
+
+def get_action_handler(command: str) -> Callable[..., Any] | None:
+    """Get a registered action handler by command string."""
+    return _ACTION_HANDLERS.get(command)
+
+
+def open_dialog_safely(dialog_func: Callable[..., Any], error_msg: str, *args: Any, **kwargs: Any) -> None:
+    """Safely open a dialog with standardized error handling and reporting."""
+    from plugin.framework.errors import DocumentDisposedError, UnoObjectError
+    from plugin.framework.uno_context import get_ctx
+
+    try:
+        dialog_func(get_ctx(), *args, **kwargs)
+    except DocumentDisposedError:
+        log.debug("Dialog opening aborted: document disposed")
+    except UnoObjectError as e:
+        log.warning("UNO error opening dialog: %s", e.message)
+    except Exception as e:
+        from plugin.framework.errors import is_disposed_exception
+
+        if is_disposed_exception(e):
+            log.debug("Dialog opening aborted: document disposed")
+            return
+        log.exception("%s", error_msg)
+        # error_msg is a caller sentence, not a catalog msgid. Do not pass it through _().
+        detail = f"{error_msg}: {e}"
+        try:
+            from plugin.chatbot.dialogs import msgbox_with_report
+            from plugin.framework.i18n import _
+
+            msgbox_with_report(get_ctx(), _("Error"), detail, box_type=3, reportable=True, report_title=error_msg, report_extra=str(e))
+        except Exception:
+            log.exception("msgbox_with_report failed")
+            try:
+                from plugin.chatbot.dialogs import msgbox
+                from plugin.framework.i18n import _
+
+                msgbox(get_ctx(), _("Error"), detail, box_type=3)
+            except Exception:
+                log.exception("msgbox failed")
+
+
+def register_common_handlers() -> None:
+    """Register handlers shared between the core extension and the main extension."""
+    from plugin.framework.uno_context import get_ctx
+
+    def _report_bug() -> None:
+        from plugin.chatbot.bug_report import open_bug_report_in_browser
+
+        open_bug_report_in_browser(get_ctx(), title="Bug report")
+
+    register_action_handler("main", "report_bug", _report_bug)
+
+    def _run_python() -> None:
+        from plugin.scripting.python_runner import run_python_dialog
+
+        run_python_dialog(get_ctx())
+
+    register_action_handler("scripting", "run_python_dialog", _run_python)
+
+    def _edit_python_cell() -> None:
+        from plugin.calc.python.editor import open_python_cell_editor
+
+        open_python_cell_editor(get_ctx())
+
+    register_action_handler("scripting", "edit_python_cell", _edit_python_cell)
+
+    def _reset_python_session() -> None:
+        from plugin.scripting.session_manager import reset_workbook_python_session
+
+        reset_workbook_python_session(get_ctx())
+
+    register_action_handler("scripting", "reset_python_session", _reset_python_session)
+
+    def _notebook_run_all() -> None:
+        from plugin.notebook.notebook_runner import run_all_from_menu
+
+        run_all_from_menu(get_ctx())
+
+    register_action_handler("notebook", "run_all", _notebook_run_all)
+
+    def _notebook_run_from_here() -> None:
+        from plugin.notebook.notebook_runner import run_from_here_from_menu
+
+        run_from_here_from_menu(get_ctx())
+
+    register_action_handler("notebook", "run_from_here", _notebook_run_from_here)
+
+    def _notebook_stop() -> None:
+        from plugin.notebook.notebook_runner import stop_from_menu
+
+        stop_from_menu(get_ctx())
+
+    register_action_handler("notebook", "stop", _notebook_stop)
+
+    def _edit_init_script() -> None:
+        from plugin.calc.python.init_script_editor import open_init_script_editor
+
+        open_init_script_editor(get_ctx())
+
+    register_action_handler("scripting", "edit_init_script", _edit_init_script)
+
+    def _open_vision_settings() -> None:
+        from plugin.chatbot.module_config_dialog import show_vision_settings_dialog
+
+        open_dialog_safely(show_vision_settings_dialog, "Failed to open Vision OCR settings")
+
+    register_action_handler("vision", "open_settings", _open_vision_settings)
+
+    def _insert_latex() -> None:
+        from plugin.writer.math.latex_dialog import insert_latex_math_dialog
+
+        insert_latex_math_dialog(get_ctx())
+
+    register_action_handler("writer", "insert_latex_dialog", _insert_latex)
+
+    def _open_text_analytics() -> None:
+        from plugin.scripting.text_analytics_ui import TextAnalyticsDialog
+
+        TextAnalyticsDialog.show(get_ctx())
+
+    register_action_handler("textanalytics", "open_dialog", _open_text_analytics)

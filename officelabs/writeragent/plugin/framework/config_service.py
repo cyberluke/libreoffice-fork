@@ -1,0 +1,326 @@
+# WriterAgent - AI Writing Assistant for LibreOffice
+# Copyright (c) 2026 KeithCu
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""
+UNO Service implementation for WriterAgent configuration.
+"""
+
+# crosshair: off
+from __future__ import annotations
+
+import os
+import logging
+from typing import Any, Callable, cast
+from plugin.framework.deal_shim import deal
+
+from plugin.framework.service import ServiceBase
+from plugin.framework.event_bus import global_event_bus
+from plugin.framework.errors import ConfigError, ConfigValidationError
+
+from plugin.framework.config import get_config, set_config, remove_config, get_config_dict, get_current_endpoint, set_api_key_for_endpoint, parse_config_json_text, _load_config_dict, _write_config_file, AI_SIMPLE_FIELDS
+from plugin.framework.config_schema import WriterAgentConfig
+from plugin.framework.client.model_fetcher import get_stt_model, set_image_model, set_text_model
+
+_unohelper_mod: Any
+try:
+    import unohelper as _unohelper_impl
+
+    _unohelper_mod = _unohelper_impl
+except ImportError:
+    _unohelper_mod = None
+unohelper: Any = _unohelper_mod
+
+
+log = logging.getLogger(__name__)
+
+
+class ConfigAccessError(ConfigError):
+    """Raised when a module tries to access a private config key."""
+
+    code: str = "CONFIG_ACCESS_ERROR"
+
+
+def _dummy_impl(name: str, services: Any = ()) -> Any:
+    def decorator(cls: type[Any]) -> Any:
+        return cls
+
+    return decorator
+
+
+def _uno_service_implementation_decorator() -> Callable[..., Any]:
+    """Return UNO's ``unohelper.implementation`` or a no-op when unohelper is mocked.
+
+    Headless pytest loads ``conftest`` before ``plugin.framework.config``; ``unohelper``
+    may be a ``MagicMock``. That exposes a fake ``implementation`` callable, which is
+    not LibreOffice's registration helper and breaks ``ConfigService()`` if used as a
+    class decorator (tests would get nested mocks instead of the real class).
+    """
+    if not unohelper:
+        return _dummy_impl
+    impl = getattr(unohelper, "implementation", None)
+    if impl is None:
+        return _dummy_impl
+    try:
+        from unittest.mock import Mock
+
+        if isinstance(impl, Mock):
+            return _dummy_impl
+    except ImportError:
+        pass
+    if not callable(impl):
+        return _dummy_impl
+    return cast("Callable[..., Any]", impl)
+
+
+_implementation: Callable[..., Any] = _uno_service_implementation_decorator()
+
+
+@_implementation("org.extension.writeragent.ConfigService")
+class ConfigService(ServiceBase):
+    name: str | None = "config"
+
+    # Declared so mypy can type initialize/set_events/get after those methods
+    # gained annotations (same adjacent-field pattern as plugin/mcp).
+    _defaults: dict[str, Any]
+    _manifest: dict[str, Any]
+    _events: Any
+    _config_path: str | None
+
+    def __init__(self) -> None:
+        self._defaults = {}  # "module.key" -> default_value
+        self._manifest = {}  # "module.key" -> field schema
+        self._events = None  # EventBus, set after init
+        self._config_path = None  # For testing
+
+    def initialize(self, ctx: Any) -> None:
+        pass
+
+    def set_events(self, events: Any) -> None:
+        """Wire the event bus."""
+        self._events = events
+
+    def set_manifest(self, manifest: Any) -> None:
+        """Load config schemas from the merged manifest."""
+        for mod_name, mod_data in manifest.items():
+            for field_name, schema in mod_data.get("config", {}).items():
+                full_key = f"{mod_name}.{field_name}"
+                self._defaults[full_key] = schema.get("default")
+                self._manifest[full_key] = schema
+
+    def register_default(self, key: str, default: Any) -> None:
+        """Register a single default value."""
+        self._defaults[key] = default
+
+    def get(self, key: str, default: Any = None, caller_module: str | None = None) -> Any:
+        """Get a config value, fallback to defaults."""
+        self._check_read_access(key, caller_module)
+
+        # Simple mapping: ai.<field> keys from the AI Options page should read
+        # from the corresponding top-level settings so Tools → Options and the
+        # legacy Settings dialog stay in sync.
+        if key.startswith("ai."):
+            field = key.split(".", 1)[1]
+
+            # Internal mappings for missing AI_SIMPLE_FIELDS mapping if needed
+            if field == "api_key":
+                endpoint = get_current_endpoint()
+                from plugin.framework.config import get_api_key_for_endpoint
+
+                return str(get_api_key_for_endpoint(endpoint) or "")
+
+            if field in AI_SIMPLE_FIELDS:
+                if field == "endpoint":
+                    return str(get_config("endpoint") or "").strip()
+                if field == "stt_model":
+                    return get_stt_model()
+
+                return get_config(field)
+
+        # Test fallback
+        if self._config_path and os.path.exists(self._config_path):
+            try:
+                with open(self._config_path, "r", encoding="utf-8") as f:
+                    data = parse_config_json_text(f.read())
+                    if data is None:
+                        raise ConfigError("Config file must be a JSON object")
+                    if key in data:
+                        return data[key]
+            except OSError as e:
+                log.debug("ConfigService.get IO error for %s: %s", self._config_path, e)
+            except ConfigError as e:
+                log.debug("ConfigService.get ConfigError: %s", e)
+
+        try:
+            val = get_config(key)
+            if val is not None and val != "":
+                return val
+        except ConfigError:
+            pass
+
+        if key not in self._defaults:
+            return default
+        return self._defaults[key]
+
+    def set(self, key: str, value: Any, caller_module: str | None = None) -> None:
+        """Set a config value."""
+        self._check_write_access(key, caller_module)
+        old_value = self.get(key)
+
+        # Simple mapping: ai.<field> keys from the AI Options page should write
+        # into the corresponding top-level settings (endpoint, model, etc.).
+        if key.startswith("ai."):
+            field = key.split(".", 1)[1]
+
+            # Internal mappings for keys missing from AI_SIMPLE_FIELDS if they map to methods
+            if field == "api_key":
+                endpoint = get_current_endpoint()
+                # set_api_key_for_endpoint emits config:changed. Do not emit again.
+                set_api_key_for_endpoint(endpoint, value or "", event_key=key)
+                return
+
+            if field in AI_SIMPLE_FIELDS:
+                if field == "endpoint":
+                    from plugin.chatbot.config_ui_helpers import endpoint_from_selector_text
+
+                    resolved = endpoint_from_selector_text(str(value))
+                    # What was wrong: an empty resolve returned without writing,
+                    # and the caller treated set() as success.
+                    if not resolved:
+                        raise ConfigError("Endpoint text did not resolve to a URL", "CONFIG_INVALID_ENDPOINT", details={"value": value})
+                    set_config("endpoint", resolved, event_key=key)
+                elif field == "image_model":
+                    set_image_model(value or "", update_lru=True, event_key=key)
+                elif field == "text_model":
+                    set_text_model(value or "", update_lru=True, event_key=key)
+                elif field == "stt_model":
+                    # Speech tab canonical key. Do not write legacy stt_model.
+                    set_config("audio.stt_model", value, event_key=key)
+                else:
+                    # Direct 1:1 mapping to top-level key.
+                    set_config(field, value, event_key=key)
+                return
+
+        # Test fallback
+        if self._config_path:
+            if os.path.exists(self._config_path):
+                data = _load_config_dict(self._config_path, allow_repair=True, persist_repair=False)
+            else:
+                data = {}
+            test_data = dict(data)
+            test_data[key] = value
+            try:
+                test_config = WriterAgentConfig.from_dict(test_data)
+                test_config.validate()
+                data = test_config.to_dict()
+            except ConfigValidationError as e:
+                raise e
+            except Exception as e:
+                raise ConfigValidationError(f"Invalid configuration value for {key}: {e}") from e
+
+            try:
+                _write_config_file(self._config_path, data)
+            except OSError:
+                log.exception("ConfigService.set config file save failed")
+
+            ctx = None  # No UNO context in file-based test mode
+        else:
+            # set_config emits the one config:changed for this write.
+            set_config(key, value)
+            return
+
+        if value != old_value:
+            bus = self._events or global_event_bus
+            bus.emit("config:changed", key=key, value=value, old_value=old_value, ctx=ctx)
+
+    def set_batch(self, changes: Any, old_values: Any = None) -> dict[str, Any]:
+        """Set multiple config values at once. Returns dict of changed keys.
+
+        Used by the generic Options handler; delegates to set() so that
+        ai.<field> keys are also mapped through the simple AI settings layer.
+        """
+        diffs = {}
+        for key, value in (changes or {}).items():
+            before = self.get(key)
+            if value == before:
+                continue
+            self.set(key, value)
+            diffs[key] = (before, value)
+        return diffs
+
+    def remove(self, key: str, caller_module: str | None = None) -> None:
+        """Reset a config key."""
+        self._check_write_access(key, caller_module)
+        if self._config_path and os.path.exists(self._config_path):
+            try:
+                with open(self._config_path, "r", encoding="utf-8") as f:
+                    data = parse_config_json_text(f.read())
+                if isinstance(data, dict) and key in data:
+                    del data[key]
+                    _write_config_file(self._config_path, data)
+            except OSError as e:
+                log.warning("ConfigService.remove config file error for key %s: %s", key, e)
+        else:
+            remove_config(key)
+
+    def get_dict(self) -> dict[str, Any]:
+        """Return all config."""
+        # This is a simplification for now
+        if self._config_path and os.path.exists(self._config_path):
+            try:
+                with open(self._config_path, "r", encoding="utf-8") as f:
+                    data = parse_config_json_text(f.read())
+                if not isinstance(data, dict):
+                    return {}
+                return data
+            except OSError as e:
+                log.debug("ConfigService.get_dict config file read error: %s", e)
+                return {}
+        return get_config_dict()
+
+    @deal.raises(ConfigAccessError)
+    def _check_read_access(self, key: str, caller_module: str | None) -> None:
+        if caller_module is None or "." not in key:
+            return
+        module = key.split(".", 1)[0]
+        if module == caller_module:
+            return
+        schema = self._manifest.get(key, {})
+        if not schema.get("public", False):
+            raise ConfigAccessError(f"Module '{caller_module}' cannot read private config '{key}'")
+
+    @deal.raises(ConfigAccessError)
+    def _check_write_access(self, key: str, caller_module: str | None) -> None:
+        if caller_module is None or "." not in key:
+            return
+        module = key.split(".", 1)[0]
+        if module != caller_module:
+            raise ConfigAccessError(f"Module '{caller_module}' cannot write to '{key}'")
+
+    def proxy_for(self, module_name: str) -> ModuleConfigProxy:
+        return ModuleConfigProxy(self, module_name)
+
+
+class ModuleConfigProxy:
+    _config: ConfigService
+    _module: str
+
+    def __init__(self, config_service: ConfigService, module_name: str) -> None:
+        self._config = config_service
+        self._module = module_name
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if "." not in key:
+            key = f"{self._module}.{key}"
+        return self._config.get(key, default, caller_module=self._module)
+
+    def set(self, key: str, value: Any) -> None:
+        if "." not in key:
+            key = f"{self._module}.{key}"
+        self._config.set(key, value, caller_module=self._module)
+
+    def remove(self, key: str) -> None:
+        if "." not in key:
+            key = f"{self._module}.{key}"
+        self._config.remove(key, caller_module=self._module)

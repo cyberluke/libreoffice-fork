@@ -1,0 +1,52 @@
+name: agent_backend
+title: Agent Communication Protocol
+requires: [config, document]
+config_inline: mcp
+
+config:
+  backend_id:
+    type: string
+    default: builtin
+    widget: select
+    label: Backend
+    options:
+      - value: builtin
+        label: Built-in
+      # - value: aider
+      #   label: Aider
+      - value: hermes
+        label: Hermes
+      - value: claude
+        label: Claude Code (ACP)
+      - value: vibe
+        label: Mistral Vibe (ACP)
+      - value: grok
+        label: Grok Build (ACP)
+      - value: opencode
+        label: OpenCode (ACP)
+      # - value: openhands
+      #   label: OpenHands
+
+  path:
+    type: string
+    default: ""
+    widget: text
+    label: Path / URL
+    helper: "Path to backend CLI (e.g. aider) or ACP server URL (e.g. http://localhost:8000 for Hermes). Empty = try default."
+    internal: true
+
+  args:
+    type: string
+    default: ""
+    widget: text
+    label: Extra arguments
+    helper: "Optional arguments for the selected backend (space-separated)."
+    internal: true
+
+  acp_agent_name:
+    type: string
+    default: ""
+    widget: text
+    label: ACP agent name
+    helper: "Agent name on the ACP server (e.g. hermes). Empty = auto-discover first agent."
+    internal: true

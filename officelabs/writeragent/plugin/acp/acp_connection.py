@@ -1,0 +1,249 @@
+# WriterAgent - AI Writing Assistant for LibreOffice
+# Copyright (c) 2024 John Balis
+# Copyright (c) 2026 KeithCu (modifications and relicensing)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+"""Generic Agent Communication Protocol (ACP) adapter over stdio JSON-RPC.
+
+Supports initial handshakes, prompt sessions, and streaming notifications
+acting as an ACP client connected to a supporting agent binary backend.
+"""
+
+from __future__ import annotations
+
+from plugin.framework.thread_guard import background
+import json
+import logging
+import os
+import subprocess
+import threading
+from typing import Any, cast
+
+from plugin.framework.errors import ToolExecutionError
+from plugin.framework.worker_pool import BackgroundHandle, StderrTail, get_subprocess_creationflags, run_in_background, start_stderr_drain
+
+log = logging.getLogger(__name__)
+
+_LOG = "ABP"
+
+_JSONRPC_VERSION = "2.0"
+_ACP_PROTOCOL_VERSION = 1
+
+
+class ACPConnection:
+    """Manages a JSON-RPC stdio connection to an ACP subprocess."""
+
+    _cmd_line: list[str]
+    _env: dict[str, str] | None
+    _cwd: str | None
+    _lock: threading.Lock
+    _request_id: int
+    _running: bool
+    _notify_callback: Any
+
+    def __init__(self, cmd_line: list[str], env: dict[str, str] | None = None, cwd: str | None = None) -> None:
+        self._cmd_line = cmd_line
+        self._env = env
+        self._cwd = cwd
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._lock = threading.Lock()
+        self._request_id = 0
+        self._pending: dict[Any, Any] = {}  # id -> threading.Event, response dict
+        self._reader_thread: BackgroundHandle | None = None
+        self._stderr_drain: StderrTail | None = None
+        self._running = False
+        self._notifications: list[Any] = []  # queue of notification dicts
+        self._notify_callback = None
+
+    def start(self) -> None:
+        """Spawn the ACP subprocess."""
+        log.info(f"Spawning: {' '.join(self._cmd_line)}")
+
+        env = dict(os.environ)
+        if self._env:
+            env.update(self._env)
+
+        from plugin.scripting.venv_worker import wrap_command_for_sandbox
+
+        self._proc = cast("subprocess.Popen[bytes]", subprocess.Popen(wrap_command_for_sandbox(self._cmd_line), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=self._cwd, **get_subprocess_creationflags()))
+        self._stderr_drain = start_stderr_drain(self._proc.stderr, name=f"acp-stderr-{self._proc.pid}")
+        self._running = True
+        self._reader_thread = run_in_background(self._reader_loop, daemon=True, name="acp-reader", dedicated=True)
+
+    def stop(self) -> None:
+        """Terminate the subprocess."""
+        self._running = False
+        if self._proc:
+            try:
+                if self._proc.stdin:
+                    self._proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=3)
+            except Exception:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+            self._proc = None
+            self._stderr_drain = None
+
+    @property
+    def is_alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def _next_id(self) -> int:
+        with self._lock:
+            self._request_id += 1
+            return self._request_id
+
+    def send_request(self, method: str, params: Any = None, timeout: int = 120) -> Any:
+        """Send a JSON-RPC request and wait for the response."""
+        if not self.is_alive:
+            raise ToolExecutionError("ACP process is not running")
+
+        req_id = self._next_id()
+        msg = {"jsonrpc": _JSONRPC_VERSION, "id": req_id, "method": method, "params": params or {}}
+
+        event = threading.Event()
+        with self._lock:
+            self._pending[req_id] = {"event": event, "response": None}
+
+        line = json.dumps(msg) + "\n"
+        log.debug(f"→ {method} (id={req_id})")
+
+        try:
+            if self._proc and self._proc.stdin:
+                self._proc.stdin.write(line.encode("utf-8"))
+                self._proc.stdin.flush()
+        except (BrokenPipeError, OSError) as e:
+            with self._lock:
+                self._pending.pop(req_id, None)
+            raise ToolExecutionError(f"Failed to write to ACP: {e}") from e
+
+        if not event.wait(timeout=timeout):
+            with self._lock:
+                self._pending.pop(req_id, None)
+            raise TimeoutError(f"ACP request {method} timed out after {timeout}s")
+
+        with self._lock:
+            entry = self._pending.pop(req_id, {})
+
+        resp = entry.get("response")
+        if resp and "error" in resp:
+            err = resp["error"]
+            msg_str = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            raise ToolExecutionError(f"ACP error: {msg_str}")
+
+        return resp.get("result") if resp else None
+
+    def send_notification(self, method: str, params: Any = None) -> None:
+        """Send a JSON-RPC notification (no response expected)."""
+        if not self.is_alive:
+            return
+        msg = {"jsonrpc": _JSONRPC_VERSION, "method": method, "params": params or {}}
+        line = json.dumps(msg) + "\n"
+        try:
+            if self._proc and self._proc.stdin:
+                self._proc.stdin.write(line.encode("utf-8"))
+                self._proc.stdin.flush()
+        except Exception:
+            pass
+
+    def send_response(self, msg_id: Any, result: Any = None, error: Any = None) -> None:
+        """Send a JSON-RPC response to a request from the agent."""
+        if not self.is_alive:
+            return
+        msg = {"jsonrpc": _JSONRPC_VERSION, "id": msg_id}
+        if error is not None:
+            msg["error"] = error
+        else:
+            msg["result"] = result or {}
+
+        line = json.dumps(msg) + "\n"
+        try:
+            if self._proc and self._proc.stdin:
+                self._proc.stdin.write(line.encode("utf-8"))
+                self._proc.stdin.flush()
+        except Exception:
+            log.exception("Failed to send response")
+
+    def set_notification_callback(self, callback: Any) -> None:
+        """Set a callback(method, params, msg_id) for incoming notifications."""
+        self._notify_callback = callback
+
+    @background
+    def _reader_loop(self) -> None:
+        """Read JSON-RPC messages from stdout and dispatch them."""
+        log.info("Reader loop started")
+        while self._running and self._proc and self._proc.poll() is None:
+            try:
+                if self._proc.stdout is None:
+                    break
+                raw = self._proc.stdout.readline()
+                if not raw:
+                    break
+                # Popen is binary. Reusing `line` for the decoded str leaves
+                # mypy on bytes, so find("{") and the debug f-string still see bytes.
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+
+                idx = line.find("{")
+                if idx >= 0:
+                    line = line[idx:]
+
+                from plugin.framework.errors import safe_json_loads
+
+                msg = safe_json_loads(line)
+                if msg is None:
+                    log.debug(f"Non-JSON output: {line[:200]}")
+                    continue
+
+                if "id" in msg and msg["id"] is not None and "method" not in msg:
+                    # Response to our request
+                    req_id = msg["id"]
+                    with self._lock:
+                        entry = self._pending.get(req_id)
+                    if entry:
+                        entry["response"] = msg
+                        entry["event"].set()
+                    else:
+                        log.warning(f"Response for unknown id={req_id}")
+                else:
+                    # Notification or Request from the agent
+                    method = msg.get("method", "")
+                    params = msg.get("params", {})
+                    msg_id = msg.get("id")
+                    if self._notify_callback:
+                        try:
+                            self._notify_callback(method, params, msg_id)
+                        except Exception:
+                            log.exception("Notification callback error")
+
+            except Exception:
+                if self._running:
+                    log.exception("Reader error")
+                break
+
+        # Live drain already collected stderr; log a bounded tail for debugging.
+        drain = self._stderr_drain
+        if drain is not None:
+            stderr_text = drain.finish_text().strip()
+            if stderr_text:
+                log.warning("ACP stderr: %s", stderr_text[:500])
+
+        log.info("Reader loop ended")

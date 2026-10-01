@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Localized title arrives via the IPC load message; see editor.js applyLoadMessage -->
+  <title> </title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- =========================================================================================
+       WARNING: PARITY INVARIANT WITH NATIVE LIBREOFFICE DIALOG LAYOUTS
+       If you modify toolbar buttons, controls, or modals in this file, update:
+         - Native Python Script Dialog:  extension/Dialogs/PythonScriptDialog.xdl
+         - Native Python Cell Editor:    extension/Dialogs/PythonCellEditorDialog.xdl
+         - Native New Script Dialog:      extension/Dialogs/NewScriptDialog.xdl
+         - Python Controller & Listeners: plugin/scripting/python_runner_ui.py
+         - Native Cell Editor Controller: plugin/calc/python/cell_editor_ui.py
+         - Script Manager Controller:    plugin/contrib/scripting/assets/editor/scripts_manager.js
+       calc_cell toolbar (Save / Cancel / Save without =PY() / Data: / status) twins
+       PythonCellEditorDialog; run_script extras twin PythonScriptDialog.
+       ========================================================================================= -->
+  <header id="toolbar" class="toolbar-loading">
+    <span id="cell-addr" class="cell-addr toolbar-hidden" aria-label="Cell"></span>
+    <button type="button" id="btn-run" class="toolbar-hidden">Run</button>
+    <button type="button" id="btn-save">Save</button>
+    <button type="button" id="btn-new-script" class="toolbar-hidden">New</button>
+    <button type="button" id="btn-cancel">Cancel</button>
+    
+    <!-- Premium Script Selector & Actions (only visible in run_script mode) -->
+    <div id="script-manager-container" class="toolbar-hidden">
+      <label for="script-select">Script:</label>
+      <select id="script-select">
+      </select>
+      <button type="button" id="btn-save-as">Save As...</button>
+      <button type="button" id="btn-delete-script" class="toolbar-hidden">Delete</button>
+    </div>
+
+    <label id="plain-text-save-label" class="toolbar-check toolbar-hidden">
+      <input type="checkbox" id="chk-plain-text" />
+      <span id="plain-text-save-text">Save without =PY()</span>
+    </label>
+    <label id="data-binding-label" class="data-binding-label toolbar-hidden" for="data-binding-input">Data:</label>
+    <input type="text" id="data-binding-input" class="toolbar-hidden" placeholder="A1:C1  or  A1:C1, C1:C5" spellcheck="false" />
+    <input type="text" id="status" readonly value="Status: Ready" spellcheck="false" aria-live="polite" />
+  </header>
+  <div id="editor"></div>
+
+  <!-- New Script Modal Dialog -->
+  <div id="new-script-modal" class="modal-backdrop toolbar-hidden">
+    <div class="modal-card">
+      <div class="modal-header" id="new-script-modal-title">New Python Script</div>
+      <div class="modal-body">
+        <label for="new-script-name-input" id="new-script-name-label">Script name:</label>
+        <input type="text" id="new-script-name-input" autocomplete="off" spellcheck="false" />
+        <label class="modal-check-label" id="new-script-attach-container">
+          <input type="checkbox" id="new-script-attach-check" />
+          <span id="new-script-attach-label">Attach to this document</span>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btn-new-script-create">Create</button>
+        <button type="button" id="btn-new-script-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="vs/loader.js"></script>
+  <script src="editor.js"></script>
+  <script src="scripts_manager.js"></script>
+</body>
+</html>

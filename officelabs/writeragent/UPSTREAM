@@ -1,0 +1,10 @@
+# WriterAgent upstream pin for the OfficeLabs integration.
+#
+# OfficeLabs builds WriterAgent from this exact revision. Never track
+# floating master for release builds. Update with:
+#
+#   python bin/update-writeragent-upstream.py <explicit-sha>
+#
+repository=https://github.com/KeithCu/writeragent
+commit=78e03a31b2bef4ffea7b4b7cc112fe559177338d
+commit-timestamp=2026-10-01T01:29:40Z

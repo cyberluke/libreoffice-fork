@@ -1,0 +1,157 @@
+# WriterAgent - AI Writing Assistant for LibreOffice
+# Copyright (c) 2026 KeithCu
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+"""Deep Research sidebar sub-agent: breadth/depth web research + document apply."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, ClassVar
+
+from plugin.framework.prompts import WRITER_APPLY_DOCUMENT_HTML_RULES, get_chat_response_format_instructions
+from plugin.framework.tool import ToolBase, ToolContext
+
+log = logging.getLogger(__name__)
+
+DEEP_RESEARCH_SUB_AGENT_INSTRUCTIONS = """DEEP RESEARCH MODE:
+You perform multi-step public web research and write formatted results into the active Writer document when appropriate.
+
+WORKFLOW:
+1. Read document context when helpful (get_document_content / get_document_tree / search_in_document).
+2. Run deep_research_web for the user's research query. This may take several minutes (parallel searches, adaptive rounds).
+3. Convert the plain-text report to HTML and insert it with apply_document_content (JSON array of HTML strings; target end unless the user asked otherwise). Do NOT paste the full report into reply_to_user.
+4. reply_to_user with a brief HTML summary of what you researched and where it was inserted.
+
+HTML RULES (CRITICAL):
+- apply_document_content content must be a JSON array of HTML strings — no Markdown (#, **, ```).
+- reply_to_user must be HTML and brief (status/summary only).
+- Do NOT use HTML entity escaping (&lt;p&gt;) — send real tags.
+- Rewrite plain-text deep_research_web results as structured HTML (headings, paragraphs, lists) before apply_document_content.
+
+TOOLS:
+- deep_research_web: multi-step adaptive web research only (not the shallow web_research tool).
+- apply_document_content: the ONLY way to write research into the document.
+- reply_to_user: short chat confirmation when the turn is complete."""
+
+def get_deep_research_sub_agent_instructions(ctx: Any | None = None) -> str:
+    """Full system instructions for the Deep Research smol sub-agent (sidebar)."""
+    parts = [
+        DEEP_RESEARCH_SUB_AGENT_INSTRUCTIONS,
+        WRITER_APPLY_DOCUMENT_HTML_RULES,
+        get_chat_response_format_instructions(ctx),
+    ]
+    return "\n\n".join(parts)
+
+
+_DEEP_RESEARCH_CORE_TOOLS = frozenset(["get_document_content", "get_document_tree", "search_in_document", "apply_document_content"])
+
+
+def collect_deep_research_tools(ctx: ToolContext) -> list[ToolBase]:
+    """Tools for the Deep Research smol sub-agent (domain + required core tools)."""
+    registry = ctx.services.get("tools")
+    return registry.get_tools(
+        doc_type=ctx.doc_type,
+        uno_services_supported=ctx.uno_services_supported,
+        active_domain="deep_research",
+        exclude_tiers=(),
+    )
+
+
+class DeepResearchWebTool(ToolBase):
+    """Multi-step public web research (sidebar Deep Research only; not shallow web_research)."""
+
+    tier: str = "specialized"
+    specialized_domain: ClassVar[str | None] = "deep_research"
+    specialized_cross_cutting: ClassVar[bool] = True
+    required_core_tools: ClassVar[frozenset[str] | None] = _DEEP_RESEARCH_CORE_TOOLS
+    doc_types: list[str] | None = ["writer", "calc", "draw", "impress"]
+    intent: str | None = "review"
+    name: str | None = "deep_research_web"
+    description: str = (
+        "Run breadth/depth public web research on a topic. Returns plain text; "
+        "format as HTML and insert with apply_document_content."
+    )
+    is_mutation: bool | None = False
+    long_running: bool = True
+    parameters: dict[str, Any] | None = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Research question or topic."},
+        },
+        "required": ["query"],
+    }
+
+    def is_async(self) -> bool:
+        return True
+
+    def execute(self, ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
+        from plugin.chatbot.web_research import WebResearchTool
+
+        query = kwargs.get("query")
+        return WebResearchTool().execute(ctx, query=query, deep=True)
+
+
+def _run_deep_research_agent(ctx: ToolContext, *, query: str = "", history_text: str | None = None, **kwargs: Any) -> dict[str, Any]:
+    """Run one turn of the Deep Research smol sub-agent."""
+    from plugin.chatbot.smol_agent import SmolAgentExecutor, SmolToolAdapter, build_toolcalling_agent
+    from plugin.chatbot.smol_examples import get_examples_block
+
+    status_callback = getattr(ctx, "status_callback", None)
+
+    if history_text and len(history_text) > 4000:
+        history_text = "..." + history_text[-4000:]
+
+    if status_callback:
+        status_callback("Deep research...")
+
+    domain_tools = collect_deep_research_tools(ctx)
+    smol_tools = [SmolToolAdapter(t, ctx, safe=True, inputs_style="specialized") for t in domain_tools]
+
+    instructions = get_deep_research_sub_agent_instructions(ctx.ctx)
+    agent = build_toolcalling_agent(
+        ctx,
+        smol_tools,
+        instructions=instructions,
+        final_answer_tool_name="reply_to_user",
+        examples_block=get_examples_block("deep_research"),
+        status_callback=status_callback,
+    )
+
+    task = f"### CONVERSATION HISTORY:\n{history_text or 'None'}\n\n### CURRENT QUERY:\n{query}"
+    executor = SmolAgentExecutor(ctx)
+    res = executor.execute_safe(agent, task, stop_message="Deep research stopped by user.", error_prefix="Deep research failed")
+    if isinstance(res, dict) and res.get("status") == "error":
+        return res
+    return {"status": "ok", "result": str(res)}
+
+
+class DeepResearchSessionTool(ToolBase):
+    """Orchestrator for one turn of the Deep Research sub-agent (sidebar session)."""
+
+    name: str | None = "deep_research_session"
+    description: str = "Deep Research sub-agent (multi-step web research + optional document insert)."
+    tier: str = "specialized_control"
+    is_mutation: bool | None = False
+    long_running: bool = True
+    parameters: dict[str, Any] | None = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "User message or research task."},
+            "history_text": {"type": "string", "description": "Previous conversation text."},
+        },
+        "required": ["query"],
+    }
+
+    def is_async(self) -> bool:
+        return True
+
+    def execute(self, ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
+        from plugin.chatbot.smol_agent import run_subagent_tool
+
+        return run_subagent_tool("Deep research", _run_deep_research_agent, ctx, **kwargs)
+

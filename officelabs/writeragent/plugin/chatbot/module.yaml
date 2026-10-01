@@ -1,0 +1,274 @@
+name: chatbot
+title: Sidebar
+requires: [document, config, events, http_routes]
+tools:
+
+actions:
+  extend_selection:
+    title: "Extend Selection"
+  edit_selection:
+    title: "Edit Selection"
+
+config:
+  max_tool_rounds:
+    type: int
+    default: 15
+    min: 1
+    max: 200
+    widget: number
+    label: Max Tool Rounds
+
+  context_strategy:
+    type: string
+    default: "auto"
+    widget: select
+    label: Document Context Strategy
+    helper: "How much document content to include in LLM context"
+    options:
+      - value: auto
+        label: Auto (by document size)
+      - value: full
+        label: Full document text
+      - value: page
+        label: Pages around cursor
+      - value: tree
+        label: Outline + excerpt
+      - value: stats
+        label: Stats + outline only
+
+  extend_selection_max_tokens:
+    type: int
+    default: 1000
+    min: 10
+    max: 4096
+    internal: true
+    label: Extend max tokens
+
+  edit_selection_max_new_tokens:
+    type: int
+    default: 1000
+    min: 0
+    max: 4096
+    internal: true
+    label: Edit extra tokens
+    helper: "Extra tokens beyond original text length. 0 = same length as original."
+
+#  tool_broker:
+#    type: boolean
+#    default: true
+#    widget: checkbox
+#    label: Tool Broker
+#    helper: "Two-tier tool delivery: LLM gets core tools first, activates others by intent"
+
+  web_research_cache_enabled:
+    type: boolean
+    default: false
+    widget: checkbox
+    label: Web Research Cache
+    helper: "Cache completed web research reports by normalized query (uses web cache database)."
+    inline: true
+    x: 8
+    width: 200
+
+  show_search_thinking:
+    type: boolean
+    default: false
+    internal: true
+
+  prompt_for_web_research:
+    type: boolean
+    default: false
+    widget: checkbox
+    label: Prompt for Web Research
+    helper: "Ask for confirmation before sending a web search query"
+    x: 220
+    width: 200
+
+  web_research_browser:
+    type: string
+    default: "off"
+    widget: select
+    label: Web Research Browser
+    helper: "Select the browser backend to use for webpage visits during research (Off uses static HTTP requests)."
+    options:
+      - value: "off"
+        label: "Off (Static HTTP)"
+      - value: "firefox"
+        label: "Firefox (CDP)"
+      - value: "chromium"
+        label: "Chromium (CDP)"
+      - value: "chrome"
+        label: "Chrome (CDP)"
+
+  web_cache_max_mb:
+    type: int
+    default: 50
+    min: 0
+    max: 500
+    widget: number
+    label: Cache max (MB)
+    helper: "Max disk size for web search cache (0 to disable)"
+    inline: true
+    x: 110
+    width: 100
+
+  web_cache_validity_days:
+    type: int
+    default: 30
+    min: 1
+    max: 30
+    widget: number
+    label: Cache validity (days)
+    helper: "How many days cache entries should be considered valid."
+    label_x: 220
+    label_width: 100
+    x: 322
+    width: 100
+
+  web_research_cache_jaccard_percent:
+    type: int
+    default: 60
+    min: 0
+    max: 100
+    widget: number
+    label: Research Cache Fuzzy Match (%)
+    helper: "Minimum similarity (0-100) for a fuzzy cache hit. JSON only (internal); default 60."
+    internal: true
+
+  web_research_cache_embedding_percent:
+    type: int
+    default: 75
+    min: 0
+    max: 100
+    widget: number
+    label: Research Cache Embedding Match (%)
+    helper: "Minimum cosine similarity (0-100) for an embedding cache hit. JSON only (internal); default 75."
+    internal: true
+
+  web_research_cache_min_overlap:
+    type: int
+    default: 8
+    min: 0
+    max: 50
+    widget: number
+    label: Research Cache Min Stem Overlap
+    helper: "Minimum shared stem count for a fuzzy cache hit (0 disables). JSON only (internal); default 8."
+    internal: true
+
+  deep_research_breadth:
+    type: int
+    default: 4
+    min: 1
+    max: 10
+    widget: number
+    label: Deep Research Breadth
+    helper: "Sub-queries per depth level when Deep Research sidebar mode is used (internal)."
+    internal: true
+
+  deep_research_depth:
+    type: int
+    default: 2
+    min: 1
+    max: 4
+    widget: number
+    label: Deep Research Depth
+    helper: "Legacy alias for max_rounds when deep_research_max_rounds is 0 (internal)."
+    internal: true
+
+  deep_research_concurrency:
+    type: int
+    default: 2
+    min: 1
+    max: 5
+    widget: number
+    label: Deep Research Concurrency
+    helper: "Parallel sub-query workers in Deep Research sidebar mode (internal)."
+    internal: true
+
+  deep_research_max_sub_queries:
+    type: int
+    default: 14
+    min: 1
+    max: 40
+    widget: number
+    label: Deep Research Max Sub-Queries
+    helper: "Global cap on shallow sub-agent runs per deep research session (internal)."
+    internal: true
+
+  deep_research_max_rounds:
+    type: int
+    default: 3
+    min: 1
+    max: 6
+    widget: number
+    label: Deep Research Max Rounds
+    helper: "Adaptive research rounds; deep_research_depth JSON override maps here if max_rounds unset (internal)."
+    internal: true
+
+  deep_research_quality_threshold:
+    type: int
+    default: 7
+    min: 1
+    max: 10
+    widget: number
+    label: Deep Research Quality Threshold
+    helper: "Stop when LLM coverage score reaches this value (1-10, internal)."
+    internal: true
+
+  deep_research_sub_agent_steps:
+    type: int
+    default: 0
+    min: 0
+    max: 50
+    widget: number
+    label: Deep Research Sub-Agent Steps
+    helper: "Max ReAct steps per sub-query (0 = 150% of chatbot.max_tool_rounds, internal)."
+    internal: true
+
+#  api_enabled:
+#    type: boolean
+#    default: false
+#    widget: checkbox
+#    label: Enable Chat API
+#    helper: "Expose /api/chat endpoints on the HTTP server"
+#    public: true
+
+  # api_auth_token:
+  #   type: string
+  #   default: ""
+  #   widget: text
+  #   label: API Auth Token
+  #   helper: "Optional Bearer token for researchers/external apps. Empty = no auth."
+
+  rich_text_control_sidebar:
+    type: boolean
+    default: true
+    widget: checkbox
+    label: Rich Text Control Sidebar
+    helper: "Formatted chat via RichTextControl. Requires restart."
+    
+  librarian_invoked:
+    type: boolean
+    default: false
+    internal: true
+
+  humanizer_enabled:
+    type: boolean
+    default: false
+    widget: checkbox
+    label: Humanizer skill (natural prose)
+    helper: "When enabled, injects guidance into the system prompt so the model makes generated or revised document text sound more natural and human (removes AI slop patterns). Edit the rules in your LibreOffice profile under writeragent/skills/humanizer/SKILL.md (the file is auto-created on first use). A dedicated Skills tab can be added later."
+
+  audio_silence_stop_ms:
+    type: int
+    default: 3000
+    min: 0
+    max: 15000
+    widget: number
+    label: Silence before send (ms)
+    helper: "Pause after you stop talking, then auto-stop and send (Record). 0 = wait until you click Stop Rec."
+
+  query_history:
+    type: string
+    default: "[]"
+    internal: true

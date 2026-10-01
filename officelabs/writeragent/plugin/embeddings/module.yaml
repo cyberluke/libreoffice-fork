@@ -1,0 +1,47 @@
+name: embeddings
+title: Vector Search
+requires: [config]
+config:
+  folder_search_mode:
+    type: string
+    default: none
+    widget: select
+    label: Cross-file search
+    helper: "Indexed semantic + keyword search for document_research (corpus.db). Requires embeddings venv — see Python Test."
+    options:
+      - value: none
+        label: "Off"
+      - value: hybrid
+        label: Embeddings + FTS
+      - value: llama_index
+        label: LlamaIndex
+      - value: zvec
+        label: "Zvec (experimental)"
+      - value: lancedb
+        label: "LanceDB (experimental)"
+
+  embedding_model:
+    type: string
+    default: "paraphrase-multilingual-MiniLM-L12-v2"
+    widget: text
+    label: Embedding Model
+    helper: "HuggingFace model ID for local provider, or endpoint-specific model ID"
+
+  folder_rerank_enabled:
+    type: boolean
+    default: false
+    widget: checkbox
+    label: Enable cross-file rerank
+    helper: "Second-stage cross-encoder after hybrid retrieve (Embeddings + FTS and LlamaIndex). Off by default."
+
+  folder_rerank_model:
+    type: string
+    default: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    widget: select
+    label: Rerank model
+    helper: "Used only when rerank is enabled. English MiniLM is fast; bge-reranker-v2-m3 is multilingual and downloads ~2.3 GB."
+    options:
+      - value: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        label: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+      - value: "BAAI/bge-reranker-v2-m3"
+        label: "BAAI/bge-reranker-v2-m3"

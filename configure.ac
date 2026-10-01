@@ -14670,6 +14670,30 @@ if test "x$with_java" != "xno"; then
     libo_CHECK_EXTENSION([NLPSolver],[NLPSOLVER],[nlpsolver],[nlpsolver],[])
 fi
 
+dnl OfficeLabs AI: bundle the WriterAgent extension as a first-class
+dnl product component. --enable-officelabs-ai adds OFFICELABS_AI to
+dnl BUILD_TYPE (gates the gbuild targets) and -DWITH_EXTENSION_OFFICELABS_AI
+dnl to SCPDEFS (gates the scp2 installer modules). The OfficeLabs product
+dnl distro configs enable it by default; generic developer builds can leave
+dnl it off. Written manually rather than via libo_CHECK_EXTENSION because
+dnl that macro's "$enable_ext_$3" test cannot handle a dash in the feature
+dnl name.
+AC_ARG_ENABLE(officelabs-ai,
+    AS_HELP_STRING([--enable-officelabs-ai],
+        [Bundle the WriterAgent-based OfficeLabs AI extension as part of the product (default: no)]),
+[],[enable_officelabs_ai=no])
+AC_MSG_CHECKING([for bundling the OfficeLabs AI extension])
+WITH_OFFICELABS_AI=
+if test "x$enable_officelabs_ai" = "xyes" -a "x$enable_extension_integration" != "xno"; then
+    WITH_OFFICELABS_AI=TRUE
+    SCPDEFS="$SCPDEFS -DWITH_EXTENSION_OFFICELABS_AI"
+    BUILD_TYPE="$BUILD_TYPE OFFICELABS_AI"
+    AC_MSG_RESULT([yes])
+else
+    AC_MSG_RESULT([no])
+fi
+AC_SUBST(WITH_OFFICELABS_AI)
+
 AC_MSG_CHECKING([whether to build opens___.ttf])
 if test "$enable_build_opensymbol" = "yes"; then
     AC_MSG_RESULT([yes])

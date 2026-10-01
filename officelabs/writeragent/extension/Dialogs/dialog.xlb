@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE library:library PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "library.dtd">
+<library:library xmlns:library="http://openoffice.org/2000/library" library:name="Dialogs" library:readonly="false" library:passwordprotected="false">
+<!-- AUTO_GENERATED_DIALOGS -->
+ <library:element library:name="SettingsDialog"/>
+ <library:element library:name="EditInputDialog"/>
+ <library:element library:name="ChatPanelDialog"/>
+ <library:element library:name="EvalDialog"/>
+ <library:element library:name="LatexInputDialog"/>
+ <library:element library:name="SearchDialog"/>
+ <library:element library:name="SpreadsheetImportDialog"/>
+ <library:element library:name="PythonScriptDialog"/>
+ <library:element library:name="PythonCellEditorDialog"/>
+ <library:element library:name="PythonSidebarDialog"/>
+ <library:element library:name="ServerStatusDialog"/>
+ <library:element library:name="WebSearchQueryEditDialog"/>
+ <library:element library:name="ShortTextInputDialog"/>
+ <library:element library:name="MsgBoxWithCopyDialog"/>
+ <library:element library:name="StatusUpdateDialog"/>
+ <library:element library:name="PythonTestProgressDialog"/>
+ <library:element library:name="NewScriptDialog"/>
+ <library:element library:name="VisionSettingsDialog"/>
+</library:library>

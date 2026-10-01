@@ -1,0 +1,952 @@
+# WriterAgent - AI Writing Assistant for LibreOffice
+# Copyright (c) 2024 John Balis
+# Copyright (c) 2026 KeithCu (modifications and relicensing)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+"""Writer image generation and editing tools.
+
+Alternative (not implemented): consolidate the document image tools
+(ImageList, ImageGetInfo, ImageSetProperties, ImageDownload, ImageInsert,
+ImageDelete, ImageReplace) into a single manage_image tool with
+action: list | info | set_properties | download | insert | delete | replace
+and action-specific parameters. Would reduce 7 tools to 1 but yield a
+larger single schema.
+"""
+
+import logging
+import hashlib
+import os
+import tempfile
+import typing
+from typing import Any
+
+from ..specialized_base import ToolWriterImageBase
+import urllib.request
+import ssl
+from plugin.framework.queue_executor import execute_on_main_thread
+from plugin.framework.thread_guard import on_main_thread
+
+def _run_on_main(fn: typing.Any, *args: typing.Any, timeout: float = 60.0, **kwargs: typing.Any) -> Any:
+    if on_main_thread():
+        return fn(*args, **kwargs)
+    return execute_on_main_thread(fn, *args, timeout=timeout, **kwargs)
+from .image_utils import ImageService
+from plugin.framework.config import get_config_int, get_config_bool, get_config_str
+from plugin.framework.config_schema import DEFAULT_IMAGE_BASE_SIZE
+from plugin.framework.client.model_fetcher import get_image_model
+from plugin.framework.constants import USER_AGENT
+from plugin.chatbot.config_ui_helpers import update_lru_history
+from plugin.doc.document_research import list_nearby_files
+from plugin.doc import visual_helpers
+from .image_tools import (
+    IMAGE_CACHE_DIR_NAME,
+    insert_image,
+    insert_image_at_locator,
+    insert_image_into_header_footer,
+    replace_graphic_source,
+    replace_image_in_place,
+    get_selected_image_base64,
+    get_selected_image_dimensions_px,
+)
+
+log = logging.getLogger("writeragent.writer")
+
+
+def resolve_image_generate_is_edit(source_image: typing.Any, *, selection_available: bool) -> bool:
+    """True when image_generate should img2img the selected graphic.
+
+    Explicit ``source_image='selection'`` always edits. Omitting ``source_image``
+    also edits when a graphic is selected: the parent often rewrites
+    "make it look like a wizard" into a generate-new task and drops the
+    argument; defaulting to the selection keeps ``replace_image_in_place``.
+    Create-new when nothing is selected (clear the selection to force create).
+    """
+    if isinstance(source_image, str):
+        source_image = source_image.strip() or None
+    if source_image and str(source_image).lower() == "selection":
+        return True
+    return source_image is None and selection_available
+
+
+class ImageGenerate(ToolWriterImageBase):
+    """Generate a new image from a prompt, or edit an existing image (Img2Img)."""
+
+    name: str | None = "image_generate"
+    intent: str | None = "media"
+    description: str = (
+        "Generate an image from a text prompt and insert it. "
+        "To edit an existing image, pass source_image='selection' (or omit it while a graphic is selected)."
+    )
+    parameters: dict[str, Any] | None = {
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string", "description": "Descriptive prompt for image generation or editing"},
+            "source_image": {"type": "string", "description": (
+                "Optional. Use 'selection' to edit the currently selected image (Img2Img). "
+                "Omit while a graphic is selected to edit in place; omit with no selection to create a new image."
+            )},
+            "strength": {"type": "number", "description": "For editing: how much to change the image (0.0-1.0). Ignored when generating new.", "default": 0.75},
+            "aspect_ratio": {"type": "string", "enum": ["square", "landscape_16_9", "portrait_9_16", "landscape_3_2", "portrait_2_3", "1:1", "4:3", "3:4", "16:9", "9:16"], "default": "square"},
+            "base_size": {
+                "type": "integer",
+                "description": (
+                    "Generate resolution in pixels (default 1024). "
+                    "On-page display is capped independently (~135mm longer edge)."
+                ),
+                "default": DEFAULT_IMAGE_BASE_SIZE,
+            },
+            "width": {"type": "integer", "description": "Override calculated width"},
+            "height": {"type": "integer", "description": "Override calculated height"},
+            "provider": {"type": "string", "description": "Override default provider"},
+            "image_model": {"type": "string", "description": "Override Settings image model for this request (endpoint / OpenRouter)."},
+        },
+        "required": ["prompt"],
+    }
+    is_mutation: bool | None = True
+    long_running: bool = True
+
+    def is_async(self) -> bool:
+        """HTTP generation runs on the tool worker; UNO is marshalled in execute()."""
+        return True
+
+    def execute(self, ctx: typing.Any, **args: typing.Any) -> typing.Any:
+        prompt = args.get("prompt", "")
+
+        status_callback = getattr(ctx, "status_callback", None)
+        mt_timeout = float(get_config_int("request_timeout"))
+        provider = args.get("provider") or "endpoint"
+        if provider == "aihorde":
+            provider = "endpoint"
+        add_to_gallery = get_config_bool("image_auto_gallery")
+        add_frame = get_config_bool("image_insert_frame")
+
+        source_image = args.get("source_image")
+        if isinstance(source_image, str):
+            source_image = source_image.strip() or None
+
+        explicit_edit = bool(source_image and source_image.lower() == "selection")
+        source_b64 = None
+        edit_width, edit_height = DEFAULT_IMAGE_BASE_SIZE, DEFAULT_IMAGE_BASE_SIZE
+        is_edit = False
+
+        # Peek selection when the caller asked to edit, or omitted source_image
+        # (omitted + selected graphic → img2img; omitted + no selection → create).
+        if explicit_edit or source_image is None:
+
+            def _read_selection_for_edit() -> tuple[str, tuple[str, int, int | None] | None]:
+                b64 = get_selected_image_base64(ctx.doc, ctx.ctx)
+                if not b64:
+                    return ("no_selection", None)
+                ew, eh = get_selected_image_dimensions_px(ctx.doc)
+                if ew is None:
+                    ew, eh = DEFAULT_IMAGE_BASE_SIZE, DEFAULT_IMAGE_BASE_SIZE
+                return ("ok", (b64, ew, eh))
+
+            tag, payload = _run_on_main(_read_selection_for_edit, timeout=mt_timeout)
+            selection_available = tag == "ok"
+            is_edit = resolve_image_generate_is_edit(source_image, selection_available=selection_available)
+            if explicit_edit and not selection_available:
+                return self._tool_error("No image selected. Please select an image in the document first.", code="NO_SELECTION", action="edit_image")
+            if is_edit:
+                if not isinstance(payload, tuple) or len(payload) != 3 or payload[1] is None or payload[2] is None:
+                    return self._tool_error("Could not read selected image.", code="SELECTION_READ_ERROR")
+                source_b64, edit_width, edit_height = (str(payload[0]), int(payload[1]), int(payload[2]))
+
+        base_size = args.get("base_size", get_config_int("image_base_size"))
+        try:
+            base_size = int(base_size)
+        except (ValueError, TypeError):
+            base_size = DEFAULT_IMAGE_BASE_SIZE
+
+        aspect = args.get("aspect_ratio", get_config_str("image_default_aspect"))
+        if aspect in ("landscape_16_9", "16:9"):
+            w, h = int(base_size * 16 / 9), base_size
+        elif aspect in ("portrait_9_16", "9:16"):
+            w, h = base_size, int(base_size * 16 / 9)
+        elif aspect in ("landscape_3_2", "4:3"):
+            w, h = int(base_size * 1.5), base_size
+        elif aspect in ("portrait_2_3", "3:4"):
+            w, h = base_size, int(base_size * 1.5)
+        else:
+            w, h = base_size, base_size
+
+        w = (w // 64) * 64
+        h = (h // 64) * 64
+
+        width = args.get("width", edit_width if is_edit else w)
+        height = args.get("height", edit_height if is_edit else h)
+
+        image_svc = ImageService(ctx.ctx, config=None)  # ImageService should use accessors too, or we pass dict
+        args_copy = {k: v for k, v in args.items() if k not in ("prompt", "base_size", "aspect_ratio", "width", "height", "provider", "source_image")}
+        if is_edit:
+            args_copy["source_image"] = source_b64
+            args_copy["strength"] = args.get("strength", 0.75)
+
+        paths, error_msg = image_svc.generate_image(
+            prompt,
+            provider_name=provider,
+            width=width,
+            height=height,
+            aspect_ratio=aspect,
+            status_callback=status_callback,
+            **args_copy,
+        )
+
+        if not paths:
+            return self._tool_error(error_msg or "No image returned.", code="PROVIDER_ERROR", provider=provider)
+
+        img_path = paths[0]
+
+        def _insert_or_replace() -> str:
+            if is_edit:
+                replaced = replace_image_in_place(ctx.ctx, ctx.doc, img_path, width, height, title=prompt, description="Edited by %s" % provider, add_to_gallery=add_to_gallery, add_frame=add_frame)
+                if not replaced:
+                    insert_image(ctx.ctx, ctx.doc, img_path, width, height, title=prompt, description="Edited by %s" % provider, add_to_gallery=add_to_gallery, add_frame=add_frame)
+                return "Image edited and inserted from %s." % provider
+            insert_image(ctx.ctx, ctx.doc, img_path, width, height, title=prompt, description="Generated by %s" % provider, add_to_gallery=add_to_gallery, add_frame=add_frame)
+            return "Image generated and inserted from %s." % provider
+
+        msg = _run_on_main(_insert_or_replace, timeout=mt_timeout)
+
+        if provider in ("endpoint", "openrouter"):
+            image_model_used = str(args.get("image_model") or get_image_model() or "").strip()
+            if image_model_used:
+                endpoint = get_config_str("endpoint").strip()
+                update_lru_history(image_model_used, "image_model_lru", endpoint)
+
+        return {"status": "ok", "message": msg}
+
+
+# Persistent cache directory for downloaded images (embedded on insert, not linked).
+_IMAGE_CACHE_DIR = os.path.join(tempfile.gettempdir(), IMAGE_CACHE_DIR_NAME)
+
+
+# ------------------------------------------------------------------
+# ImageListNearbyFiles
+# ------------------------------------------------------------------
+
+
+class ImageListNearbyFiles(ToolWriterImageBase):
+    """List image files in the active document's directory (images delegate only)."""
+
+    name: str | None = "image_list_nearby_files"
+    intent: str | None = "media"
+    description: str = (
+        "List image files (.png, .jpg, .jpeg, .gif, .webp, .bmp, .svg) in the same folder as the active document "
+        "(newest first). Excludes the active file. Use returned path with image_insert or image_replace. "
+        "Optional filter is a case-insensitive substring on the basename."
+    )
+    parameters: dict[str, Any] | None = {
+        "type": "object",
+        "properties": {
+            "filter": {"type": "string", "description": "Optional basename substring (e.g. 'logo')."},
+        },
+        "required": [],
+    }
+
+    is_mutation: bool | None = False
+
+    def is_async(self) -> bool:
+        return True
+
+    def execute(self, ctx: typing.Any, **kwargs: typing.Any) -> typing.Any:
+        filt = kwargs.get("filter")
+
+        def _run() -> dict[str, typing.Any]:
+            return list_nearby_files(ctx.ctx, ctx.doc, filter=filt, file_kind="images")
+
+        return _run_on_main(_run)
+
+
+# ------------------------------------------------------------------
+# ImageList
+# ------------------------------------------------------------------
+
+
+class ImageList(ToolWriterImageBase):
+    """List all images/graphic objects in the document."""
+
+    name: str | None = "image_list"
+    intent: str | None = "media"
+    description: str = "List all images/graphic objects in the document with name, dimensions, title, and description."
+    parameters: dict[str, Any] | None = {"type": "object", "properties": {}, "required": []}
+
+
+    def execute(self, ctx: typing.Any, **kwargs: typing.Any) -> dict[str, Any]:
+        doc = ctx.doc
+        doc_type = visual_helpers.get_visual_doc_type(doc)
+        is_calc = doc_type == "calc"
+        is_draw = doc_type in ("draw", "impress")
+        if not is_calc and not is_draw and not hasattr(doc, "getGraphicObjects"):
+            return self._tool_error("Document does not support graphic objects.")
+        graphics_names = visual_helpers.list_graphic_objects(doc, doc_type=doc_type)
+
+        doc_svc = getattr(ctx.services, "document", None)
+        para_ranges = None
+        text_obj = None
+        if not is_calc and not is_draw and doc_svc:
+            para_ranges = doc_svc.get_paragraph_ranges(doc)
+            text_obj = doc.getText()
+
+        images = []
+        for name, graphic in graphics_names:
+            try:
+                size = graphic.getPropertyValue("Size")
+                title = ""
+                description = ""
+                try:
+                    title = graphic.getPropertyValue("Title")
+                except Exception:
+                    pass
+                try:
+                    description = graphic.getPropertyValue("Description")
+                except Exception:
+                    pass
+
+                # Paragraph index via anchor
+                paragraph_index = -1
+                if not is_calc and not is_draw and doc_svc:
+                    try:
+                        anchor = graphic.getAnchor()
+                        paragraph_index = doc_svc.find_paragraph_for_range(anchor, para_ranges, text_obj)
+                    except Exception:
+                        pass
+
+                # Page number via view cursor
+                page = None
+                entry_pos: dict[str, typing.Any] = {}
+                if is_draw:
+                    try:
+                        pos = graphic.getPosition()
+                        entry_pos = {"x_mm": pos.X / 100.0, "y_mm": pos.Y / 100.0}
+                    except Exception:
+                        entry_pos = {}
+                elif not is_calc:
+                    try:
+                        anchor = graphic.getAnchor()
+                        vc = doc.getCurrentController().getViewCursor()
+                        vc.gotoRange(anchor.getStart(), False)
+                        page = vc.getPage()
+                    except Exception:
+                        pass
+                else:
+                    entry_pos = {}
+
+                entry = {"name": name, "width_mm": size.Width / 100.0, "height_mm": size.Height / 100.0, "width_100mm": size.Width, "height_100mm": size.Height, "title": title, "description": description, "paragraph_index": paragraph_index}
+                if page is not None:
+                    entry["page"] = page
+                if is_draw:
+                    entry.update(entry_pos)
+                images.append(entry)
+            except Exception as e:
+                log.debug("image_list: skip '%s': %s", name, e)
+
+        return {"status": "ok", "images": images, "count": len(images)}
+
+
+# ------------------------------------------------------------------
+# ImageGetInfo
+# ------------------------------------------------------------------
+
+
+def _get_graphic_object(ctx: typing.Any, doc: typing.Any, image_name: str) -> Any | None:
+    return visual_helpers.get_graphic_object_by_name(doc, image_name)
+
+
+class ImageGetInfo(ToolWriterImageBase):
+    """Get detailed info about a specific image."""
+
+    name: str | None = "image_get_info"
+    intent: str | None = "media"
+    description: str = "Get detailed info about a specific image: URL, dimensions, anchor type, orientation, crop (crop_mm, mm trimmed per edge), and paragraph index."
+    parameters: dict[str, Any] | None = {"type": "object", "properties": {"name": {"type": "string", "description": "Name of the image (from image_list)."}}, "required": ["name"]}
+
+
+    def execute(self, ctx: typing.Any, **kwargs: typing.Any) -> dict[str, Any]:
+        image_name = kwargs.get("name", "")
+
+        graphic = _get_graphic_object(ctx, ctx.doc, image_name)
+        if not graphic:
+            return self._tool_error("Image '%s' not found or document does not support graphic objects." % image_name, code="IMAGE_NOT_FOUND", image_name=image_name)
+
+        size = graphic.getPropertyValue("Size")
+
+        # Graphic URL — try the modern property first, then legacy.
+        graphic_url = ""
+        try:
+            graphic_url = graphic.getPropertyValue("GraphicURL")
+        except Exception:
+            pass
+        if not graphic_url:
+            try:
+                graphic_url = str(graphic.getPropertyValue("GraphicObjectFillBitmap"))
+            except Exception:
+                pass
+
+        # Anchor type
+        anchor_type = None
+        try:
+            anchor_type = int(graphic.getPropertyValue("AnchorType").value)
+        except Exception:
+            try:
+                anchor_type = int(graphic.getPropertyValue("AnchorType"))
+            except Exception:
+                pass
+
+        # Orientation
+        hori_orient = None
+        vert_orient = None
+        try:
+            hori_orient = int(graphic.getPropertyValue("HoriOrient"))
+        except Exception:
+            pass
+        try:
+            vert_orient = int(graphic.getPropertyValue("VertOrient"))
+        except Exception:
+            pass
+
+        # Title / description
+        title = ""
+        description = ""
+        try:
+            title = graphic.getPropertyValue("Title")
+        except Exception:
+            pass
+        try:
+            description = graphic.getPropertyValue("Description")
+        except Exception:
+            pass
+
+        # Crop (mm trimmed from each edge), so a reader/agent can see and adjust it.
+        crop_mm = None
+        try:
+            cc = graphic.getPropertyValue("GraphicCrop")
+            if cc is not None and (cc.Top or cc.Bottom or cc.Left or cc.Right):
+                crop_mm = {"top": cc.Top / 100.0, "bottom": cc.Bottom / 100.0, "left": cc.Left / 100.0, "right": cc.Right / 100.0}
+        except Exception:
+            pass
+
+        # Paragraph index via anchor
+        paragraph_index = -1
+        is_calc = visual_helpers.get_visual_doc_type(ctx.doc) == "calc"
+        if not is_calc:
+            try:
+                anchor = graphic.getAnchor()
+                doc_svc = ctx.services.document
+                para_ranges = doc_svc.get_paragraph_ranges(ctx.doc)
+                text_obj = ctx.doc.getText()
+                paragraph_index = doc_svc.find_paragraph_for_range(anchor, para_ranges, text_obj)
+            except Exception:
+                pass
+
+        return {
+            "status": "ok",
+            "image_name": image_name,
+            "graphic_url": graphic_url,
+            "width_mm": size.Width / 100.0,
+            "height_mm": size.Height / 100.0,
+            "width_100mm": size.Width,
+            "height_100mm": size.Height,
+            "anchor_type": anchor_type,
+            "hori_orient": hori_orient,
+            "vert_orient": vert_orient,
+            "title": title,
+            "description": description,
+            "crop_mm": crop_mm,
+            "paragraph_index": paragraph_index,
+        }
+
+
+# ------------------------------------------------------------------
+# ImageSetProperties
+# ------------------------------------------------------------------
+
+
+# Friendly position names -> UNO orientation constants. Imported by name (never hard-coded ints) so
+# the values always match this LibreOffice build. Resolved lazily in _resolve_orient().
+_HORI_ORIENT_NAMES = ("left", "center", "right")
+_VERT_ORIENT_NAMES = ("top", "center", "bottom")
+
+
+# Published UNO constant values (com.sun.star.text.HoriOrientation / VertOrientation) — a stable,
+# documented part of the UNO API. Used ONLY as a fallback when the live enum import is unavailable
+# (e.g. headless tests); production resolves through the live import below, so production never
+# depends on these literals being right — they just keep the name-mapping testable without UNO.
+_HORI_ORIENT_FALLBACK = {"left": 3, "center": 2, "right": 1}
+_VERT_ORIENT_FALLBACK = {"top": 1, "center": 2, "bottom": 3}
+
+
+def _resolve_orient(value: typing.Any, axis: str) -> tuple[Any | None, str | None]:
+    """Map a friendly position to a UNO orientation constant. *axis* is 'hori' or 'vert'.
+
+    Accepts a name ('left'/'center'/'right' for hori; 'top'/'center'/'bottom' for vert; 'centre' ok)
+    OR a raw UNO integer constant (back-compat). Returns (constant, None) on success or
+    (None, error_message) on an unknown name. The name is validated first (no UNO needed); the value
+    is then read from the LIVE UNO enum, falling back to the published constant only if that import
+    is unavailable."""
+    if isinstance(value, bool):  # guard: bool is an int subclass
+        return None, "orientation must be a position name or an integer, not a boolean."
+    if isinstance(value, int):
+        return value, None  # raw UNO constant — pass through (back-compat)
+    if not isinstance(value, str):
+        return None, "orientation must be a position name (e.g. 'center') or an integer."
+    name = value.strip().lower()
+    if name == "centre":
+        name = "center"
+    valid = _HORI_ORIENT_NAMES if axis == "hori" else _VERT_ORIENT_NAMES
+    if name not in valid:
+        return None, f"unknown {axis} position '{value}'. Use one of: {', '.join(valid)}."
+    group = "com.sun.star.text.HoriOrientation" if axis == "hori" else "com.sun.star.text.VertOrientation"
+    member = name.upper()  # left/center/right/top/bottom -> LEFT/CENTER/RIGHT/TOP/BOTTOM
+    try:
+        import uno
+        return uno.getConstantByName("%s.%s" % (group, member)), None
+    except Exception:
+        fallback = _HORI_ORIENT_FALLBACK if axis == "hori" else _VERT_ORIENT_FALLBACK
+        return fallback[name], None
+
+
+def _resolve_crop_edges(kwargs: typing.Any, current: typing.Any) -> tuple[int, int, int, int]:
+    """Return (top, bottom, left, right) in 1/100 mm for the GraphicCrop struct. Each crop_*_mm
+    given (in mm) overrides that edge; edges not passed keep their current value. `current` is the
+    existing crop as a 4-tuple (top, bottom, left, right) in 1/100 mm. Pure — unit-testable."""
+    def _edge(key: str, cur: typing.Any) -> int:
+        mm = kwargs.get(key)
+        return int(round(mm * 100)) if mm is not None else int(cur)
+
+    return (
+        _edge("crop_top_mm", current[0]),
+        _edge("crop_bottom_mm", current[1]),
+        _edge("crop_left_mm", current[2]),
+        _edge("crop_right_mm", current[3]),
+    )
+
+
+class ImageSetProperties(ToolWriterImageBase):
+    """Resize, reposition, crop, or update caption/alt-text for an image."""
+
+    name: str | None = "image_set_properties"
+    intent: str | None = "media"
+    description: str = "Resize, reposition, crop, or update caption/alt-text for an image. Crop trims the given millimetres off each edge (crop_*_mm); only the edges you pass change."
+    parameters: dict[str, Any] | None = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Name of the image (from image_list)."},
+            "width_mm": {"type": "number", "description": "New width in millimetres."},
+            "height_mm": {"type": "number", "description": "New height in millimetres."},
+            "title": {"type": "string", "description": "Image title (tooltip text)."},
+            "description": {"type": "string", "description": "Image alternative text (alt-text)."},
+            "anchor_type": {"type": "integer", "description": ("Anchor type: 0=AT_PARAGRAPH, 1=AS_CHARACTER, 2=AT_PAGE, 3=AT_FRAME, 4=AT_CHARACTER.")},
+            "hori_orient": {"type": "string", "description": "Horizontal position: 'left', 'center', or 'right'. (A raw UNO HoriOrientation integer is also accepted.)"},
+            "vert_orient": {"type": "string", "description": "Vertical position: 'top', 'center', or 'bottom'. (A raw UNO VertOrientation integer is also accepted.)"},
+            "crop_top_mm": {"type": "number", "description": "Millimetres to crop off the TOP edge (0 = no crop). Only edges you pass change."},
+            "crop_bottom_mm": {"type": "number", "description": "Millimetres to crop off the BOTTOM edge."},
+            "crop_left_mm": {"type": "number", "description": "Millimetres to crop off the LEFT edge."},
+            "crop_right_mm": {"type": "number", "description": "Millimetres to crop off the RIGHT edge."},
+        },
+        "required": ["name"],
+    }
+
+    is_mutation: bool | None = True
+
+    def execute(self, ctx: typing.Any, **kwargs: typing.Any) -> dict[str, Any]:
+        image_name = kwargs.get("name", "")
+        if not image_name:
+            return self._tool_error("image_name is required.", code="MISSING_PARAMETER", parameter="image_name")
+
+        graphic = _get_graphic_object(ctx, ctx.doc, image_name)
+        if not graphic:
+            return self._tool_error("Image '%s' not found or document does not support graphic objects." % image_name, code="IMAGE_NOT_FOUND", image_name=image_name)
+
+        updated = []
+
+        # Size
+        width_mm = kwargs.get("width_mm")
+        height_mm = kwargs.get("height_mm")
+        if width_mm is not None or height_mm is not None:
+            from com.sun.star.awt import Size
+
+            current = graphic.getPropertyValue("Size")
+            new_size = Size()
+            new_size.Width = int(width_mm * 100) if width_mm is not None else current.Width
+            new_size.Height = int(height_mm * 100) if height_mm is not None else current.Height
+            graphic.setPropertyValue("Size", new_size)
+            updated.append("size")
+
+        # Title
+        title = kwargs.get("title")
+        if title is not None:
+            graphic.setPropertyValue("Title", title)
+            updated.append("title")
+
+        # Description (alt-text)
+        description = kwargs.get("description")
+        if description is not None:
+            graphic.setPropertyValue("Description", description)
+            updated.append("description")
+
+        # Anchor type
+        anchor_type = kwargs.get("anchor_type")
+        if anchor_type is not None:
+            from com.sun.star.text.TextContentAnchorType import AT_PARAGRAPH, AS_CHARACTER, AT_PAGE, AT_FRAME, AT_CHARACTER
+
+            anchor_map = {0: AT_PARAGRAPH, 1: AS_CHARACTER, 2: AT_PAGE, 3: AT_FRAME, 4: AT_CHARACTER}
+            if anchor_type in anchor_map:
+                graphic.setPropertyValue("AnchorType", anchor_map[anchor_type])
+                updated.append("anchor_type")
+
+        # Orientation — accept friendly names ('left'/'center'/'right', 'top'/'center'/'bottom') or
+        # raw UNO ints (back-compat). Resolve via the build's own constants; reject unknown names.
+        hori_orient = kwargs.get("hori_orient")
+        if hori_orient is not None:
+            resolved, err = _resolve_orient(hori_orient, "hori")
+            if err:
+                return self._tool_error(err, code="INVALID_PARAMETER", parameter="hori_orient")
+            graphic.setPropertyValue("HoriOrient", resolved)
+            updated.append("hori_orient")
+
+        vert_orient = kwargs.get("vert_orient")
+        if vert_orient is not None:
+            resolved, err = _resolve_orient(vert_orient, "vert")
+            if err:
+                return self._tool_error(err, code="INVALID_PARAMETER", parameter="vert_orient")
+            graphic.setPropertyValue("VertOrient", resolved)
+            updated.append("vert_orient")
+
+        # Crop: trim mm off each edge via the GraphicCrop struct. Preserve edges the caller didn't pass.
+        if any(kwargs.get(k) is not None for k in ("crop_top_mm", "crop_bottom_mm", "crop_left_mm", "crop_right_mm")):
+            from com.sun.star.text import GraphicCrop
+
+            try:
+                cc = graphic.getPropertyValue("GraphicCrop")
+                cur = (cc.Top, cc.Bottom, cc.Left, cc.Right)
+            except Exception:
+                cur = (0, 0, 0, 0)
+            top, bottom, left, right = _resolve_crop_edges(kwargs, cur)
+            crop = GraphicCrop()
+            crop.Top = top
+            crop.Bottom = bottom
+            crop.Left = left
+            crop.Right = right
+            graphic.setPropertyValue("GraphicCrop", crop)
+            updated.append("crop")
+
+        return {"status": "ok", "image_name": image_name, "updated": updated}
+
+
+# ------------------------------------------------------------------
+# ImageDownload
+# ------------------------------------------------------------------
+
+
+class ImageDownload(ToolWriterImageBase):
+    """Download an image from URL to local cache."""
+
+    name: str | None = "image_download"
+    intent: str | None = "media"
+    description: str = "Download an image from URL to local cache. Returns local path for image_insert/image_replace."
+    parameters: dict[str, Any] | None = {
+        "type": "object",
+        "properties": {"url": {"type": "string", "description": "URL of the image to download."}, "verify_ssl": {"type": "boolean", "description": "Verify SSL certificates (default: false)."}, "force": {"type": "boolean", "description": "Force re-download even if cached (default: false)."}},
+        "required": ["url"],
+    }
+
+
+    def execute(self, ctx: typing.Any, **kwargs: typing.Any) -> dict[str, Any]:
+        url = kwargs.get("url", "")
+
+        verify_ssl = kwargs.get("verify_ssl", False)
+        force = kwargs.get("force", False)
+
+        local_path = _download_image_to_cache(url, verify_ssl=verify_ssl, force=force)
+        return {"status": "ok", "local_path": local_path, "url": url}
+
+
+# ------------------------------------------------------------------
+# ImageInsert
+# ------------------------------------------------------------------
+
+
+class ImageInsert(ToolWriterImageBase):
+    """Insert an image from local path or URL into the document."""
+
+    name: str | None = "image_insert"
+    intent: str | None = "media"
+    description: str = (
+        "Insert an image from local path or URL into the document. URLs are auto-downloaded first. "
+        "For Writer letterheads, pass target='header' or 'footer' (optionally style) to insert "
+        "into the page header/footer with auto-height so the logo does not overlap the body. "
+        "A different-first-page letterhead logo needs first_is_shared=false on the page style "
+        "(page_set_style_properties) so HeaderTextFirst is its own text object, then "
+        "target='header_first' (or footer_first) — otherwise the image lands in the shared "
+        "header and repeats on every page. "
+        "On Draw/Impress, optional page (0-based) and x_mm/y_mm place the image; omitted x/y centers it. "
+        "Sizes and positions are millimetres (not 1/100 mm)."
+    )
+    parameters: dict[str, Any] | None = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": ("Local file path or URL of the image to insert.")},
+            "locator": {"type": "string", "description": ("Unified locator for insertion point (e.g. 'bookmark:NAME', 'heading_text:Title').")},
+            "paragraph": {"type": "integer", "description": "Paragraph index for insertion point."},
+            "page": {"type": "integer", "description": "Draw/Impress: 0-based page index (active page if omitted)."},
+            "x_mm": {"type": "number", "description": "Draw/Impress: X position in millimetres (default: centered)."},
+            "y_mm": {"type": "number", "description": "Draw/Impress: Y position in millimetres (default: centered)."},
+            "width_mm": {"type": "integer", "description": "Width in millimetres (default: 80)."},
+            "height_mm": {"type": "integer", "description": "Height in millimetres (default: 80)."},
+            "target": {
+                "type": "string",
+                "enum": ["body", "header", "footer", "header_first", "footer_first"],
+                "description": (
+                    "Writer insertion target (default: body). header/footer write the shared "
+                    "page-style region. header_first/footer_first write the first-page letterhead "
+                    "(set first_is_shared=false first, or the first page still shares HeaderText)."
+                ),
+            },
+            "style": {
+                "type": "string",
+                "description": "Page style for header/footer target (default: Standard).",
+            },
+            "auto_height": {
+                "type": "boolean",
+                "description": (
+                    "When target is a header/footer region, grow the region with the image "
+                    "(default: true) so a taller logo does not overlap the body. "
+                    "Set false to keep a fixed header/footer height."
+                ),
+            },
+        },
+        "required": ["path"],
+    }
+
+    is_mutation: bool | None = True
+
+    def execute(self, ctx: typing.Any, **kwargs: typing.Any) -> dict[str, Any]:
+        image_path = kwargs.get("path", "")
+
+        width_mm = kwargs.get("width_mm", 80)
+        height_mm = kwargs.get("height_mm", 80)
+        locator = kwargs.get("locator")
+        paragraph_index = kwargs.get("paragraph")
+        target = kwargs.get("target", "body")
+        style_name = kwargs.get("style", "Standard")
+
+        doc = ctx.doc
+
+        if image_path.startswith("http://") or image_path.startswith("https://"):
+            image_path = _download_image_to_cache(image_path)
+        if not os.path.isfile(image_path):
+            return self._tool_error(f"File not found: {image_path}", code="FILE_NOT_FOUND", path=image_path)
+
+        if target in ("header", "footer", "header_first", "footer_first"):
+            if visual_helpers.get_visual_doc_type(doc) not in ("writer", "web"):
+                return self._tool_error(
+                    "target='%s' is only supported for Writer documents." % target,
+                    code="UNSUPPORTED_DOC_TYPE",
+                )
+            try:
+                placed = insert_image_into_header_footer(
+                    doc,
+                    image_path,
+                    target,
+                    width_mm=width_mm,
+                    height_mm=height_mm,
+                    style_name=style_name,
+                    auto_height=kwargs.get("auto_height", True),
+                    ctx=ctx.ctx,
+                )
+            except Exception as e:
+                return self._tool_error(str(e), code="INSERT_FAILED", path=image_path)
+            graphic = placed["graphic"]
+            if graphic is None:
+                return self._tool_error("Failed to insert image.", code="INSERT_FAILED", path=image_path)
+            get_name = getattr(graphic, "getName", None)
+            image_name = get_name() if callable(get_name) else ""
+            return {
+                "status": "ok",
+                "image_name": image_name,
+                "width_mm": width_mm,
+                "height_mm": height_mm,
+                "target": target,
+                "style_name": placed["style_name"],
+                "auto_height": placed["auto_height"],
+            }
+
+        text_cursor = None
+        doc_svc = getattr(ctx.services, "document", None)
+        if locator is not None and paragraph_index is None and doc_svc:
+            resolved = doc_svc.resolve_locator(doc, locator)
+            paragraph_index = resolved.get("para_index")
+
+        if paragraph_index is not None and doc_svc:
+            target_para, _unused = doc_svc.find_paragraph_element(doc, paragraph_index)
+            if target_para is None:
+                return self._tool_error(f"Paragraph {paragraph_index} not found.", code="PARAGRAPH_NOT_FOUND", paragraph_index=paragraph_index)
+            text_cursor = doc.getText().createTextCursorByRange(target_para.getEnd())
+
+        graphic = insert_image_at_locator(
+            ctx.ctx,
+            doc,
+            image_path,
+            width_mm=width_mm,
+            height_mm=height_mm,
+            text_cursor=text_cursor,
+            page_index=kwargs.get("page"),
+            x_mm=kwargs.get("x_mm"),
+            y_mm=kwargs.get("y_mm"),
+        )
+        if graphic is None:
+            return self._tool_error("Failed to insert image.", code="INSERT_FAILED", path=image_path)
+
+        image_name = graphic.getName() if hasattr(graphic, "getName") else ""
+        return {"status": "ok", "image_name": image_name, "width_mm": width_mm, "height_mm": height_mm}
+
+
+# ------------------------------------------------------------------
+# ImageDelete
+# ------------------------------------------------------------------
+
+
+class ImageDelete(ToolWriterImageBase):
+    """Delete an image from the document."""
+
+    name: str | None = "image_delete"
+    intent: str | None = "media"
+    description: str = "Delete an image from the document."
+    parameters: dict[str, Any] | None = {"type": "object", "properties": {"name": {"type": "string", "description": "Name of the image to delete (from image_list)."}, "remove_frame": {"type": "boolean", "description": "Also remove the containing frame (default: true)."}}, "required": ["name"]}
+
+    is_mutation: bool | None = True
+
+    def execute(self, ctx: typing.Any, **kwargs: typing.Any) -> dict[str, Any]:
+        image_name = kwargs.get("name", "")
+
+        graphic = _get_graphic_object(ctx, ctx.doc, image_name)
+        if not graphic:
+            return self._tool_error("Image '%s' not found or document does not support graphic objects." % image_name, code="IMAGE_NOT_FOUND", image_name=image_name)
+
+        doc_type = visual_helpers.get_visual_doc_type(ctx.doc)
+        if doc_type in ("calc", "draw", "impress"):
+            if not visual_helpers.remove_graphic_from_draw_pages(ctx.doc, graphic):
+                return self._tool_error("Image '%s' not found or document does not support graphic objects." % image_name, code="IMAGE_NOT_FOUND", image_name=image_name)
+        else:
+            anchor = graphic.getAnchor()
+            text = anchor.getText()
+            text.removeTextContent(graphic)
+
+        return {"status": "ok", "deleted": image_name}
+
+
+# ------------------------------------------------------------------
+# ImageReplace
+# ------------------------------------------------------------------
+
+
+class ImageReplace(ToolWriterImageBase):
+    """Replace an image's source file keeping position and frame."""
+
+    name: str | None = "image_replace"
+    intent: str | None = "media"
+    description: str = "Replace an image's source file keeping position and frame."
+    parameters: dict[str, Any] | None = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Name of the image to replace (from image_list)."},
+            "path": {"type": "string", "description": "Local file path or URL of the replacement image."},
+            "width_mm": {"type": "number", "description": "Optionally update width in millimetres."},
+            "height_mm": {"type": "number", "description": "Optionally update height in millimetres."},
+        },
+        "required": ["name", "path"],
+    }
+
+    is_mutation: bool | None = True
+
+    def execute(self, ctx: typing.Any, **kwargs: typing.Any) -> dict[str, Any]:
+        image_name = kwargs.get("name", "")
+        new_image_path = kwargs.get("path", "")
+
+        graphic = _get_graphic_object(ctx, ctx.doc, image_name)
+        if not graphic:
+            return self._tool_error("Image '%s' not found or document does not support graphic objects." % image_name, code="IMAGE_NOT_FOUND", image_name=image_name)
+
+        if new_image_path.startswith("http://") or new_image_path.startswith("https://"):
+            new_image_path = _download_image_to_cache(new_image_path)
+        if not os.path.isfile(new_image_path):
+            return self._tool_error(f"File not found: {new_image_path}", code="FILE_NOT_FOUND", path=new_image_path)
+
+        width_mm = kwargs.get("width_mm")
+        height_mm = kwargs.get("height_mm")
+        width_units = height_units = None
+        if width_mm is not None or height_mm is not None:
+            current = graphic.getPropertyValue("Size")
+            width_units = int(width_mm * 100) if width_mm is not None else current.Width
+            height_units = int(height_mm * 100) if height_mm is not None else current.Height
+
+        if not replace_graphic_source(ctx.ctx, ctx.doc, graphic, new_image_path, width_units=width_units, height_units=height_units):
+            return self._tool_error("Failed to replace image.", code="REPLACE_FAILED", image_name=image_name)
+
+        return {"status": "ok", "image_name": image_name}
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+
+def _download_image_to_cache(url: str, verify_ssl: bool = False, force: bool = False) -> str:
+    """Download an image URL to the local cache directory.
+
+    Returns the local file path. Uses a URL-based hash for caching.
+    """
+
+    os.makedirs(_IMAGE_CACHE_DIR, exist_ok=True)
+
+    # Derive a stable filename from the URL
+    url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    # Try to preserve the file extension
+    ext = ""
+    url_path = url.split("?")[0]
+    if "." in url_path.split("/")[-1]:
+        ext = "." + url_path.split("/")[-1].rsplit(".", 1)[-1]
+        # Sanitize extension
+        ext = ext[:6].lower()
+        if not ext.replace(".", "").isalnum():
+            ext = ""
+    if not ext:
+        ext = ".png"
+
+    local_path = os.path.join(_IMAGE_CACHE_DIR, url_hash + ext)
+
+    if not force and os.path.isfile(local_path):
+        log.debug("image_download: cache hit %s -> %s", url, local_path)
+        return local_path
+
+    log.info("image_download: downloading %s -> %s", url, local_path)
+
+    if verify_ssl:
+        context = None
+    else:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+
+    request = urllib.request.Request(url)
+    request.add_header("User-Agent", USER_AGENT)
+
+    with urllib.request.urlopen(request, context=context) as response:
+        data = response.read()
+
+    with open(local_path, "wb") as f:
+        f.write(data)
+
+    return local_path

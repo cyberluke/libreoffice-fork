@@ -1,0 +1,14 @@
+Jupyter logo (jupyter_logo.svg)
+===============================
+Dev tree only for SVG + this NOTICE — not shipped in the .oxt (see scripts/build_oxt.py should_exclude).
+High-res PNG for README: Showcase/jupyter_logo.png (not in the OXT).
+
+Source: https://github.com/jupyter/design/tree/master/logos/Logo%20Mark/logomark-orangebody-greyplanets
+Official Project Jupyter “Planet” logomark (orange crescents + grey moons).
+Trademark of Project Jupyter; used to indicate Jupyter notebook import:
+https://jupyter.org
+https://github.com/jupyter/design (BSD-3-Clause assets)
+
+Regenerate README PNG:
+  rsvg-convert -h 512 --background-color=none jupyter_logo.svg -o /tmp/j512.png
+  magick /tmp/j512.png -trim +repage PNG32:../../Showcase/jupyter_logo.png

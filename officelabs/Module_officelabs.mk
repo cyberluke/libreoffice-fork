@@ -7,6 +7,18 @@ $(eval $(call gb_Module_add_targets,officelabs,\
     UIConfig_officelabs \
 ))
 
+# Bundled WriterAgent ("OfficeLabs AI") — enabled through
+# --enable-ext-officelabs-ai (adds OFFICELABS_AI to BUILD_TYPE; see
+# configure.ac). The custom target produces WriterAgent.oxt from the
+# vendored snapshot and the ExtensionPackage stages it into
+# instdir/share/extensions/officelabs-ai for clean-profile registration.
+ifeq ($(filter OFFICELABS_AI,$(BUILD_TYPE)),OFFICELABS_AI)
+$(eval $(call gb_Module_add_targets,officelabs,\
+    CustomTarget_writeragent-oxt \
+    ExtensionPackage_officelabs-ai \
+))
+endif
+
 $(eval $(call gb_Module_add_check_targets,officelabs,\
 	CppunitTest_officelabs_inline \
 	CppunitTest_officelabs_cursor \

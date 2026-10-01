@@ -1,0 +1,517 @@
+# WriterAgent - AI Writing Assistant for LibreOffice
+# Copyright (c) 2026 KeithCu (modifications and relicensing)
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Ordered registry of trusted helper domains for RPS and the script picker.
+
+Domain compute / egress stay in domain modules. Callables use lazy imports to avoid cycles.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+from plugin.doc.doc_type import is_calc
+from plugin.framework.i18n import _
+from plugin.scripting.helper_domain import (
+    HelperScriptMeta,
+    format_elapsed_time,
+    plot_insert_ok_outcome,
+    rps_insert_failed_outcome,
+    rps_ok_outcome,
+    symbolic_insert_ok_outcome,
+    units_insert_ok_outcome,
+)
+
+log = logging.getLogger("writeragent.scripting")
+
+# --- Script picker origins / prefixes (stable IDs used in origin_map) ---
+
+SCRIPT_ORIGIN_USER = "user"
+SCRIPT_ORIGIN_DOCUMENT = "document"
+SCRIPT_ORIGIN_ANALYSIS = "analysis"
+SCRIPT_ORIGIN_VISION = "vision"
+SCRIPT_ORIGIN_VIZ = "viz"
+SCRIPT_ORIGIN_MATH = "math"
+SCRIPT_ORIGIN_UNITS = "units"
+SCRIPT_ORIGIN_QUANT = "quant"
+SCRIPT_ORIGIN_OPTIMIZE = "optimize"
+SCRIPT_ORIGIN_FORECAST = "forecast"
+SCRIPT_ORIGIN_SQL = "sql"
+
+DOC_SCRIPT_DISPLAY_PREFIX = "[Doc] "
+ANALYSIS_SCRIPT_DISPLAY_PREFIX = "[Analysis] "
+VISION_SCRIPT_DISPLAY_PREFIX = "[Vision] "
+VIZ_SCRIPT_DISPLAY_PREFIX = "[Viz] "
+MATH_SCRIPT_DISPLAY_PREFIX = "[Math] "
+UNITS_SCRIPT_DISPLAY_PREFIX = "[Units] "
+QUANT_SCRIPT_DISPLAY_PREFIX = "[Quant] "
+OPTIMIZE_SCRIPT_DISPLAY_PREFIX = "[Optimize] "
+FORECAST_SCRIPT_DISPLAY_PREFIX = "[Forecast] "
+SQL_SCRIPT_DISPLAY_PREFIX = "[SQL] "
+
+
+@dataclass(frozen=True)
+class PickerDomainSpec:
+    """One built-in helper group in the Run Python Script picker."""
+
+    origin: str
+    display_prefix: str
+    title_fn: Callable[[], str]
+    supports: Callable[[Any], bool]
+    templates: Callable[[], dict[str, str]]
+
+
+@dataclass
+class RpsDomainSpec:
+    """Post-venv result routing for one trusted helper domain."""
+
+    id: str
+    insert: Callable[..., Any] | None = None
+    format_ok: Callable[..., dict[str, Any]] | None = None
+    is_result: Callable[[Any], bool] | None = None
+    post_venv_calc_only: bool = False
+
+
+def try_rps_post_venv(
+    spec: RpsDomainSpec,
+    *,
+    ctx: Any,
+    doc: Any,
+    result_data: Any,
+    t0: float,
+    stdout: str | None,
+    code: str | None = None,
+) -> dict[str, Any] | None:
+    """Route a generic venv result through domain is_result + insert, or None."""
+    if spec.is_result is None or spec.insert is None or spec.format_ok is None:
+        return None
+    if spec.post_venv_calc_only and not is_calc(doc):
+        return None
+    if not spec.is_result(result_data):
+        return None
+    insert_kwargs: dict[str, Any] = {}
+    if spec.id == "units" and code:
+        from plugin.scripting.helper_domain import parse_run_import_call_params
+        from plugin.scripting.units import split_helper_params
+
+        body_params = parse_run_import_call_params(code, run_name="run_units")
+        if body_params is not None:
+            _unused, output_style = split_helper_params(body_params)
+            if output_style is not None:
+                insert_kwargs["output_style"] = output_style
+    elif spec.id == "vision" and code:
+        from plugin.scripting.helper_domain import parse_run_import_call_spec
+        from plugin.vision.vision_common import merge_vision_params
+
+        call_spec = parse_run_import_call_spec(code, run_name="run_vision") or {}
+        raw_params = call_spec.get("params") if isinstance(call_spec.get("params"), dict) else None
+        insert_kwargs["params"] = merge_vision_params(ctx, raw_params)
+    try:
+        row_count = spec.insert(ctx, doc, result_data, **insert_kwargs)
+    except Exception as e:
+        return rps_insert_failed_outcome(e, t0=t0)
+
+    # Synthetic meta for format_ok when no header was used.
+    helper = ""
+    if isinstance(result_data, dict):
+        helper = str(result_data.get("helper") or "")
+    meta = HelperScriptMeta(helper=helper, params={})
+    return spec.format_ok(meta=meta, result=result_data, t0=t0, row_count=row_count, stdout=stdout)
+
+
+# --- Domain adapters (lazy imports) ---
+
+
+# --- Declarative Domain registry wiring ---
+# Three tables on purpose: WIRING_TABLE (RPS insert order), POST_VENV_DOMAIN_ORDER
+# (is_result scan order), PICKER_WIRING (script-picker UI). Do not collapse them
+# or add a fourth registry. Drift is caught by test_domain_registry (same members
+# for wiring vs post-venv; picker is not 1:1 — text is wiring-only).
+@dataclass(frozen=True)
+class DomainWiring:
+    id: str
+    insert: str  # module.path:attr
+    is_result: str  # module.path:attr
+    format_ok_kind: str = "generic"  # generic | plot | symbolic | units | vision | rows
+    post_venv_calc_only: bool = False
+
+
+def _resolve_module_attr(target: str) -> Any:
+    import importlib
+
+    mod_name, attr_name = target.rsplit(":", 1)
+    return getattr(importlib.import_module(mod_name), attr_name)
+
+
+def _resolve_fn(path: str | None) -> Any:
+    if not path:
+        return None
+    return _resolve_module_attr(path)
+
+
+def build_rps_spec(w: DomainWiring) -> RpsDomainSpec:
+    def insert(ctx: Any, doc: Any, result: dict[str, Any], **kwargs: Any) -> Any:
+        fn = _resolve_fn(w.insert)
+        if w.id == "units":
+            ret = fn(ctx, doc, result, output_style=kwargs.get("output_style"))
+        elif w.id == "vision":
+            params = kwargs.get("params")
+            if params is not None:
+                ret = fn(ctx, doc, result, params=params)
+            else:
+                ret = fn(ctx, doc, result)
+        else:
+            ret = fn(ctx, doc, result)
+        if ret is not None:
+            return int(ret)
+        return None
+
+    def format_ok(*, meta: Any, result: dict[str, Any], t0: float, row_count: Any = None, stdout: str | None = None) -> dict[str, Any]:
+        helper = str(getattr(meta, "helper", "") or "") or str(result.get("helper") or w.id)
+        formatted_time = format_elapsed_time(time.perf_counter() - t0)
+
+        if w.format_ok_kind == "plot":
+            title = str(result.get("title") or helper or "Plot")
+            return plot_insert_ok_outcome(helper=helper, title=title, t0=t0, stdout=stdout, result=result)
+        if w.format_ok_kind == "symbolic":
+            latex = str(result.get("latex") or result.get("text") or helper or "")
+            return symbolic_insert_ok_outcome(helper=helper, latex=latex, t0=t0, stdout=stdout, result=result)
+        if w.format_ok_kind == "units":
+            formatted = str(result.get("formatted") or result.get("text") or helper or "")
+            return units_insert_ok_outcome(helper=helper, formatted=formatted, t0=t0, stdout=stdout, result=result)
+        if w.format_ok_kind == "vision":
+            metrics_raw = result.get("metrics")
+            metrics: dict[str, Any] = metrics_raw if isinstance(metrics_raw, dict) else {}
+            line_count = metrics.get("line_count")
+            if line_count is None and helper == "extract_structure":
+                line_count = metrics.get("block_count")
+            if line_count is None:
+                html = str(result.get("html") or "")
+                line_count = html.count("<p") + html.count("<h") + html.count("<table")
+            if helper == "extract_structure":
+                table_count = metrics.get("table_count", 0)
+                status_ok = _("Vision '{helper}' completed. Inserted HTML ({blocks} blocks, {tables} tables). (took {time})").format(
+                    helper=helper, blocks=line_count, tables=table_count, time=formatted_time
+                )
+            else:
+                status_ok = _("Vision '{helper}' completed. Inserted formatted HTML. (took {time})").format(
+                    helper=helper, time=formatted_time
+                )
+            return rps_ok_outcome(status_ok, result=result, stdout=stdout)
+        if w.format_ok_kind == "rows":
+            return rps_ok_outcome(
+                _("{domain} '{helper}' completed. Wrote {rows} rows. (took {time})").format(
+                    domain=w.id.capitalize(), helper=helper, rows=row_count or 0, time=formatted_time
+                ),
+                result=result,
+                stdout=stdout,
+            )
+        return rps_ok_outcome(
+            _("{domain} '{helper}' completed. (took {time})").format(
+                domain=w.id.capitalize() if w.id != "text" else "Text analytics", helper=helper, time=formatted_time
+            ),
+            result=result,
+            stdout=stdout,
+        )
+
+    def is_result(value: Any) -> bool:
+        fn = _resolve_fn(w.is_result)
+        return fn(value)
+
+    return RpsDomainSpec(
+        id=w.id,
+        insert=insert,
+        format_ok=format_ok,
+        is_result=is_result,
+        post_venv_calc_only=w.post_venv_calc_only,
+    )
+
+
+WIRING_TABLE: tuple[DomainWiring, ...] = (
+    DomainWiring(
+        id="vision",
+        insert="plugin.vision.vision_egress:insert_vision_result",
+        is_result="plugin.vision.vision_egress:is_vision_result",
+        format_ok_kind="vision",
+    ),
+    DomainWiring(
+        id="viz",
+        insert="plugin.scripting.viz:insert_viz_result_into_doc",
+        is_result="plugin.scripting.viz:is_viz_result",
+        format_ok_kind="plot",
+    ),
+    DomainWiring(
+        id="math",
+        insert="plugin.scripting.symbolic:insert_symbolic_result_into_doc",
+        is_result="plugin.scripting.symbolic:is_symbolic_result",
+        format_ok_kind="symbolic",
+    ),
+    DomainWiring(
+        id="units",
+        insert="plugin.scripting.units:insert_units_result_into_doc",
+        is_result="plugin.scripting.units:is_units_result",
+        format_ok_kind="units",
+    ),
+    DomainWiring(
+        id="text",
+        insert="plugin.scripting.text_analytics:insert_text_analytics_result_into_doc",
+        is_result="plugin.scripting.text_analytics:is_text_analytics_result",
+        format_ok_kind="generic",
+    ),
+    DomainWiring(
+        id="quant",
+        insert="plugin.calc.quant_egress:insert_quant_result_into_calc",
+        is_result="plugin.calc.quant_egress:is_quant_result",
+        format_ok_kind="rows",
+        post_venv_calc_only=True,
+    ),
+    DomainWiring(
+        id="optimize",
+        insert="plugin.scripting.optimize:insert_optimize_result_into_calc",
+        is_result="plugin.scripting.optimize:is_optimize_result",
+        format_ok_kind="rows",
+        post_venv_calc_only=True,
+    ),
+    DomainWiring(
+        id="forecast",
+        insert="plugin.scripting.forecast:insert_forecast_result_into_calc",
+        is_result="plugin.scripting.forecast:is_forecast_result",
+        format_ok_kind="rows",
+        post_venv_calc_only=True,
+    ),
+    DomainWiring(
+        id="analysis",
+        insert="plugin.calc.analysis_egress:insert_analysis_result_into_calc",
+        is_result="plugin.calc.analysis_egress:is_analysis_result",
+        format_ok_kind="rows",
+        post_venv_calc_only=True,
+    ),
+    DomainWiring(
+        id="sql",
+        insert="plugin.scripting.duckdb_sql:insert_sql_result_into_calc",
+        is_result="plugin.scripting.duckdb_sql:is_sql_result",
+        format_ok_kind="rows",
+        post_venv_calc_only=True,
+    ),
+)
+
+def _rps_builder_for(wiring: DomainWiring) -> Callable[[], RpsDomainSpec]:
+    return lambda: build_rps_spec(wiring)
+
+
+_RPS_BUILDERS: tuple[Callable[[], RpsDomainSpec], ...] = tuple(
+    _rps_builder_for(wiring) for wiring in WIRING_TABLE
+)
+
+_rps_cache: list[RpsDomainSpec] | None = None
+
+
+def get_rps_domains() -> Sequence[RpsDomainSpec]:
+    """Ordered RPS domain specs (cached after first call)."""
+    global _rps_cache
+    if _rps_cache is None:
+        _rps_cache = [builder() for builder in _RPS_BUILDERS]
+    return _rps_cache
+
+
+# Post-venv is_result order differs slightly (symbolic before units, then plot special case, then vision, then calc domains)
+# We encode post-venv order as a separate sequence of domain ids.
+POST_VENV_DOMAIN_ORDER: tuple[str, ...] = (
+    "math",  # symbolic
+    "units",
+    "text",
+    "viz",
+    # plot raw is special-cased in python_runner
+    "vision",
+    "analysis",
+    "quant",
+    "optimize",
+    "forecast",
+    "sql",
+)
+
+
+def get_rps_domain_by_id(domain_id: str) -> RpsDomainSpec | None:
+    for spec in get_rps_domains():
+        if spec.id == domain_id:
+            return spec
+    return None
+
+
+def get_post_venv_domains() -> list[RpsDomainSpec]:
+    """Domains that participate in post-venv result routing, in order."""
+    out: list[RpsDomainSpec] = []
+    for domain_id in POST_VENV_DOMAIN_ORDER:
+        spec = get_rps_domain_by_id(domain_id)
+        if spec is not None and spec.is_result is not None:
+            out.append(spec)
+    return out
+
+
+_RUN_IMPORT_DATA_BINDING: dict[str, dict[str, bool]] = {
+    "run_analysis": {"calc_only": True},
+    "run_viz": {"calc_only": False},
+    "run_quant": {"calc_only": True},
+    "run_optimize": {"calc_only": True},
+    "run_forecast": {"calc_only": True},
+}
+
+
+def script_header_needs_data_binding(code: str, *, doc: Any) -> bool:
+    """True when *code* uses a trusted helper that may bind Calc sheet data."""
+    import re
+
+    if not code:
+        return False
+    for run_name, cfg in _RUN_IMPORT_DATA_BINDING.items():
+        if not re.search(rf"\b{re.escape(run_name)}\s*\(", code):
+            continue
+        if cfg.get("calc_only") and not is_calc(doc):
+            continue
+        return True
+    return False
+
+
+# --- Picker domains (order in build_xdl_script_picker_state) ---
+
+
+@dataclass(frozen=True)
+class PickerWiring:
+    """Declarative picker section: supports/templates resolved lazily via module:attr strings."""
+
+    origin: str
+    display_prefix: str
+    title: str
+    supports: str  # "calc_only" or "module.path:attr"
+    templates: str  # "module.path:attr" returning dict[str, str]
+
+
+def _picker_calc_only(doc: Any) -> bool:
+    try:
+        return doc is not None and is_calc(doc)
+    except Exception:
+        return False
+
+
+def _picker_supports_fn(supports: str) -> Callable[[Any], bool]:
+    if supports == "calc_only":
+        return _picker_calc_only
+
+    def _supports(doc: Any) -> bool:
+        if doc is None:
+            return False
+        try:
+            return bool(_resolve_module_attr(supports)(doc))
+        except Exception:
+            return False
+
+    return _supports
+
+
+def _picker_templates_fn(templates: str) -> Callable[[], dict[str, str]]:
+    def _templates() -> dict[str, str]:
+        return dict(_resolve_module_attr(templates)())
+
+    return _templates
+
+
+def _picker_builder_for(wiring: PickerWiring) -> Callable[[], PickerDomainSpec]:
+    title = wiring.title
+
+    def _build() -> PickerDomainSpec:
+        return PickerDomainSpec(
+            origin=wiring.origin,
+            display_prefix=wiring.display_prefix,
+            title_fn=lambda: _(title),
+            supports=_picker_supports_fn(wiring.supports),
+            templates=_picker_templates_fn(wiring.templates),
+        )
+
+    return _build
+
+
+PICKER_WIRING: tuple[PickerWiring, ...] = (
+    PickerWiring(
+        origin=SCRIPT_ORIGIN_VISION,
+        display_prefix=VISION_SCRIPT_DISPLAY_PREFIX,
+        title="Vision Helpers",
+        supports="plugin.vision.vision_runner:supports_vision_manual",
+        templates="plugin.vision.vision_templates:get_vision_script_templates",
+    ),
+    PickerWiring(
+        origin=SCRIPT_ORIGIN_MATH,
+        display_prefix=MATH_SCRIPT_DISPLAY_PREFIX,
+        title="Math Helpers",
+        supports="plugin.scripting.symbolic:supports_symbolic_manual",
+        templates="plugin.scripting.symbolic:get_math_script_templates",
+    ),
+    PickerWiring(
+        origin=SCRIPT_ORIGIN_UNITS,
+        display_prefix=UNITS_SCRIPT_DISPLAY_PREFIX,
+        title="Units Helpers",
+        supports="plugin.scripting.units:supports_units_manual",
+        templates="plugin.scripting.units:get_units_script_templates",
+    ),
+    PickerWiring(
+        origin=SCRIPT_ORIGIN_ANALYSIS,
+        display_prefix=ANALYSIS_SCRIPT_DISPLAY_PREFIX,
+        title="Analysis Helpers",
+        supports="calc_only",
+        templates="plugin.scripting.analysis:get_analysis_script_templates",
+    ),
+    PickerWiring(
+        origin=SCRIPT_ORIGIN_SQL,
+        display_prefix=SQL_SCRIPT_DISPLAY_PREFIX,
+        title="SQL Helpers",
+        supports="calc_only",
+        templates="plugin.scripting.duckdb_sql:get_sql_script_templates",
+    ),
+    PickerWiring(
+        origin=SCRIPT_ORIGIN_VIZ,
+        display_prefix=VIZ_SCRIPT_DISPLAY_PREFIX,
+        title="Viz Helpers",
+        supports="plugin.scripting.viz:supports_viz_manual",
+        templates="plugin.scripting.viz:get_viz_script_templates",
+    ),
+    PickerWiring(
+        origin=SCRIPT_ORIGIN_QUANT,
+        display_prefix=QUANT_SCRIPT_DISPLAY_PREFIX,
+        title="Quant Helpers",
+        supports="plugin.scripting.quant:supports_quant_manual",
+        templates="plugin.scripting.quant:get_quant_script_templates",
+    ),
+    PickerWiring(
+        origin=SCRIPT_ORIGIN_OPTIMIZE,
+        display_prefix=OPTIMIZE_SCRIPT_DISPLAY_PREFIX,
+        title="Optimize Helpers",
+        supports="calc_only",
+        templates="plugin.scripting.optimize:get_optimize_script_templates",
+    ),
+    PickerWiring(
+        origin=SCRIPT_ORIGIN_FORECAST,
+        display_prefix=FORECAST_SCRIPT_DISPLAY_PREFIX,
+        title="Forecast Helpers",
+        supports="calc_only",
+        templates="plugin.scripting.forecast:get_forecast_script_templates",
+    ),
+)
+
+
+def get_picker_domains() -> list[PickerDomainSpec]:
+    """Built-in helper sections for the script picker (lazy templates/supports)."""
+    return [_picker_builder_for(wiring)() for wiring in PICKER_WIRING]
+
+
+def picker_display_name(prefix: str, name: str) -> str:
+    return f"{prefix}{name}"
+
+
+def parse_picker_display_name(prefix: str, display: str) -> str | None:
+    if display.startswith(prefix):
+        return display[len(prefix) :]
+    return None

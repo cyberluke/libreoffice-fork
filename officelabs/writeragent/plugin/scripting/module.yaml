@@ -1,0 +1,146 @@
+name: scripting
+title: Python
+requires: [config]
+
+actions:
+  reset_python_session:
+    title: "Reset Python Session"
+  edit_python_cell:
+    title: "Edit Python in Cell..."
+
+shortcuts:
+  reset_python_session:
+    key: F9_SHIFT_MOD1_MOD2
+    context: [calc]
+  edit_python_cell:
+    key: P_SHIFT_MOD1_MOD2
+    context: [calc]
+
+config:
+  python_venv_path:
+    type: string
+    default: ""
+    widget: text
+    label: Python venv path
+    helper: If set, runs =PY() and Run Python Script in that venv (bin/python, Scripts/python.exe, or conda/pyenv-win env-root python.exe). Paste the path without surrounding quotes. If empty, uses this process's sys.executable (basic stdlib); use a venv for numpy/pandas and Vision Helpers (paddleocr, paddlepaddle).
+    width: 200
+    inline: true
+
+  test_venv:
+    type: string
+    default: ""
+    widget: button
+    label: Test
+    inline_no_label: true
+    settings_persist: false
+    x: 314
+    width: 48
+
+  download_audio_binaries:
+    type: string
+    default: ""
+    widget: button
+    label: "Download platform-specific audio and serialization binaries:"
+    button_text: "Download"
+    show_button_label: true
+    label_width: 280
+    settings_persist: false
+    x: 297
+    width: 65
+
+  python_exec_timeout:
+    type: int
+    default: 10
+    min: 1
+    max: 600
+    widget: number
+    label: Python script timeout (seconds)
+    helper: Wall-clock limit for Run Python Script and =PYTHON() / =PY().
+
+  python_max_data_cells:
+    type: int
+    default: 250000
+    min: 1000
+    max: 2000000
+    widget: number
+    label: Max Calc data cells
+    helper: Maximum cells in =PYTHON() data or Run Python Script data/data_range. Larger values use more RAM and time; UNO range read still dominates.
+    public: true
+
+  python_session_mode:
+    type: string
+    default: isolated
+    widget: select
+    label: Python session mode
+    helper: "Isolated: each =PYTHON() cell gets a fresh namespace. Shared: one namespace per workbook (variables carry between cells)."
+    public: true
+    options:
+      - value: isolated
+        label: Isolated (default)
+      - value: shared
+        label: Shared kernel
+
+  python_geometric_recalc_order:
+    type: bool
+    default: false
+    widget: checkbox
+    label: Geometric Recalc Order (Experimental)
+    helper: Ensures PY cells evaluate in sheet order. Most useful with Shared kernel.
+    public: true
+    width: 250
+
+  python_auto_spill:
+    type: bool
+    default: true
+    widget: checkbox
+    label: Python auto spill in Calc
+    helper: Automatically spill multi-cell array/DataFrame results from =PYTHON() into adjacent cells.
+    public: true
+    # Same row as xl_static_rewrite (SettingsDialog add_fields: inline skips y advance).
+    inline: true
+    width: 200
+
+  # Experimental: Monaco cell-save lifts xl("A1:…") onto =PY data args and
+  # rewrites call sites to data / data[i] / .to_pandas(). Default off.
+  xl_static_rewrite:
+    type: bool
+    default: false
+    widget: checkbox
+    label: Rewrite xl() ranges
+    helper: >-
+      On Edit Python in Cell save, lift static xl("A1:…") onto =PY data args
+      and rewrite to data / data[i] / .to_pandas().
+    public: true
+    x: 220
+    width: 200
+
+  # ppt_master_data_path:
+  #   type: string
+  #   default: ""
+  #   widget: folder
+  #   label: PPT-Master data path
+  #   helper: Path to the ppt-master skill tree (SKILL.md, templates/, scripts/svg_to_pptx/). Clone hugohe3/ppt-master on GitHub and point here at the clone root (.../ppt-master) or the inner skill dir (.../ppt-master/skills/ppt-master). Leave empty to auto-detect (dev clone beside repo, then env).
+  #   width: 200
+  #   inline: true
+  #   librepy_exclude: true
+
+  # test_ppt_master_data:
+  #   type: string
+  #   default: ""
+  #   widget: button
+  #   label: Test
+  #   inline_no_label: true
+  #   settings_persist: false
+  #   x: 314
+  #   width: 48
+  #   librepy_exclude: true
+
+  force_internal_script_editor:
+    type: bool
+    default: false
+    internal: true
+
+  native_run_script_modeless:
+    type: bool
+    default: true
+    internal: true

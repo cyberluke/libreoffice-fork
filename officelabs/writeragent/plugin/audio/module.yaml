@@ -1,0 +1,182 @@
+name: audio
+title: Speech
+requires: [config]
+
+config:
+  stt_provider:
+    type: string
+    default: endpoint
+    widget: select
+    label: STT Provider
+    helper: "LLM Endpoint uses Audio Model and POST /v1/audio/transcriptions. Local Whisper runs faster-whisper in the Settings → Python venv (not LibreOffice's Python)."
+    options:
+      - value: endpoint
+        label: "LLM Endpoint"
+      - value: local
+        label: "Local Whisper (faster-whisper)"
+
+  stt_model:
+    type: string
+    default: ""
+    widget: combo
+    label: "Audio Model:"
+    helper: "Speech-to-text model when STT Provider is LLM Endpoint and the chat model cannot take audio input."
+
+  stt_local_model:
+    type: string
+    default: base
+    widget: select
+    label: "Local Model"
+    helper: "faster-whisper size. The first transcription downloads weights into the Hugging Face cache (base, the default, is about 150 MB; tiny ~75 MB, small ~500 MB, medium ~1.5 GB)."
+    options:
+      - value: tiny
+        label: "tiny (~75 MB)"
+      - value: base
+        label: "base (~150 MB)"
+      - value: small
+        label: "small (~500 MB)"
+      - value: medium
+        label: "medium (~1.5 GB)"
+
+  tts_enabled:
+    type: boolean
+    default: false
+    widget: checkbox
+    label: Enable Speech Output (TTS)
+    helper: Speak assistant responses aloud using text-to-speech.
+
+  tts_sentence_mode:
+    type: boolean
+    default: true
+    widget: checkbox
+    label: Speak sentence by sentence (Local)
+    # Default checkbox width is 120 and clips "(Local)".
+    width: 168
+    helper: "Synthesize the next sentences while the current one plays, so a short sentence is not followed by a gap. Stop discards clips that are not playing yet. Turn off to speak the whole reply as one clip."
+
+  # Visible even when speech output is off. Chat injects the brevity text
+  # only while this box and Enable Speech Output are both on.
+  tts_short_answers:
+    type: boolean
+    default: true
+    widget: checkbox
+    label: Keep replies brief
+    helper: "Aim for about one paragraph unless the user asks for more. Only applies while speech output (TTS) is on."
+    # Settings checkboxes have no helper line; hover shows the helper.
+    tooltip: true
+    width: 160
+
+  tts_provider:
+    type: string
+    default: system
+    widget: select
+    label: TTS Provider
+    helper: "Choose whether to use built-in OS speech, a local neural engine, or your API endpoint."
+    options:
+      - value: system
+        label: "OS Native (say / SAPI / spd-say)"
+      - value: kokoro
+        label: "Kokoro (Local Neural, ONNX CPU)"
+      - value: piper
+        label: "Piper (Local Fast Neural, CPU)"
+      - value: endpoint
+        label: "LLM Endpoint"
+
+  tts_model:
+    type: string
+    default: ""
+    widget: combo
+    label: TTS Model
+    helper: "Model for speech synthesis (used when TTS Provider is LLM Endpoint)."
+
+  tts_voice:
+    type: string
+    default: "alloy"
+    widget: select
+    label: Voice
+    helper: "Voice for the selected provider. The list matches the Piper or Kokoro catalog for your locale."
+    # Runtime options come from the voice catalog (same source as the sidebar).
+    # This stub is only the XDL fallback when options_provider cannot run.
+    # Same left/width as the other Speech selects (default x=110, width=144).
+    # A width: 136 pinch used to make room for Test voice inside that column,
+    # so Voice's right edge no longer matched Provider/Model/Speed. inline
+    # keeps the next control (Test voice) on this row without narrowing it.
+    inline: true
+    options_provider: plugin.audio.tts_service:settings_voice_options
+    options:
+      - value: "alloy"
+        label: "alloy (OpenAI Neutral)"
+      - value: "af_sky"
+        label: "US Female - Sky"
+      - value: "en_US-lessac-medium"
+        label: "US English Female - Lessac"
+      - value: "default"
+        label: "default (System Default)"
+
+  # Same row as Voice, past the shared select right edge (110+144=254)
+  # with a 6-unit gap, the way test_venv sits past python_venv_path.
+  # Not saved: it speaks the controls currently on screen.
+  test_voice:
+    type: string
+    default: ""
+    widget: button
+    label: Test voice
+    inline_no_label: true
+    settings_persist: false
+    x: 260
+    width: 88
+
+  tts_speed:
+    type: string
+    default: "1.0x"
+    widget: combo
+    label: Speech Speed
+    helper: "Playback speed multiplier (1.0x, 1.1x, 1.25x, 1.5x, 1.75x, 2.0x, or custom down to 0.25x)."
+    options:
+      - value: "1.0x"
+        label: "1.0x"
+      - value: "1.1x"
+        label: "1.1x"
+      - value: "1.25x"
+        label: "1.25x"
+      - value: "1.5x"
+        label: "1.5x"
+      - value: "1.75x"
+        label: "1.75x"
+      - value: "2.0x"
+        label: "2.0x"
+
+  tts_voice_kokoro:
+    type: string
+    default: "af_sky"
+    internal: true
+
+  tts_voice_piper:
+    type: string
+    default: "en_US-lessac-medium"
+    internal: true
+
+  tts_voice_openai:
+    type: string
+    default: "alloy"
+    internal: true
+
+  # Voice chosen for an OpenRouter speech model that advertises its own ids
+  # (Grok, Gemini, …). Separate from tts_voice_openai so alloy is not sent
+  # to those models, and a Gemini voice is not sent to OpenAI-compat TTS.
+  tts_voice_openrouter:
+    type: string
+    default: ""
+    internal: true
+
+  # Cartesia/Orpheus voice for a Together endpoint. Separate from alloy and
+  # from tts_voice_openrouter. Endpoint Kokoro still uses tts_voice_kokoro.
+  tts_voice_together:
+    type: string
+    default: ""
+    internal: true
+
+  tts_voice_system:
+    type: string
+    default: "default"
+    internal: true

@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+# WriterAgent - AI Writing Assistant for LibreOffice
+# Copyright (c) 2026 KeithCu (modifications and relicensing)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+"""Long-lived venv worker: length-prefixed pickle requests on stdin, responses on stdout.
+
+Each execute request runs user code in LocalPythonExecutor. Without ``session_id`` the
+namespace is fresh per call; with ``session_id`` the same executor is reused (shared kernel).
+"""
+from __future__ import annotations
+
+import os
+import sys
+from typing import Any
+
+# Standalone entry (venv python worker_harness.py): repo root must be on sys.path for plugin.* imports.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", "..", ".."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from plugin.framework.uno_bootstrap import register_alias_importer
+register_alias_importer()
+
+from plugin.scripting.ipc import DEFAULT_MAX_PAYLOAD_BYTES, read_pickle_frame, write_pickle_frame
+from plugin.scripting.venv.venv_sandbox import reset_sandbox_session, run_sandboxed_code, serialize_result
+
+
+# Test-facing alias of ``run_sandboxed_code``; do not inline it away without
+# retargeting tests that import this name.
+def _execute_request(
+    code: str,
+    data: Any | None,
+    *,
+    bindings: dict[str, Any] | None = None,
+    session_id: str | None = None,
+    init_script: str | None = None,
+    init_session_id: str | None = None,
+    init_script_hash: str | None = None,
+    timeout_sec: int | None = None,
+) -> dict[str, Any]:
+    return run_sandboxed_code(
+        code,
+        data=data,
+        bindings=bindings,
+        session_id=session_id,
+        init_script=init_script,
+        init_session_id=init_session_id,
+        init_script_hash=init_script_hash,
+        timeout_sec=timeout_sec,
+    )
+
+
+def _handle_trusted_action(
+    request: dict[str, Any],
+    data: dict[str, Any],
+    *,
+    stdout: Any | None = None,
+) -> dict[str, Any] | None:
+    """Dispatch run_trusted_action via the declarative registry."""
+    from plugin.scripting.trusted_action_registry import get_trusted_action_wiring
+    from plugin.scripting.venv.worker_heartbeat import HeartbeatEmitter, write_result_frame
+
+    domain = str(data.get("domain") or "")
+    wiring = get_trusted_action_wiring(domain)
+    if wiring is None:
+        return {"status": "error", "message": f"Unknown trusted action domain: {domain}"}
+
+    use_heartbeat = bool(request.get("allow_heartbeat")) and wiring.supports_heartbeat and stdout is not None
+    heartbeat_fn = None
+    emitter: HeartbeatEmitter | None = None
+    if use_heartbeat:
+        emitter = HeartbeatEmitter(stdout)
+        heartbeat_fn = emitter.emit
+
+    try:
+        result = wiring.dispatch(data, heartbeat_fn=heartbeat_fn)
+    except Exception as exc:
+        import traceback
+
+        err = {"status": "error", "message": str(exc), "traceback": traceback.format_exc()}
+        if use_heartbeat and stdout is not None:
+            req_id = str(request.get("id", ""))
+            write_result_frame(stdout, {"id": req_id, **err})
+            return None
+        return err
+
+    if use_heartbeat and stdout is not None:
+        req_id = str(request.get("id", ""))
+        write_result_frame(stdout, {"id": req_id, "status": "ok", "result": result})
+        return None
+
+    return {"status": "ok", "result": result}
+
+
+def _handle_request(request: dict[str, Any], *, stdout: Any | None = None) -> dict[str, Any] | None:
+    action = request.get("action")
+    if action == "reset_session":
+        session_id = request.get("session_id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            return {"status": "error", "message": "No session_id provided."}
+        return reset_sandbox_session(session_id)
+
+    if action == "ppt_master_turn":
+        from plugin.ppt_master.venv.runner import run_turn
+
+        data = request.get("data")
+        if not isinstance(data, dict):
+            return {"status": "error", "message": "ppt_master_turn requires data dict."}
+        try:
+            result = run_turn(data)
+            return {"status": "ok", "result": result}
+        except Exception as exc:
+            import traceback
+
+            return {"status": "error", "message": str(exc), "traceback": traceback.format_exc()}
+
+    if action == "run_trusted_action":
+        data = request.get("data")
+        if not isinstance(data, dict):
+            return {"status": "error", "message": "run_trusted_action requires data dict."}
+        return _handle_trusted_action(request, data, stdout=stdout)
+
+    code = request.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return {"status": "error", "message": "No code provided."}
+    session_id = request.get("session_id")
+    sid = session_id if isinstance(session_id, str) and session_id.strip() else None
+    init_script = request.get("init_script")
+    init_session_id = request.get("init_session_id")
+    init_hash = request.get("init_script_hash")
+    bindings = request.get("bindings")
+    bindings_dict = bindings if isinstance(bindings, dict) else None
+    return _execute_request(
+        code,
+        request.get("data"),
+        bindings=bindings_dict,
+        session_id=sid,
+        init_script=init_script if isinstance(init_script, str) else None,
+        init_session_id=init_session_id if isinstance(init_session_id, str) else None,
+        init_script_hash=init_hash if isinstance(init_hash, str) else None,
+        timeout_sec=request.get("timeout_sec"),
+    )
+
+
+# Back-compat for tests: from plugin.scripting.venv.worker_harness import _serialize
+def _serialize(obj: Any) -> Any:  # pyright: ignore[reportUnusedFunction]  # back-compat export for worker tests
+    return serialize_result(obj)
+
+
+def _init_logging() -> None:
+    import logging
+    log_path = os.environ.get("WRITERAGENT_DEBUG_LOG_PATH")
+    if not log_path:
+        return
+    try:
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+        formatter = logging.Formatter("%(asctime)s | %(name)s[Worker] | %(levelname)s | %(message)s")
+        handler.setFormatter(formatter)
+        root = logging.getLogger()
+        root.setLevel(logging.DEBUG)
+        root.addHandler(handler)
+        root.propagate = False
+    except Exception:
+        pass
+
+
+def main() -> None:
+    _init_logging()
+    import logging
+    log = logging.getLogger("worker_harness")
+    log.info("Worker process %d starting up with python %s", os.getpid(), sys.version)
+
+    stdin = sys.stdin.buffer
+    stdout = sys.stdout.buffer
+
+    while True:
+        req_id = ""
+        try:
+            request = read_pickle_frame(
+                stdin, require_dict=True, max_payload_bytes=DEFAULT_MAX_PAYLOAD_BYTES
+            )
+            if request is None:
+                break
+            req_id = str(request.get("id", ""))
+            log.debug("Received request id=%s action=%s", req_id, request.get("action") or "execute")
+            response = _handle_request(request, stdout=stdout)
+            log.debug("Finished request id=%s, response status=%s", req_id, response.get("status") if response else "none")
+        except ValueError as e:
+            log.warning("Invalid pickle request on request id=%s: %s", req_id, e)
+            response = {"status": "error", "message": f"Invalid pickle request: {e}"}
+        except Exception as e:
+            log.exception("Exception handling request id=%s", req_id)
+            response = {"status": "error", "message": str(e)}
+
+        if response is None:
+            continue
+
+        response["id"] = req_id
+        try:
+            write_pickle_frame(stdout, response)
+        except Exception as e:
+            err_response = {"id": req_id, "status": "error", "message": f"Pickle serialization failed: {e}"}
+            write_pickle_frame(stdout, err_response)
+
+
+
+if __name__ == "__main__":
+    main()

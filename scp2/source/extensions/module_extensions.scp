@@ -59,6 +59,22 @@ Module gid_Module_Optional_Extensions_NLPSolver
 End
 #endif
 
+/* ** OfficeLabs AI (bundled WriterAgent) ** */
+/* Part of the base OfficeLabs product: installed by default, not presented
+   as an optional third-party extension. */
+
+#ifdef WITH_EXTENSION_OFFICELABS_AI
+Module gid_Module_Optional_Extensions_OFFICELABSAI
+    PackageInfo = "packinfo_extensions.txt";
+    MOD_NAME_DESC(MODULE_OPTIONAL_EXTENSIONS_OFFICELABSAI);
+    ParentID = gid_Module_Optional_Extensions;
+    Files = (
+        gid_File_Oxt_OfficeLabsAI );
+    Default = YES;
+    Styles = ( );
+End
+#endif
+
 /* ** Script provider for BeanShell ** */
 
 #if defined ENABLE_JAVA && !defined WITHOUT_SCRIPTING_BEANSHELL
