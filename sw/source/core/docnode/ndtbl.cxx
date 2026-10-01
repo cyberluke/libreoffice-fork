@@ -25,6 +25,7 @@
 #include <editeng/lrspitem.hxx>
 #include <editeng/protitem.hxx>
 #include <editeng/boxitem.hxx>
+#include <editeng/brushitem.hxx>
 #include <string_view>
 #include <svl/stritem.hxx>
 #include <editeng/shaditem.hxx>
@@ -41,6 +42,7 @@
 #include <pagefrm.hxx>
 #include <tabcol.hxx>
 #include <doc.hxx>
+#include <pagedesc.hxx>
 #include <IDocumentUndoRedo.hxx>
 #include <UndoManager.hxx>
 #include <DocumentSettingManager.hxx>
@@ -68,6 +70,7 @@
 #include <tblafmt.hxx>
 #include <frminf.hxx>
 #include <cellatr.hxx>
+#include <writer2027.hxx>
 #include <swtblfmt.hxx>
 #include <swddetbl.hxx>
 #include <mvsave.hxx>
@@ -126,7 +129,28 @@ static void lcl_SetDfltBoxAttr( SwFrameFormat& rFormat, sal_uInt8 nId )
     }
 
     const bool bHTML = rFormat.getIDocumentSettingAccess().get(DocumentSettingId::HTML_MODE);
-    Color aCol( bHTML ? COL_GRAY : COL_BLACK );
+    // Writer 2027 digital documents: the default table border follows the
+    // page. If the Standard page of this document carries a dark background
+    // (set on brand-new digital documents only — see
+    // ApplyDigitalDocumentDefaults in docshini.cxx), use the digital
+    // hairline instead of black so table borders stay visible on the dark
+    // page. The color is derived from the actual page background (not from a
+    // document setting), so saved/reopened and imported documents stay
+    // self-consistent: white page -> black borders as before, dark page ->
+    // hairline. The shared style pool is never touched.
+    Color aCol = COL_BLACK;
+    if (!bHTML)
+    {
+        const SwPageDesc& rStdDesc = rFormat.GetDoc().getIDocumentStylePoolAccess()
+                                         .GetPageDescFromPool(SwPoolFormatId::PAGE_STANDARD);
+        const SvxBrushItem& rBrush = rStdDesc.GetMaster().GetFormatAttr(RES_BACKGROUND);
+        if (rBrush.GetColor() != COL_AUTO && rBrush.GetColor().IsDark())
+            aCol = sw::writer2027::Hairline;
+    }
+    else
+    {
+        aCol = COL_GRAY;
+    }
     // Default border in Writer: 0.5pt (matching Word)
     SvxBorderLine aLine( &aCol, SvxBorderLineWidth::VeryThin );
     if ( bHTML )

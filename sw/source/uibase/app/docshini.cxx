@@ -64,6 +64,7 @@
 #include <IDocumentStylePoolAccess.hxx>
 #include <IDocumentChartDataProviderAccess.hxx>
 #include <IDocumentState.hxx>
+#include <IDocumentUndoRedo.hxx>
 #include <docfac.hxx>
 #include <docstyle.hxx>
 #include <shellio.hxx>
@@ -81,6 +82,7 @@
 
 #include <svx/CommonStyleManager.hxx>
 #include <editeng/brushitem.hxx>
+#include <writer2027.hxx>
 
 #include <memory>
 
@@ -90,6 +92,75 @@ using namespace ::com::sun::star::i18n;
 using namespace ::com::sun::star::lang;
 using namespace ::com::sun::star::uno;
 using namespace ::com::sun::star;
+
+namespace
+{
+// Writer 2027 (Phase 1): apply the digital-document defaults to a brand-new
+// normal Writer document.
+//
+// Called only from SwDocShell::InitNew, i.e. only for documents created via
+// File > New and the UNO document factories. Loaded and imported documents
+// never pass through here, Writer/Web is excluded by the caller, and the
+// shared style pool is intentionally untouched: importers (ww8, HTML) consume
+// pool defaults directly and must not inherit the digital-dark styling.
+//
+// The product invariant this helper makes obvious:
+//   * a newly-created Writer document is authored as a real dark digital
+//     document (document properties, not UI inversion);
+//   * it exports to PDF with the same visual appearance;
+//   * it does not contaminate imported/existing documents.
+void ApplyDigitalDocumentDefaults(SwDoc& rDoc)
+{
+    // Pool/style mutations during InitNew must not leave undo records or a
+    // dirty document. Undo is not enabled until a view attaches (see
+    // SwEditShell), so this is belt-and-braces, matching the convention used
+    // by DocumentStylePoolManager; the caller resets the modified flag.
+    ::sw::UndoGuard const undoGuard(rDoc.GetIDocumentUndoRedo());
+
+    // 1. Page background on every page variant of the Standard page style.
+    // SwPageDesc holds four independent SwFrameFormat objects (master/right,
+    // left, first-master, first-left); page formats do not inherit
+    // attributes from each other, so all four must carry the brush — the
+    // same pattern DocumentStylePoolManager::CreatePageDesc uses when it
+    // puts attributes on a page description.
+    const SvxBrushItem aDigitalPage(sw::writer2027::PageBackground, RES_BACKGROUND);
+    SwPageDesc& rStdDesc = rDoc.getIDocumentStylePoolAccess()
+                               .GetPageDescFromPool(SwPoolFormatId::PAGE_STANDARD);
+    rStdDesc.GetMaster().SetFormatAttr(aDigitalPage);
+    rStdDesc.GetLeft().SetFormatAttr(aDigitalPage);
+    rStdDesc.GetFirstMaster().SetFormatAttr(aDigitalPage);
+    rStdDesc.GetFirstLeft().SetFormatAttr(aDigitalPage);
+
+    // Footnote separator: the SwPageFootnoteInfo default line color is black
+    // and would be invisible against the digital page. The separator is a
+    // page-style property and round-trips through ODT style:footnote-sep.
+    SwPageFootnoteInfo aFtnInfo(rStdDesc.GetFootnoteInfo());
+    aFtnInfo.SetLineColor(sw::writer2027::Hairline);
+    rStdDesc.SetFootnoteInfo(aFtnInfo);
+
+    // 2. Default Paragraph Style foreground. Every built-in paragraph style
+    // of a fresh document (Text Body, Headings 1-10, Title/Subtitle,
+    // Quotations, Caption, Header/Footer, Footnote/Endnote, list styles,
+    // TOC/Index, table paragraphs) derives from COLL_STANDARD
+    // (GetPoolParent in sw/source/core/doc/poolfmt.cxx), so one explicit
+    // color covers all of them. Deliberately no per-style overrides:
+    // inheritance is not flattened into explicit attributes.
+    const SvxColorItem aDigitalText(sw::writer2027::TextPrimary, RES_CHRATR_COLOR);
+    rDoc.getIDocumentStylePoolAccess()
+        .GetTextCollFromPool(SwPoolFormatId::COLL_STANDARD)
+        ->SetFormatAttr(aDigitalText);
+
+    // 3. Hyperlink character styles carry explicit pool colors (COL_BLUE /
+    // COL_RED) that are unreadable on the digital page, so they must be
+    // overridden directly (they do not inherit from a text collection).
+    rDoc.getIDocumentStylePoolAccess()
+        .GetCharFormatFromPool(SwPoolFormatId::CHR_INET_NORMAL)
+        ->SetFormatAttr(SvxColorItem(sw::writer2027::Link, RES_CHRATR_COLOR));
+    rDoc.getIDocumentStylePoolAccess()
+        .GetCharFormatFromPool(SwPoolFormatId::CHR_INET_VISIT)
+        ->SetFormatAttr(SvxColorItem(sw::writer2027::LinkVisited, RES_CHRATR_COLOR));
+}
+}
 
 // Load Document
 bool SwDocShell::InitNew( const uno::Reference < embed::XStorage >& xStor )
@@ -312,46 +383,17 @@ bool SwDocShell::InitNew( const uno::Reference < embed::XStorage >& xStor )
     // status here. Note: In method <SubInitNew()> this is also done.
     m_xDoc->getIDocumentState().ResetModified();
 
-    // V271 fork: digital-first default document model (Writer 2027, Phase 1).
-    // Brand-new documents get a TRUE dark document: the standard page style
-    // carries a real dark background (#12171D) and the built-in text styles
-    // carry light foregrounds (#E7EDF3) -- document properties, not UI
-    // inversion. PDF export preserves the dark page (page background is
-    // exported by default). This runs only for documents created via
-    // File/New (and UNO factories); loaded/imported documents keep their
-    // stored formatting untouched, and Writer/Web documents stay light.
+    // V271 fork: Writer 2027, Phase 1 — digital-first default document.
+    // Brand-new normal Writer documents (File > New and UNO factories; never
+    // Writer/Web, never loaded/imported documents) get a TRUE dark document:
+    // the Standard page style carries a real dark background, the built-in
+    // text styles inherit a light foreground, and hyperlinks get
+    // dark-page-safe colors — real document properties, not UI inversion,
+    // so PDF export preserves the authored appearance. See
+    // ApplyDigitalDocumentDefaults above and sw/inc/writer2027.hxx.
     if (dynamic_cast<const SwWebDocShell*>(this) == nullptr)
     {
-        const SvxBrushItem aDigitalPage(Color(0x12, 0x17, 0x1D), RES_BACKGROUND);
-        SwPageDesc* pStdDesc = m_xDoc->getIDocumentStylePoolAccess()
-                                   .GetPageDescFromPool(SwPoolFormatId::PAGE_STANDARD);
-        pStdDesc->GetMaster().SetFormatAttr(aDigitalPage);
-        pStdDesc->GetFirstMaster().SetFormatAttr(aDigitalPage);
-        pStdDesc->GetLeft().SetFormatAttr(aDigitalPage);
-        pStdDesc->GetFirstLeft().SetFormatAttr(aDigitalPage);
-
-        const SvxColorItem aDigitalText(Color(0xE7, 0xED, 0xF3), RES_CHRATR_COLOR);
-        // Default Paragraph Style (derived body styles inherit it)
-        m_xDoc->getIDocumentStylePoolAccess()
-            .GetTextCollFromPool(SwPoolFormatId::COLL_STANDARD)
-            ->SetFormatAttr(aDigitalText);
-        // Heading 1-10 (contiguous pool ids) + Title + Subtitle
-        for (sal_uInt16 n = 0; n < 10; ++n)
-            m_xDoc->getIDocumentStylePoolAccess()
-                .GetTextCollFromPool(static_cast<SwPoolFormatId>(
-                    sal_uInt16(SwPoolFormatId::COLL_HEADLINE1) + n))
-                ->SetFormatAttr(aDigitalText);
-        m_xDoc->getIDocumentStylePoolAccess()
-            .GetTextCollFromPool(SwPoolFormatId::COLL_DOC_TITLE)
-            ->SetFormatAttr(aDigitalText);
-        m_xDoc->getIDocumentStylePoolAccess()
-            .GetTextCollFromPool(SwPoolFormatId::COLL_DOC_SUBTITLE)
-            ->SetFormatAttr(aDigitalText);
-        // Default hyperlink color, readable on the dark page
-        m_xDoc->getIDocumentStylePoolAccess()
-            .GetCharFormatFromPool(SwPoolFormatId::CHR_INET_NORMAL)
-            ->SetFormatAttr(SvxColorItem(Color(0x4F, 0xC3, 0xF7), RES_CHRATR_COLOR));
-
+        ApplyDigitalDocumentDefaults(*m_xDoc);
         m_xDoc->getIDocumentState().ResetModified();
     }
 
