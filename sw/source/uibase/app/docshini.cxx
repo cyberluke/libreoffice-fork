@@ -80,6 +80,7 @@
 #include <drawdoc.hxx>
 
 #include <svx/CommonStyleManager.hxx>
+#include <editeng/brushitem.hxx>
 
 #include <memory>
 
@@ -310,6 +311,49 @@ bool SwDocShell::InitNew( const uno::Reference < embed::XStorage >& xStor )
     // at the document instance, the document is modified. Thus, reset this
     // status here. Note: In method <SubInitNew()> this is also done.
     m_xDoc->getIDocumentState().ResetModified();
+
+    // V271 fork: digital-first default document model (Writer 2027, Phase 1).
+    // Brand-new documents get a TRUE dark document: the standard page style
+    // carries a real dark background (#12171D) and the built-in text styles
+    // carry light foregrounds (#E7EDF3) -- document properties, not UI
+    // inversion. PDF export preserves the dark page (page background is
+    // exported by default). This runs only for documents created via
+    // File/New (and UNO factories); loaded/imported documents keep their
+    // stored formatting untouched, and Writer/Web documents stay light.
+    if (dynamic_cast<const SwWebDocShell*>(this) == nullptr)
+    {
+        const SvxBrushItem aDigitalPage(Color(0x12, 0x17, 0x1D), RES_BACKGROUND);
+        SwPageDesc* pStdDesc = m_xDoc->getIDocumentStylePoolAccess()
+                                   .GetPageDescFromPool(SwPoolFormatId::PAGE_STANDARD);
+        pStdDesc->GetMaster().SetFormatAttr(aDigitalPage);
+        pStdDesc->GetFirstMaster().SetFormatAttr(aDigitalPage);
+        pStdDesc->GetLeft().SetFormatAttr(aDigitalPage);
+        pStdDesc->GetFirstLeft().SetFormatAttr(aDigitalPage);
+
+        const SvxColorItem aDigitalText(Color(0xE7, 0xED, 0xF3), RES_CHRATR_COLOR);
+        // Default Paragraph Style (derived body styles inherit it)
+        m_xDoc->getIDocumentStylePoolAccess()
+            .GetTextCollFromPool(SwPoolFormatId::COLL_STANDARD)
+            ->SetFormatAttr(aDigitalText);
+        // Heading 1-10 (contiguous pool ids) + Title + Subtitle
+        for (sal_uInt16 n = 0; n < 10; ++n)
+            m_xDoc->getIDocumentStylePoolAccess()
+                .GetTextCollFromPool(static_cast<SwPoolFormatId>(
+                    sal_uInt16(SwPoolFormatId::COLL_HEADLINE1) + n))
+                ->SetFormatAttr(aDigitalText);
+        m_xDoc->getIDocumentStylePoolAccess()
+            .GetTextCollFromPool(SwPoolFormatId::COLL_DOC_TITLE)
+            ->SetFormatAttr(aDigitalText);
+        m_xDoc->getIDocumentStylePoolAccess()
+            .GetTextCollFromPool(SwPoolFormatId::COLL_DOC_SUBTITLE)
+            ->SetFormatAttr(aDigitalText);
+        // Default hyperlink color, readable on the dark page
+        m_xDoc->getIDocumentStylePoolAccess()
+            .GetCharFormatFromPool(SwPoolFormatId::CHR_INET_NORMAL)
+            ->SetFormatAttr(SvxColorItem(Color(0x4F, 0xC3, 0xF7), RES_CHRATR_COLOR));
+
+        m_xDoc->getIDocumentState().ResetModified();
+    }
 
     return bRet;
 }
