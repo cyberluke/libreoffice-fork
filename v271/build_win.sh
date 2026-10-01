@@ -17,6 +17,8 @@
 #                     is set; MSYS2 has cygpath, not wslpath.
 #
 # Steps: run ./autogen.sh once (reads autogen.input), then make.
+# Languages: configure via --with-lang in autogen.input. Fork default for
+# the dev build (local, not committed): --with-lang=cs en-US sk vi
 
 set -e
 cd "$(dirname "$0")/.."
@@ -56,9 +58,10 @@ unset UCRTVersion
 # shell/CustomTarget_spsupp_idl.mk embeds $(INCLUDE) raw into an sh -c recipe
 # for midl.exe, which breaks on both "Program Files (x86)" parens and the
 # ';' separators. gbuild itself unsets INCLUDE for cl recipes. Keep a copy
-# for reference only.
+# for reference only. NOTE: INCLUDE stays exported for autogen.sh/configure
+# (cl.exe header probes such as sqlext.h need the vcvars SDK paths) and is
+# unset again right before make, further below.
 export INCLUDE_FULL="$INCLUDE" LIB_FULL="$LIB"
-unset INCLUDE
 export LIB="$(to_short "$LIB")"
 
 # NOTE: the ATL include dir for the activex module is defined in make
@@ -102,7 +105,8 @@ export PATH="/c/lo-build:/c/Program Files/Git/cmd:/usr/bin:$PATH"
 # CCACHE_SLOPPINESS/CCACHE_PCH_EXTSUM on every compile line.
 if [ -n "$VCToolsInstallDir" ] && command -v ccache >/dev/null 2>&1 \
    && [ -z "$CC" ] && [ -z "$CXX" ] \
-   && ! grep -q '^CXX_X64_BINARY=ccache' config_host.mk 2>/dev/null; then
+   && { [ -n "$FORCE_AUTOGEN" ] \
+        || ! grep -q '^CXX_X64_BINARY=ccache' config_host.mk 2>/dev/null; }; then
     export CC="ccache cl" CXX="ccache cl"
     export CCACHE_DIR="${CCACHE_DIR:-/c/lo-build/ccache}"
     export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-30G}"
@@ -127,13 +131,24 @@ fi
 echo "== env sanity: $(type -p cl.exe) / $(type -p git) / INCLUDE=${#INCLUDE} chars =="
 
 # Configure once (also re-run when ccache was just enabled so config_host.mk
-# picks up the ccache-wrapped CC/CXX).
-if [ ! -f config_host.mk ] || { [ -n "$CC" ] && ! grep -q '^CXX_X64_BINARY=ccache' config_host.mk; }; then
+# picks up the ccache-wrapped CC/CXX). FORCE_AUTOGEN=1 re-runs autogen.sh
+# even when config_host.mk exists (e.g. after editing autogen.input).
+#
+# ccache is disabled during configure: in the full configure environment the
+# ccache-wrapped compile probes (cl -c -o conftest.obj) intermittently fail
+# autoconf's `test -s conftest.$ac_objext` (first hard failure seen: the
+# sqlext.h check -> "odbc not found"), while the same probes pass standalone.
+# configure only needs to *record* the wrapped compiler in config_host.mk;
+# the actual caching happens in the make phase, where CCACHE_DISABLE is
+# cleared again.
+export CCACHE_DISABLE=1
+if [ ! -f config_host.mk ] || [ -n "$FORCE_AUTOGEN" ] || { [ -n "$CC" ] && ! grep -q '^CXX_X64_BINARY=ccache' config_host.mk; }; then
     echo "== running autogen.sh =="
     ./autogen.sh
 else
     echo "== config_host.mk present, skipping autogen =="
 fi
+unset CCACHE_DISABLE
 
 # LOCAL fix: LO's configure writes `export PATH=<windows form>` into
 # config_host.mk (the PATH it saw, rendered as C:/...;... entries). Exported
@@ -170,5 +185,9 @@ export PARALLELISM="${PARALLELISM:-16}"
 # JOBS env overrides parallelism (default 16: under -j24 the external
 # projects' configure steps intermittently failed with cross-contaminated
 # cl.exe errors -- a parallel-build artifact that sequential runs never hit).
+# Unset INCLUDE now that configure is done: gbuild passes ALL include dirs
+# via -I flags (SOLARINC, per-module INCLUDE make variable); the vcvars
+# INCLUDE env var must NOT reach make (see the notes near the top).
+unset INCLUDE
 echo "== /usr/bin/make -j${JOBS:-16} $* =="
 exec /usr/bin/make -j"${JOBS:-16}" STRAWBERRY_PERL="$STRAWBERRY_PERL" "$@"
