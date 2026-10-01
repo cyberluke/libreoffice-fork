@@ -233,6 +233,10 @@ public:
     // Backwards compatibility, should be avoided to allow
     // UI consistency.
     virtual void set_max_drop_down_rows(int nRows) = 0;
+
+    // Programmatically open or close the drop-down popup. Backends that
+    // cannot control the popup programmatically keep the default no-op.
+    virtual void set_dropdown_open(bool /*bOpen*/) {}
 };
 }
 

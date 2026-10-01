@@ -28,6 +28,7 @@
 #include <vcl/weld/Calendar.hxx>
 #include <vcl/weld/ComboBox.hxx>
 #include <vcl/weld/MenuButton.hxx>
+#include <vcl/event.hxx>
 
 #include <memory>
 
@@ -381,6 +382,16 @@ public:
     void connect_entry_activate(const Link<weld::ComboBox&, bool>& rLink) { m_xComboBox->connect_entry_activate(rLink); }
     void set_entry_width_chars(int nWidth) { m_xComboBox->set_entry_width_chars(nWidth); }
     void set_size_request(int nWidth, int nHeight) { m_xComboBox->set_size_request(nWidth, nHeight); }
+
+    // Generic weld::ComboBox capabilities used by the Writer 2027 typography
+    // picker; the default FontNameBox behavior is unchanged. set_dropdown_open
+    // is used to keep the native dropdown from ever showing while the premium
+    // popup is active.
+    void connect_mouse_press(const Link<const MouseEvent&, bool>& rLink)
+    {
+        m_xComboBox->connect_mouse_press(rLink);
+    }
+    void set_dropdown_open(bool bOpen) { m_xComboBox->set_dropdown_open(bOpen); }
     int get_max_mru_count() const { return m_xComboBox->get_max_mru_count(); }
     void set_max_mru_count(int nCount) { m_xComboBox->set_max_mru_count(nCount); }
 

@@ -20283,6 +20283,14 @@ public:
         return m_bPopupActive;
     }
 
+    virtual void set_dropdown_open(bool bOpen) override
+    {
+        if (bOpen)
+            gtk_combo_box_popup(m_pComboBox);
+        else
+            gtk_combo_box_popdown(m_pComboBox);
+    }
+
     virtual void connect_focus_in(const Link<Widget&, void>& rLink) override
     {
 //        if (!m_nToggleFocusInSignalId)
@@ -22232,6 +22240,14 @@ public:
     virtual bool get_popup_shown() const override
     {
         return m_bPopupActive;
+    }
+
+    virtual void set_dropdown_open(bool bOpen) override
+    {
+        if (bOpen)
+            gtk_combo_box_popup(m_pComboBox);
+        else
+            gtk_combo_box_popdown(m_pComboBox);
     }
 
     virtual void connect_focus_in(const Link<Widget&, void>& rLink) override

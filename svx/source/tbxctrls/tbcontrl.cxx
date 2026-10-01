@@ -17,6 +17,7 @@
  *   the License at http://www.apache.org/licenses/LICENSE-2.0 .
  */
 
+#include <tuple>
 #include <utility>
 
 #include <comphelper/configurationlistener.hxx>
@@ -56,6 +57,7 @@
 #include <toolkit/helper/vclunohelper.hxx>
 #include <sfx2/viewfrm.hxx>
 #include <vcl/image.hxx>
+#include <vcl/rendercontext.hxx>
 #include <vcl/svapp.hxx>
 #include <vcl/settings.hxx>
 #include <vcl/virdev.hxx>
@@ -66,7 +68,9 @@
 #include <com/sun/star/beans/XPropertySet.hpp>
 #include <com/sun/star/util/XNumberFormatsSupplier.hpp>
 #include <com/sun/star/frame/XDispatchProvider.hpp>
+#include <com/sun/star/frame/XController.hpp>
 #include <com/sun/star/frame/XFrame.hpp>
+#include <com/sun/star/frame/XModel.hpp>
 #include <svx/strings.hrc>
 #include <svx/svxids.hrc>
 #include <helpids.h>
@@ -93,6 +97,8 @@
 #include <svx/colorwindow.hxx>
 #include <svx/colorbox.hxx>
 #include <svx/tbcontrl.hxx>
+#include <svx/writer2027typography.hxx>
+#include <svx/writer2027fontpopup.hxx>
 #include <svx/dialmgr.hxx>
 #include <svx/PaletteManager.hxx>
 #include <memory>
@@ -125,6 +131,11 @@
 #define MAX_MRU_FONTNAME_ENTRIES    5
 
 #define COMBO_WIDTH_IN_CHARS        18
+
+// Writer 2027: the closed font-name box is modestly wider than the classic
+// one so common family names are not truncated. The premium popup has its
+// own independent width (svx/uiconfig/ui/writer2027fontpopup.ui).
+#define WRITER2027_FONTNAME_WIDTH_CHARS 34
 
 // namespaces
 using namespace ::editeng;
@@ -356,6 +367,13 @@ protected:
     bool            mbCheckingUnknownFont;
     bool            mbDropDownActive;
 
+    // Writer 2027 typography picker state
+    bool            mbModernPicker;
+    bool            mbInternalUpdate;
+    std::unique_ptr<svx::writer2027::FontPickerModel> mxFontPicker;
+    std::unique_ptr<svx::writer2027::Writer2027FontPopup> mxFontPopup;
+    vcl::Window*    mpAnchorWindow;
+
     void            ReleaseFocus_Impl();
 
     void            Select(bool bNonTravelSelect);
@@ -372,9 +390,10 @@ protected:
 
 public:
     SvxFontNameBox_Base(std::unique_ptr<weld::ComboBox> xWidget, const Reference<XFrame>& rFrame,
-                        SvxFontNameToolBoxControl& rCtrl);
+                        SvxFontNameToolBoxControl& rCtrl, vcl::Window* pAnchorWindow);
     virtual ~SvxFontNameBox_Base()
     {
+        mxFontPopup.reset(); // closes the popover if still open
         m_xListener->dispose();
     }
 
@@ -402,6 +421,17 @@ public:
     virtual bool DoKeyInput(const KeyEvent& rKEvt);
 
     void EnableControls();
+
+    bool IsModernPicker() const { return mbModernPicker; }
+    void FillModern(const FontList* pList);
+    void OpenModernPopup(const OUString& rInitialQuery);
+    void CloseModernPopup();
+    void SelectModernFont(const OUString& rFamily);
+
+    static bool IsWriterTextDocument(const Reference<XFrame>& rFrame);
+
+    DECL_LINK(ModernMousePressHdl, const MouseEvent&, bool);
+    DECL_LINK(ModernPopupClosedHdl, svx::writer2027::Writer2027FontPopup&, void);
 
     DECL_LINK(SelectHdl, weld::ComboBox&, void);
     DECL_LINK(KeyInputHdl, const KeyEvent&, bool);
@@ -1698,7 +1728,12 @@ static bool lcl_GetDocFontList(const FontList** ppFontList, SvxFontNameBox_Base&
     if ( bChanged )
     {
         if (ppFontList && *ppFontList)
-            rBox.Fill( *ppFontList );
+        {
+            if (rBox.IsModernPicker())
+                rBox.FillModern( *ppFontList );
+            else
+                rBox.Fill( *ppFontList );
+        }
         else
             rBox.Clear();
     }
@@ -1707,7 +1742,8 @@ static bool lcl_GetDocFontList(const FontList** ppFontList, SvxFontNameBox_Base&
 
 SvxFontNameBox_Base::SvxFontNameBox_Base(std::unique_ptr<weld::ComboBox> xWidget,
                                          const Reference<XFrame>& rFrame,
-                                         SvxFontNameToolBoxControl& rCtrl)
+                                         SvxFontNameToolBoxControl& rCtrl,
+                                         vcl::Window* pAnchorWindow)
     : m_xListener(new comphelper::ConfigurationListener(u"/org.openoffice.Office.Common/Font/View"_ustr))
     , m_aWYSIWYG(m_xListener, u"ShowFontBoxWYSIWYG"_ustr, *this)
     , m_aHistory(m_xListener, u"History"_ustr, *this)
@@ -1719,6 +1755,10 @@ SvxFontNameBox_Base::SvxFontNameBox_Base(std::unique_ptr<weld::ComboBox> xWidget
     , m_xFrame(rFrame)
     , mbCheckingUnknownFont(false)
     , mbDropDownActive(false)
+    , mbModernPicker(false)
+    , mbInternalUpdate(false)
+    , mxFontPicker(new svx::writer2027::FontPickerModel)
+    , mpAnchorWindow(pAnchorWindow)
 {
     EnableControls();
 
@@ -1730,13 +1770,29 @@ SvxFontNameBox_Base::SvxFontNameBox_Base(std::unique_ptr<weld::ComboBox> xWidget
     m_xWidget->connect_popup_toggled(LINK(this, SvxFontNameBox_Base, PopupToggledHdl));
     m_xWidget->connect_live_preview(LINK(this, SvxFontNameBox_Base, LivePreviewHdl));
 
-    m_xWidget->set_entry_width_chars(COMBO_WIDTH_IN_CHARS + 5);
+    if (IsWriterTextDocument(m_xFrame))
+    {
+        mbModernPicker = true;
+
+        // The Writer 2027 picker owns all row composition: keep the classic
+        // WYSIWYG machinery and the MRU row injection off. The native
+        // dropdown never shows - Writer2027FontPopup replaces it.
+        m_xWidget->EnableWYSIWYG(false);
+        m_xWidget->set_max_mru_count(0);
+        mxFontPopup.reset(new svx::writer2027::Writer2027FontPopup(*mxFontPicker));
+        mxFontPopup->connect_closed(LINK(this, SvxFontNameBox_Base, ModernPopupClosedHdl));
+        mxFontPopup->connect_select(LINK(this, SvxFontNameBox_Base, SelectModernFont));
+        m_xWidget->connect_mouse_press(LINK(this, SvxFontNameBox_Base, ModernMousePressHdl));
+    }
+
+    m_xWidget->set_entry_width_chars(mbModernPicker ? WRITER2027_FONTNAME_WIDTH_CHARS
+                                                    : COMBO_WIDTH_IN_CHARS + 5);
 }
 
 SvxFontNameBox_Impl::SvxFontNameBox_Impl(vcl::Window* pParent, const Reference<XFrame>& rFrame,
                                          SvxFontNameToolBoxControl& rCtrl)
     : InterimItemWindow(pParent, u"svx/ui/fontnamebox.ui"_ustr, u"FontNameBox"_ustr, true)
-    , SvxFontNameBox_Base(m_xBuilder->weld_combo_box(u"fontnamecombobox"_ustr), rFrame, rCtrl)
+    , SvxFontNameBox_Base(m_xBuilder->weld_combo_box(u"fontnamecombobox"_ustr), rFrame, rCtrl, this)
 {
     set_id(u"fontnamecombobox"_ustr);
     SetOptimalSize();
@@ -1777,8 +1833,11 @@ void SvxFontNameBox_Base::CheckAndMarkUnknownFont()
             font.SetItalic( ITALIC_NONE );
             m_xWidget->set_entry_font(font);
             m_xWidget->set_entry_message_type(weld::EntryMessageType::Normal);
-            m_xWidget->set_tooltip_text(SvxResId(RID_SVXSTR_CHARFONTNAME));
         }
+        // Keep the full active family reachable in the tooltip even when the
+        // closed control has to truncate the visible text.
+        m_xWidget->set_tooltip_text(mbModernPicker ? fontname
+                                                   : SvxResId(RID_SVXSTR_CHARFONTNAME));
     }
     else
     {
@@ -1824,6 +1883,8 @@ void SvxFontNameBox_Base::Update( const css::awt::FontDescriptor* pFontDesc )
     OUString aText = m_xWidget->get_active_text();
     if (aText != aCurName || comphelper::LibreOfficeKit::isActive())
         set_active_or_entry_text(aCurName);
+    if (mbModernPicker && mxFontPopup && mxFontPopup->IsOpen())
+        mxFontPopup->SetCurrentFamily(pFontList, aCurName);
 }
 
 void SvxFontNameBox_Base::set_active_or_entry_text(const OUString& rText)
@@ -1845,6 +1906,18 @@ IMPL_LINK(SvxFontNameBox_Base, KeyInputHdl, const KeyEvent&, rKEvt, bool)
 bool SvxFontNameBox_Base::DoKeyInput(const KeyEvent& rKEvt)
 {
     bool bHandled = false;
+
+    if (mbModernPicker && mbDropDownActive)
+    {
+        // Alt+Down opened the native dropdown inside the combo's own key
+        // handling (DropdownPreOpen); close it again in the same call stack
+        // and launch the premium popup instead. No visible native popup.
+        m_xWidget->set_dropdown_open(false);
+        OpenModernPopup(OUString());
+        if (mxFontPopup)
+            mxFontPopup->GrabSearchFocus();
+        return true;
+    }
 
     sal_uInt16 nCode = rKEvt.GetKeyCode().GetCode();
 
@@ -1903,7 +1976,21 @@ IMPL_LINK(SvxFontNameBox_Base, LivePreviewHdl, const FontMetric&, rFontMetric, v
 IMPL_LINK_NOARG(SvxFontNameBox_Base, PopupToggledHdl, weld::ComboBox&, void)
 {
     mbDropDownActive = !mbDropDownActive;
-    if (!mbDropDownActive)
+    if (mbDropDownActive)
+    {
+        if (mbModernPicker)
+        {
+            // The premium popup replaces the native dropdown entirely. This
+            // toggled event fires before the native popup is shown on VCL
+            // (DropdownPreOpen) and after it is shown on GTK; closing it is
+            // a no-op in the former case, and in both cases the mouse/key
+            // handlers below finish the job in the same call stack, before
+            // any paint - so there is no visible native popup.
+            m_xWidget->set_dropdown_open(false);
+            OpenModernPopup(OUString());
+        }
+    }
+    else
         EndPreview();
 }
 
@@ -1912,7 +1999,9 @@ void SvxFontNameBox_Impl::SetOptimalSize()
     // set width in chars low so the size request will not be overridden
     m_xWidget->set_entry_width_chars(1);
     // tdf#132338 purely using this calculation to keep things their traditional width
-    Size aSize(LogicToPixel(Size((COMBO_WIDTH_IN_CHARS +5) * 4, 0), MapMode(MapUnit::MapAppFont)));
+    const sal_Int32 nChars = IsModernPicker() ? WRITER2027_FONTNAME_WIDTH_CHARS
+                                              : (COMBO_WIDTH_IN_CHARS + 5);
+    Size aSize(LogicToPixel(Size(nChars * 4, 0), MapMode(MapUnit::MapAppFont)));
     m_xWidget->set_size_request(aSize.Width(), -1);
 
     SetSizePixel(get_preferred_size());
@@ -1931,6 +2020,9 @@ void SvxFontNameBox_Impl::DataChanged( const DataChangedEvent& rDCEvt )
         // The old font list in shell has likely been destroyed at this point, so we need to get
         // the new one before doing anything further.
         lcl_GetDocFontList( &pFontList, *this );
+        // The premium popup holds a FontList pointer: close it so a stale
+        // list can never be dereferenced.
+        CloseModernPopup();
     }
 }
 
@@ -1948,10 +2040,13 @@ void SvxFontNameBox_Base::ReleaseFocus_Impl()
 void SvxFontNameBox_Base::EnableControls()
 {
     bool bEnableMRU = m_aHistory.get();
-    sal_uInt16 nEntries = bEnableMRU ? MAX_MRU_FONTNAME_ENTRIES : 0;
+    // The Writer 2027 picker owns its row composition: no MRU row injection.
+    sal_uInt16 nEntries = (bEnableMRU && !mbModernPicker) ? MAX_MRU_FONTNAME_ENTRIES : 0;
 
     bool bNewWYSIWYG = m_aWYSIWYG.get();
     bool bOldWYSIWYG = m_xWidget->IsWYSIWYGEnabled();
+    if (mbModernPicker)
+        bNewWYSIWYG = false;
 
     if (m_xWidget->get_max_mru_count() != nEntries || bNewWYSIWYG != bOldWYSIWYG)
     {
@@ -1967,7 +2062,21 @@ void SvxFontNameBox_Base::EnableControls()
 
 IMPL_LINK(SvxFontNameBox_Base, SelectHdl, weld::ComboBox&, rCombo, void)
 {
-    Select(rCombo.changed_by_direct_pick()); // only when picked from the list
+    if (mbModernPicker)
+    {
+        // The closed control never dispatches directly: typing in it opens
+        // the premium popup with the typed text as search query. The
+        // document font is only ever changed by the popup's canonical
+        // dispatch path (SelectModernFont).
+        if (mbInternalUpdate || (mxFontPopup && mxFontPopup->IsOpen()))
+            return;
+        const OUString aText = rCombo.get_active_text();
+        if (!aText.isEmpty() && aText != aCurFont.GetFamilyName())
+            OpenModernPopup(aText);
+        return;
+    }
+    const bool bDirectPick = rCombo.changed_by_direct_pick();
+    Select(bDirectPick); // only when picked from the list
 }
 
 IMPL_LINK_NOARG(SvxFontNameBox_Base, ActivateHdl, weld::ComboBox&, bool)
@@ -2022,6 +2131,93 @@ void SvxFontNameBox_Base::Select(bool bNonTravelSelect)
             pArgs[0].Name   = "CharPreviewFontName";
             SfxToolBoxControl::Dispatch(xProvider, u".uno:CharPreviewFontName"_ustr, aArgs);
         }
+    }
+}
+
+bool SvxFontNameBox_Base::IsWriterTextDocument(const Reference<XFrame>& rFrame)
+{
+    if (!rFrame.is())
+        return false;
+    try
+    {
+        const Reference<frame::XController> xController(rFrame->getController(), UNO_QUERY);
+        if (!xController.is())
+            return false;
+        const Reference<lang::XServiceInfo> xInfo(xController->getModel(), UNO_QUERY);
+        return xInfo.is() && xInfo->supportsService(u"com.sun.star.text.TextDocument"_ustr);
+    }
+    catch (const uno::Exception&)
+    {
+        return false;
+    }
+}
+
+void SvxFontNameBox_Base::FillModern(const FontList* pList)
+{
+    pFontList = pList;
+    nFtCount = pList ? pList->GetFontNameCount() : 0;
+    if (mxFontPopup && mxFontPopup->IsOpen())
+        mxFontPopup->SetCurrentFamily(pFontList, aCurFont.GetFamilyName());
+}
+
+void SvxFontNameBox_Base::OpenModernPopup(const OUString& rInitialQuery)
+{
+    if (!mbModernPicker || !mxFontPopup || !mpAnchorWindow || mxFontPopup->IsOpen())
+        return;
+    if (!pFontList)
+        lcl_GetDocFontList(&pFontList, *this);
+    mxFontPopup->Open(pFontList, aCurFont.GetFamilyName(), rInitialQuery, *mpAnchorWindow);
+}
+
+void SvxFontNameBox_Base::CloseModernPopup()
+{
+    if (mxFontPopup && mxFontPopup->IsOpen())
+        mxFontPopup->Close();
+}
+
+void SvxFontNameBox_Base::SelectModernFont(const OUString& rFamily)
+{
+    if (!mbModernPicker || rFamily.isEmpty())
+        return;
+
+    // Canonical selection path preserved: put the installed family into the
+    // closed control, then dispatch through the classic Select() ->
+    // .uno:CharFontName chain. The popup closes itself afterwards.
+    mbInternalUpdate = true;
+    set_active_or_entry_text(rFamily);
+    mbInternalUpdate = false;
+    Select(true);
+}
+
+IMPL_LINK(SvxFontNameBox_Base, ModernMousePressHdl, const MouseEvent&, rEvent, bool)
+{
+    (void)rEvent;
+    if (!mbModernPicker || (mxFontPopup && mxFontPopup->IsOpen()))
+        return false;
+
+    // Runs after the native combo processed the click: if the dropdown
+    // opened (arrow button), close it again in the same call stack before
+    // any paint; clicking the entry area alone also opens the premium popup.
+    if (mbDropDownActive)
+        m_xWidget->set_dropdown_open(false);
+    OpenModernPopup(OUString());
+    // The combo's arrow button grabs the entry focus while suppressing the
+    // native dropdown; move focus into the popup search field afterwards.
+    if (mxFontPopup)
+        mxFontPopup->GrabSearchFocus();
+    return false;
+}
+
+IMPL_LINK_NOARG(SvxFontNameBox_Base, ModernPopupClosedHdl, svx::writer2027::Writer2027FontPopup&,
+                void)
+{
+    // The closed font box keeps showing the active document family at all
+    // times (e.g. after a search query was typed into it).
+    if (!mbInternalUpdate)
+    {
+        mbInternalUpdate = true;
+        set_active_or_entry_text(aCurFont.GetFamilyName());
+        mbInternalUpdate = false;
     }
 }
 
@@ -3432,12 +3628,14 @@ void SvxFontNameBox_Base::statusChanged_Impl( const css::frame::FeatureStateEven
 {
     if ( !rEvent.IsEnabled )
     {
+        CloseModernPopup();
         set_sensitive(false);
         Update( nullptr );
     }
     else
     {
         set_sensitive(true);
+        CloseModernPopup();
 
         css::awt::FontDescriptor aFontDesc;
         if ( rEvent.State >>= aFontDesc )

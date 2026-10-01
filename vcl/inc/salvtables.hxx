@@ -880,6 +880,12 @@ public:
 
     virtual bool get_popup_shown() const override { return m_xComboBox->IsInDropDown(); }
 
+    virtual void set_dropdown_open(bool bOpen) override
+    {
+        if (m_xComboBox->IsInDropDown() != bOpen)
+            m_xComboBox->ToggleDropDown();
+    }
+
     virtual void connect_popup_toggled(const Link<ComboBox&, void>& rLink) override
     {
         weld::ComboBox::connect_popup_toggled(rLink);
