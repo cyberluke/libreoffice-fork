@@ -811,6 +811,20 @@
       </object>
     </child>
     <child>
+      <object class="GtkMenuItem" id="MenuHome-BackgroundColor">
+        <property name="visible">True</property>
+        <property name="can-focus">False</property>
+        <property name="action-name">.uno:BackgroundColor</property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkMenuItem" id="MenuHome-ControlCodes">
+        <property name="visible">True</property>
+        <property name="can-focus">False</property>
+        <property name="action-name">.uno:ControlCodes</property>
+      </object>
+    </child>
+    <child>
       <object class="GtkMenuItem" id="MenuHome-ChapterNumberingDialog">
         <property name="visible">True</property>
         <property name="can-focus">False</property>
@@ -3066,7 +3080,13 @@
                     <property name="visible">True</property>
                     <property name="can-focus">False</property>
                     <child>
-                      <!-- n-columns=3 n-rows=3 -->
+                      <object class="VclOptionalBox" id="Home-Section-Clipboard">
+                        <property name="visible">True</property>
+                        <property name="can-focus">False</property>
+                        <property name="valign">center</property>
+                        <property name="vexpand">True</property>
+                        <child>
+                      <!-- n-columns=4 n-rows=3 -->
                       <object class="GtkGrid" id="gdHomeClipboard">
                         <property name="visible">True</property>
                         <property name="can-focus">False</property>
@@ -3094,7 +3114,7 @@
                           <packing>
                             <property name="left-attach">0</property>
                             <property name="top-attach">2</property>
-                            <property name="width">2</property>
+                            <property name="width">3</property>
                           </packing>
                         </child>
                         <child>
@@ -3168,13 +3188,39 @@
                           </packing>
                         </child>
                         <child>
+                          <object class="sfxlo-NotebookbarToolBox" id="bxHomeFormatPaintbrush">
+                            <property name="visible">True</property>
+                            <property name="can-focus">False</property>
+                            <property name="valign">center</property>
+                            <property name="vexpand">True</property>
+                            <property name="toolbar-style">both</property>
+                            <property name="show-arrow">False</property>
+                            <property name="icon_size">3</property>
+                            <child>
+                              <object class="GtkToolButton" id="btnHomeFormatPaintbrush">
+                                <property name="visible">True</property>
+                                <property name="action-name">.uno:FormatPaintbrush</property>
+                              </object>
+                              <packing>
+                                <property name="expand">False</property>
+                                <property name="homogeneous">True</property>
+                              </packing>
+                            </child>
+                          </object>
+                          <packing>
+                            <property name="left-attach">2</property>
+                            <property name="top-attach">0</property>
+                            <property name="height">2</property>
+                          </packing>
+                        </child>
+                        <child>
                           <object class="GtkSeparator">
                             <property name="visible">True</property>
                             <property name="can-focus">False</property>
                             <property name="orientation">vertical</property>
                           </object>
                           <packing>
-                            <property name="left-attach">2</property>
+                            <property name="left-attach">3</property>
                             <property name="top-attach">0</property>
                             <property name="height">3</property>
                           </packing>
@@ -3188,9 +3234,25 @@
                         <property name="fill">True</property>
                         <property name="position">0</property>
                       </packing>
-                    </child>
+                      </child>
+                    </object>
+                    <packing>
+                      <property name="expand">False</property>
+                      <property name="fill">True</property>
+                      <property name="position">0</property>
+                    </packing>
+                    <style>
+                      <class name="priority-1"/>
+                    </style>
+                  </child>
                     <child>
-                      <!-- n-columns=6 n-rows=3 -->
+                      <object class="VclOptionalBox" id="Home-Section-Typography">
+                        <property name="visible">True</property>
+                        <property name="can-focus">False</property>
+                        <property name="valign">center</property>
+                        <property name="vexpand">True</property>
+                        <child>
+                      <!-- n-columns=9 n-rows=3 -->
                       <object class="GtkGrid" id="gdHomeFont">
                         <property name="visible">True</property>
                         <property name="can-focus">False</property>
@@ -3206,7 +3268,7 @@
                             <property name="can-focus">False</property>
                             <property name="valign">end</property>
                             <property name="vexpand">True</property>
-                            <property name="label" translatable="yes" context="TabbedWriter|labelHomeFont">Font</property>
+                            <property name="label" translatable="yes" context="TabbedWriter|labelHomeFont">Typography</property>
                             <attributes>
                               <attribute name="style" value="italic"/>
                               <attribute name="scale" value="0.9"/>
@@ -3218,31 +3280,7 @@
                           <packing>
                             <property name="left-attach">0</property>
                             <property name="top-attach">2</property>
-                            <property name="width">5</property>
-                          </packing>
-                        </child>
-                        <child>
-                          <object class="sfxlo-NotebookbarToolBox" id="bxHomeFormatPaintbrush">
-                            <property name="visible">True</property>
-                            <property name="can-focus">False</property>
-                            <property name="valign">center</property>
-                            <property name="vexpand">True</property>
-                            <property name="toolbar-style">both-horiz</property>
-                            <property name="show-arrow">False</property>
-                            <child>
-                              <object class="GtkToolButton" id="btnHomeFormatPaintbrush">
-                                <property name="visible">True</property>
-                                <property name="action-name">.uno:FormatPaintbrush</property>
-                              </object>
-                              <packing>
-                                <property name="expand">False</property>
-                                <property name="homogeneous">True</property>
-                              </packing>
-                            </child>
-                          </object>
-                          <packing>
-                            <property name="left-attach">0</property>
-                            <property name="top-attach">0</property>
+                            <property name="width">9</property>
                           </packing>
                         </child>
                         <child>
@@ -3288,9 +3326,9 @@
                             </child>
                           </object>
                           <packing>
-                            <property name="left-attach">1</property>
+                            <property name="left-attach">0</property>
                             <property name="top-attach">0</property>
-                            <property name="width">2</property>
+                            <property name="width">5</property>
                           </packing>
                         </child>
                         <child>
@@ -3310,7 +3348,7 @@
                             </child>
                           </object>
                           <packing>
-                            <property name="left-attach">3</property>
+                            <property name="left-attach">5</property>
                             <property name="top-attach">0</property>
                           </packing>
                         </child>
@@ -3374,6 +3412,7 @@
                           <packing>
                             <property name="left-attach">1</property>
                             <property name="top-attach">1</property>
+                            <property name="width">3</property>
                           </packing>
                         </child>
                         <child>
@@ -3405,8 +3444,9 @@
                             </child>
                           </object>
                           <packing>
-                            <property name="left-attach">2</property>
+                            <property name="left-attach">4</property>
                             <property name="top-attach">1</property>
+                            <property name="width">2</property>
                           </packing>
                         </child>
                         <child>
@@ -3417,9 +3457,9 @@
                             <property name="toolbar-style">icons</property>
                             <property name="show-arrow">False</property>
                             <child>
-                              <object class="GtkMenuToolButton" id="btnHomeSpacing">
+                              <object class="GtkMenuToolButton" id="btnHomeColor">
                                 <property name="visible">True</property>
-                                <property name="action-name">.uno:Spacing</property>
+                                <property name="action-name">.uno:Color</property>
                               </object>
                               <packing>
                                 <property name="expand">False</property>
@@ -3437,9 +3477,9 @@
                               </packing>
                             </child>
                             <child>
-                              <object class="GtkMenuToolButton" id="btnHomeColor">
+                              <object class="GtkMenuToolButton" id="btnHomeSpacing">
                                 <property name="visible">True</property>
-                                <property name="action-name">.uno:Color</property>
+                                <property name="action-name">.uno:Spacing</property>
                               </object>
                               <packing>
                                 <property name="expand">False</property>
@@ -3448,9 +3488,9 @@
                             </child>
                           </object>
                           <packing>
-                            <property name="left-attach">3</property>
+                            <property name="left-attach">6</property>
                             <property name="top-attach">1</property>
-                            <property name="width">2</property>
+                            <property name="width">3</property>
                           </packing>
                         </child>
                         <child>
@@ -3482,20 +3522,31 @@
                             </child>
                           </object>
                           <packing>
-                            <property name="left-attach">4</property>
+                            <property name="left-attach">6</property>
                             <property name="top-attach">0</property>
                           </packing>
                         </child>
                         <child>
-                          <object class="GtkSeparator">
+                          <object class="sfxlo-NotebookbarToolBox" id="bxHomeFontDialog">
                             <property name="visible">True</property>
                             <property name="can-focus">False</property>
-                            <property name="orientation">vertical</property>
+                            <property name="valign">center</property>
+                            <property name="toolbar-style">icons</property>
+                            <property name="show-arrow">False</property>
+                            <child>
+                              <object class="GtkToolButton" id="btnHomeFontDialog">
+                                <property name="visible">True</property>
+                                <property name="action-name">.uno:FontDialog</property>
+                              </object>
+                              <packing>
+                                <property name="expand">False</property>
+                                <property name="homogeneous">True</property>
+                              </packing>
+                            </child>
                           </object>
                           <packing>
-                            <property name="left-attach">5</property>
+                            <property name="left-attach">8</property>
                             <property name="top-attach">0</property>
-                            <property name="height">3</property>
                           </packing>
                         </child>
                         <accessibility>
@@ -3507,9 +3558,25 @@
                         <property name="fill">True</property>
                         <property name="position">1</property>
                       </packing>
-                    </child>
+                      </child>
+                    </object>
+                    <packing>
+                      <property name="expand">False</property>
+                      <property name="fill">True</property>
+                      <property name="position">1</property>
+                    </packing>
+                    <style>
+                      <class name="priority-3"/>
+                    </style>
+                  </child>
                     <child>
-                      <!-- n-columns=4 n-rows=3 -->
+                      <object class="VclOptionalBox" id="Home-Section-Paragraph">
+                        <property name="visible">True</property>
+                        <property name="can-focus">False</property>
+                        <property name="valign">center</property>
+                        <property name="vexpand">True</property>
+                        <child>
+                      <!-- n-columns=6 n-rows=3 -->
                       <object class="GtkGrid" id="gdHomeParagraph">
                         <property name="visible">True</property>
                         <property name="can-focus">False</property>
@@ -3535,19 +3602,7 @@
                           <packing>
                             <property name="left-attach">0</property>
                             <property name="top-attach">2</property>
-                            <property name="width">3</property>
-                          </packing>
-                        </child>
-                        <child>
-                          <object class="GtkSeparator">
-                            <property name="visible">True</property>
-                            <property name="can-focus">False</property>
-                            <property name="orientation">vertical</property>
-                          </object>
-                          <packing>
-                            <property name="left-attach">3</property>
-                            <property name="top-attach">0</property>
-                            <property name="height">3</property>
+                            <property name="width">5</property>
                           </packing>
                         </child>
                         <child>
@@ -3590,7 +3645,7 @@
                             </child>
                           </object>
                           <packing>
-                            <property name="left-attach">0</property>
+                            <property name="left-attach">2</property>
                             <property name="top-attach">0</property>
                           </packing>
                         </child>
@@ -3653,7 +3708,8 @@
                           </object>
                           <packing>
                             <property name="left-attach">0</property>
-                            <property name="top-attach">1</property>
+                            <property name="top-attach">0</property>
+                            <property name="width">2</property>
                           </packing>
                         </child>
                         <child>
@@ -3699,40 +3755,9 @@
                             </child>
                           </object>
                           <packing>
-                            <property name="left-attach">1</property>
+                            <property name="left-attach">3</property>
                             <property name="top-attach">0</property>
-                          </packing>
-                        </child>
-                        <child>
-                          <object class="sfxlo-NotebookbarToolBox" id="bxHomeOrientation">
-                            <property name="visible">True</property>
-                            <property name="can-focus">False</property>
-                            <property name="toolbar-style">icons</property>
-                            <property name="show-arrow">False</property>
-                            <child>
-                              <object class="GtkToolButton" id="btnHomeParaLeftToRight">
-                                <property name="visible">True</property>
-                                <property name="action-name">.uno:ParaLeftToRight</property>
-                              </object>
-                              <packing>
-                                <property name="expand">False</property>
-                                <property name="homogeneous">True</property>
-                              </packing>
-                            </child>
-                            <child>
-                              <object class="GtkToolButton" id="btnHomeParaRightToLeft">
-                                <property name="visible">True</property>
-                                <property name="action-name">.uno:ParaRightToLeft</property>
-                              </object>
-                              <packing>
-                                <property name="expand">False</property>
-                                <property name="homogeneous">True</property>
-                              </packing>
-                            </child>
-                          </object>
-                          <packing>
-                            <property name="left-attach">2</property>
-                            <property name="top-attach">0</property>
+                            <property name="width">2</property>
                           </packing>
                         </child>
                         <child>
@@ -3776,41 +3801,21 @@
                             </child>
                           </object>
                           <packing>
-                            <property name="left-attach">1</property>
+                            <property name="left-attach">0</property>
                             <property name="top-attach">1</property>
+                            <property name="width">5</property>
                           </packing>
                         </child>
                         <child>
-                          <object class="sfxlo-NotebookbarToolBox" id="bxHomeColorAndCode">
+                          <object class="GtkSeparator">
                             <property name="visible">True</property>
                             <property name="can-focus">False</property>
-                            <property name="toolbar-style">icons</property>
-                            <property name="show-arrow">False</property>
-                            <child>
-                              <object class="GtkToolButton" id="btnHomeBackgroundColor">
-                                <property name="visible">True</property>
-                                <property name="action-name">.uno:BackgroundColor</property>
-                              </object>
-                              <packing>
-                                <property name="expand">False</property>
-                                <property name="homogeneous">True</property>
-                              </packing>
-                            </child>
-                            <child>
-                              <object class="GtkToolButton" id="btnHomeControlCodes">
-                                <property name="visible">True</property>
-                                <property name="margin-end">3</property>
-                                <property name="action-name">.uno:ControlCodes</property>
-                              </object>
-                              <packing>
-                                <property name="expand">False</property>
-                                <property name="homogeneous">True</property>
-                              </packing>
-                            </child>
+                            <property name="orientation">vertical</property>
                           </object>
                           <packing>
-                            <property name="left-attach">2</property>
-                            <property name="top-attach">1</property>
+                            <property name="left-attach">5</property>
+                            <property name="top-attach">0</property>
+                            <property name="height">3</property>
                           </packing>
                         </child>
                         <accessibility>
@@ -3822,8 +3827,24 @@
                         <property name="fill">True</property>
                         <property name="position">2</property>
                       </packing>
-                    </child>
+                      </child>
+                    </object>
+                    <packing>
+                      <property name="expand">False</property>
+                      <property name="fill">True</property>
+                      <property name="position">2</property>
+                    </packing>
+                    <style>
+                      <class name="priority-2"/>
+                    </style>
+                  </child>
                     <child>
+                      <object class="VclOptionalBox" id="Home-Section-Styles">
+                        <property name="visible">True</property>
+                        <property name="can-focus">False</property>
+                        <property name="valign">center</property>
+                        <property name="vexpand">True</property>
+                        <child>
                       <!-- n-columns=2 n-rows=3 -->
                       <object class="GtkGrid" id="gdHomeStyle">
                         <property name="visible">True</property>
@@ -3839,7 +3860,7 @@
                             <property name="can-focus">False</property>
                             <property name="valign">end</property>
                             <property name="vexpand">True</property>
-                            <property name="label" translatable="yes" context="TabbedWriter|labelHomeStyle">Style</property>
+                            <property name="label" translatable="yes" context="TabbedWriter|labelHomeStyle">Styles</property>
                             <attributes>
                               <attribute name="style" value="italic"/>
                               <attribute name="scale" value="0.9"/>
@@ -3851,19 +3872,7 @@
                           <packing>
                             <property name="left-attach">0</property>
                             <property name="top-attach">2</property>
-                          </packing>
-                        </child>
-                        <child>
-                          <object class="GtkSeparator">
-                            <property name="visible">True</property>
-                            <property name="can-focus">False</property>
-                            <property name="margin-start">3</property>
-                            <property name="orientation">vertical</property>
-                          </object>
-                          <packing>
-                            <property name="left-attach">1</property>
-                            <property name="top-attach">0</property>
-                            <property name="height">3</property>
+                            <property name="width">2</property>
                           </packing>
                         </child>
                         <child>
@@ -3888,6 +3897,7 @@
                           <packing>
                             <property name="left-attach">0</property>
                             <property name="top-attach">0</property>
+                            <property name="width">2</property>
                             <property name="height">2</property>
                           </packing>
                         </child>
@@ -3896,11 +3906,21 @@
                         </accessibility>
                       </object>
                       <packing>
-                        <property name="expand">False</property>
+                        <property name="expand">True</property>
                         <property name="fill">True</property>
                         <property name="position">3</property>
                       </packing>
-                    </child>
+                      </child>
+                    </object>
+                    <packing>
+                      <property name="expand">True</property>
+                      <property name="fill">True</property>
+                      <property name="position">3</property>
+                    </packing>
+                    <style>
+                      <class name="priority-4"/>
+                    </style>
+                  </child>
                   </object>
                   <packing>
                     <property name="expand">True</property>

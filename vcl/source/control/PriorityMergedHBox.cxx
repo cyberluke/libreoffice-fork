@@ -25,6 +25,8 @@
 #include <PriorityMergedHBox.hxx>
 #include <comphelper/lok.hxx>
 
+#include <algorithm>
+
 #define DUMMY_WIDTH 50
 #define BUTTON_WIDTH 30
 
@@ -59,10 +61,35 @@ void PriorityMergedHBox::Resize()
     tools::Long nWidth = GetSizePixel().Width();
     tools::Long nCurrentWidth = VclHBox::calculateRequisition().getWidth() + BUTTON_WIDTH;
 
-    // Hide lower priority controls
-    for (int i = GetChildCount() - 1; i >= 0; i--)
+    // Build the collapse order. Children with an explicit priority (any value other than
+    // VCL_PRIORITY_DEFAULT) are hidden in ascending priority order, i.e. the lowest
+    // priority control collapses first. Children without an explicit priority keep the
+    // legacy behavior of collapsing right-to-left (the last child collapses first), which
+    // corresponds to the implicit priority (child-count - 1 - index).
+    struct ChildEntry
+    {
+        vcl::Window* pWindow;
+        int nPriority;
+    };
+    std::vector<ChildEntry> aChildren;
+    aChildren.reserve(GetChildCount());
+    for (int i = 0; i < GetChildCount(); ++i)
     {
         vcl::Window* pWindow = GetChild(i);
+        int nPriority = GetChildCount() - 1 - i; // legacy right-to-left collapse order
+        if (vcl::IPrioritable* pPrioritable = dynamic_cast<vcl::IPrioritable*>(pWindow);
+            pPrioritable && pPrioritable->GetPriority() != VCL_PRIORITY_DEFAULT)
+            nPriority = pPrioritable->GetPriority();
+        aChildren.push_back({ pWindow, nPriority });
+    }
+    std::stable_sort(aChildren.begin(), aChildren.end(),
+                     [](const ChildEntry& rL, const ChildEntry& rR)
+                     { return rL.nPriority < rR.nPriority; });
+
+    // Hide lower priority controls
+    for (const ChildEntry& rEntry : aChildren)
+    {
+        vcl::Window* pWindow = rEntry.pWindow;
 
         if (nCurrentWidth <= nWidth)
             break;
@@ -82,9 +109,9 @@ void PriorityMergedHBox::Resize()
     }
 
     // Show higher priority controls if we already have enough space
-    for (int i = 0; i < GetChildCount(); i++)
+    for (auto it = aChildren.rbegin(); it != aChildren.rend(); ++it)
     {
-        vcl::Window* pWindow = GetChild(i);
+        vcl::Window* pWindow = it->pWindow;
 
         if (pWindow->GetParent() != this)
         {

@@ -23,8 +23,11 @@
 #include <comphelper/lok.hxx>
 #include <comphelper/propertyvalue.hxx>
 #include <comphelper/sequenceashashmap.hxx>
+#include <algorithm>
 #include <utility>
 #include <vcl/svapp.hxx>
+#include <vcl/vclevent.hxx>
+#include <vcl/window.hxx>
 #include <sfx2/objsh.hxx>
 #include <svl/itemset.hxx>
 #include <sfx2/tbxctrl.hxx>
@@ -72,6 +75,24 @@
 
 namespace
 {
+/// Logical size of a style preview card in the Writer 2027 gallery. The value must stay in
+/// sync with the item-width property of the stylesview GtkIconView in stylespreview.ui so
+/// that cards keep equal sizes and never clip on either backend.
+constexpr tools::Long WRITER2027_STYLE_CARD_WIDTH = 120;
+constexpr tools::Long WRITER2027_STYLE_CARD_HEIGHT = 52;
+constexpr tools::Long WRITER2027_STYLE_CARD_MARGIN = 3;
+
+/// Minimum luminance distance (0..255) between the style text color and the card background
+/// before the style color is considered safe to use. Otherwise the theme text color is used
+/// so previews stay readable in dark and high-contrast themes.
+constexpr sal_uInt8 WRITER2027_STYLE_CARD_MIN_LUMINANCE_DIFF = 100;
+
+bool lcl_HasSufficientContrast(const Color& rText, const Color& rBack)
+{
+    return std::abs(rText.GetLuminance() - rBack.GetLuminance())
+           >= WRITER2027_STYLE_CARD_MIN_LUMINANCE_DIFF;
+}
+
 class StylePreviewCache
 {
 private:
@@ -346,10 +367,35 @@ void StyleItemController::DrawEntry(vcl::RenderContext& rRenderContext)
         Size aPixelSize(rRenderContext.LogicToPixel(aFontSize, MapMode(pShell->GetMapUnit())));
 
         SvxFont aFont = GetFontFromItems(pFontItem, aPixelSize, pItemSet);
+
+        // Keep the preview bounded: never render the name larger than the card can show,
+        // and never shrink it below a readable minimum.
+        const tools::Long nMaxTextSize = WRITER2027_STYLE_CARD_HEIGHT * 45 / 100;
+        const tools::Long nMinTextSize = WRITER2027_STYLE_CARD_HEIGHT * 26 / 100;
+        const tools::Long nMaxTextWidth
+            = WRITER2027_STYLE_CARD_WIDTH - 2 * (LEFT_MARGIN + WRITER2027_STYLE_CARD_MARGIN);
+
+        tools::Long nTextSize = std::clamp<tools::Long>(aPixelSize.Height(), nMinTextSize,
+                                                        nMaxTextSize);
+        aFont.SetFontSize(Size(0, nTextSize));
         rRenderContext.SetFont(aFont);
 
+        // Shrink the name until it fits the card width so long localized style names
+        // (e.g. "Preformatted Text" or its translations) are never clipped.
+        tools::Rectangle aTextRect;
+        while (nTextSize > nMinTextSize)
+        {
+            rRenderContext.GetTextBoundRect(aTextRect, m_aStyleName.translatedName);
+            if (aTextRect.GetWidth() <= nMaxTextWidth)
+                break;
+            --nTextSize;
+            aFont.SetFontSize(Size(0, nTextSize));
+            rRenderContext.SetFont(aFont);
+        }
+
         Color aFontCol = GetTextColorFromItemSet(pItemSet);
-        if (aFontCol != COL_AUTO)
+        if (aFontCol != COL_AUTO
+            && lcl_HasSufficientContrast(aFontCol, rRenderContext.GetFillColor()))
             rRenderContext.SetTextColor(aFontCol);
 
         aFontHighlight = GetHighlightColorFromItemSet(pItemSet);
@@ -523,6 +569,9 @@ void StylesPreviewWindow_Base::UpdateSelection()
             || m_aAllStyles[i].translatedName == m_sSelectedStyle)
         {
             m_xStylesView->select(i);
+            // keep the active style visible when the gallery wraps or scrolls
+            if (auto pIter = m_xStylesView->get_iterator(i))
+                m_xStylesView->scroll_to_item(*pIter);
             break;
         }
     }
@@ -544,7 +593,7 @@ Bitmap StylesPreviewWindow_Base::GetCachedPreview(const StylePreviewDescriptor& 
     else
     {
         ScopedVclPtrInstance<VirtualDevice> pImg;
-        const Size aSize(100, 24);
+        const Size aSize(WRITER2027_STYLE_CARD_WIDTH, WRITER2027_STYLE_CARD_HEIGHT);
         pImg->SetOutputSizePixel(aSize);
 
         // The VirtualDevice defaults to white, which made previews unreadable in dark UI themes.
@@ -709,15 +758,60 @@ StylesPreviewWindow_Impl::StylesPreviewWindow_Impl(
     , StylesPreviewWindow_Base(*m_xBuilder, rDefaultStyles, xFrame)
 {
     SetOptimalSize();
+    FitToParent();
+    // Track the parent (the notebookbar toolbox) so the gallery can use all the horizontal
+    // space the Styles region is given instead of staying a narrow strip.
+    if (vcl::Window* pParentWindow = GetParent())
+    {
+        pParentWindow->AddEventListener(LINK(this, StylesPreviewWindow_Impl, ParentResizeHdl));
+        m_bTrackingParentResize = true;
+    }
 }
 
 StylesPreviewWindow_Impl::~StylesPreviewWindow_Impl() { disposeOnce(); }
 
 void StylesPreviewWindow_Impl::dispose()
 {
+    if (m_bTrackingParentResize)
+    {
+        if (vcl::Window* pParentWindow = GetParent())
+            pParentWindow->RemoveEventListener(
+                LINK(this, StylesPreviewWindow_Impl, ParentResizeHdl));
+        m_bTrackingParentResize = false;
+    }
+
     m_xStylesView.reset();
 
     InterimItemWindow::dispose();
+}
+
+IMPL_LINK(StylesPreviewWindow_Impl, ParentResizeHdl, const VclWindowEvent&, rEvent, void)
+{
+    if (rEvent.GetId() == VclEventId::WindowResize)
+        FitToParent();
+}
+
+void StylesPreviewWindow_Impl::FitToParent()
+{
+    vcl::Window* pParentWindow = GetParent();
+    if (!pParentWindow)
+        return;
+
+    const Size aParentSize(pParentWindow->GetOutputSizePixel());
+    // the parent (notebookbar toolbox) may not be laid out yet while we are constructed
+    if (aParentSize.Width() <= 0 || aParentSize.Height() <= 0)
+        return;
+
+    const tools::Long nWidth = std::max(m_nMinWidth, aParentSize.Width() - 2);
+    const tools::Long nHeight
+        = std::min(m_nDesiredHeight, std::max<tools::Long>(20, aParentSize.Height() - 2));
+    const Size aSize(nWidth, nHeight);
+    if (GetSizePixel() == aSize)
+        return;
+
+    SetSizePixel(aSize);
+    // let the toolbox reformat the item rect (position/line size) around our new size
+    pParentWindow->queue_resize();
 }
 
 void StylesPreviewWindow_Impl::SetOptimalSize() { SetSizePixel(get_preferred_size()); }

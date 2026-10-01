@@ -138,6 +138,13 @@ private:
 
 class StylesPreviewWindow_Impl final : public InterimItemWindow, public StylesPreviewWindow_Base
 {
+    bool m_bTrackingParentResize = false;
+    tools::Long m_nMinWidth = 160;
+    tools::Long m_nDesiredHeight = 58;
+
+    DECL_LINK(ParentResizeHdl, const VclWindowEvent&, void);
+    void FitToParent();
+
 public:
     StylesPreviewWindow_Impl(vcl::Window* pParent, const StylePreviewList& rDefaultStyles,
                              const css::uno::Reference<css::frame::XFrame>& xFrame);

@@ -62,10 +62,14 @@ void StylesPreviewToolBoxControl::InitializeStyles(
         {
             css::uno::Reference<css::container::XNameAccess> xParaStyles;
             xStylesSupplier->getStyleFamilies()->getByName(u"ParagraphStyles"_ustr) >>= xParaStyles;
+            // Primary sequence first (Body, Headings 1-2, Title, Subtitle, Quote), then the
+            // secondary sequence (Headings 3-4, Caption, Preformatted Text), with the Standard
+            // style last. Styles that are missing in the document are skipped automatically.
             static constexpr OUString aWriterStyles[]{
-                u"Standard"_ustr,   u"Text body"_ustr,        u"Heading 1"_ustr, u"Heading 2"_ustr,
-                u"Heading 3"_ustr,  u"Heading 4"_ustr,        u"Title"_ustr,     u"Subtitle"_ustr,
-                u"Quotations"_ustr, u"Preformatted Text"_ustr
+                u"Text body"_ustr,        u"Heading 1"_ustr,       u"Heading 2"_ustr,
+                u"Title"_ustr,            u"Subtitle"_ustr,        u"Quotations"_ustr,
+                u"Heading 3"_ustr,        u"Heading 4"_ustr,       u"Caption"_ustr,
+                u"Preformatted Text"_ustr, u"Standard"_ustr
             };
             for (const OUString& rStyle : aWriterStyles)
             {
