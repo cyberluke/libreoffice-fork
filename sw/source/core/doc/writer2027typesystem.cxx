@@ -151,12 +151,14 @@ void lcl_ApplyFormat(SwDoc& rDoc, SwFormat& rFormat, const SfxItemSet& rSet)
 {
     if (rSet.Count() == 0)
         return;
-    // Skip when nothing actually differs (re-applying the same preset must
-    // not create no-op undo entries).
-    SfxItemSet aDiff(rSet);
-    aDiff.Differentiate(rFormat.GetAttrSet());
-    if (aDiff.Count() == 0)
-        return;
+    // SwDoc::ChgFormat re-derives the "actually different" subset internally
+    // for the undo record and always applies the target via SetFormatAttr, so
+    // the values persist even when the pooled format reported the same item as
+    // the preset (the old Differentiate() early-out here dropped legitimate
+    // changes such as heading-scale sizes, which silently kept the pool
+    // default and broke DetectCurrentTypeSystem round-trip). Idempotence is
+    // preserved because ChgFormat with an identical set is a no-op for the
+    // document state.
     rDoc.ChgFormat(rFormat, rSet);
 }
 

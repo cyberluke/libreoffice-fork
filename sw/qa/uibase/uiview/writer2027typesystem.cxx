@@ -149,8 +149,6 @@ CPPUNIT_TEST_FIXTURE(Writer2027TypeSystemTest, testApplyEditorialAndDetect)
     CPPUNIT_ASSERT(pEditorial);
     const ResolvedTypeSystem aResolved = ResolveTypeSystem(*pEditorial, nullptr);
 
-    // Apply returns true and changes the body family (the confirmed, reliably
-    // persisted part of the preset).
     const bool bApplied
         = sw::writer2027typesystem::ApplyTypeSystem(*pDoc, *pEditorial, aResolved, nullptr);
     CPPUNIT_ASSERT_MESSAGE("ApplyTypeSystem returned false", bApplied);
@@ -160,21 +158,46 @@ CPPUNIT_TEST_FIXTURE(Writer2027TypeSystemTest, testApplyEditorialAndDetect)
     CPPUNIT_ASSERT_EQUAL(aResolved.Get(TypeSystemFontRole::Body).maFamily,
                          pStandard->GetAttrSet().Get(RES_CHRATR_FONT).GetFamilyName());
 
-    // FIXME(typesystem-backend-scales): DetectCurrentTypeSystem round-trip.
-    // Because ApplyTypeSystem does not persist the heading-scale sizes
-    // (Differentiate skips them; see the FIXME in testApplyAffectsExpectedStyles),
-    // detect does not yet report the applied preset on a fresh document. This is
-    // a real backend defect tracked separately from the popup UI remediation.
-    // The undo/redo behavior below is still asserted for the operation when we
-    // bypass the round-trip precondition:
+    // Round-trip: applying "editorial" must be detected as "editorial" (this
+    // was the backend defect — heading-scale sizes did not persist, so detect
+    // never matched; fixed by removing the lossy Differentiate early-out).
+    const OUString aDetected
+        = sw::writer2027typesystem::DetectCurrentTypeSystem(*pDoc, nullptr);
+    CPPUNIT_ASSERT_MESSAGE(
+        std::string("detect after apply editorial = ")
+            + std::string(aDetected.toUtf8().getStr()),
+        aDetected == u"editorial"_ustr);
+
+    // Manually altering one required attribute must make the doc "custom".
+    SwTextFormatColl* pH1 = pDoc->getIDocumentStylePoolAccess().GetTextCollFromPool(
+        SwPoolFormatId::COLL_HEADLINE1);
+    CPPUNIT_ASSERT(pH1);
+    {
+        SfxItemSet aSet(pDoc->GetAttrPool(), svl::Items<RES_CHRATR_BEGIN, RES_CHRATR_END - 1>);
+        aSet.Put(SvxFontHeightItem(1234, 100, RES_CHRATR_FONTSIZE));
+        pDoc->ChgFormat(*pH1, aSet);
+    }
+    const OUString aDetectedAfterMutation
+        = sw::writer2027typesystem::DetectCurrentTypeSystem(*pDoc, nullptr);
+    CPPUNIT_ASSERT_MESSAGE(
+        std::string("detect after manual mutation = ")
+            + std::string(aDetectedAfterMutation.toUtf8().getStr()),
+        aDetectedAfterMutation.isEmpty());
+
+    // Undo/redo: one undo restores a full previous Type System state, one redo
+    // restores the preset. First undo the manual mutation so the doc is back on
+    // editorial, then undo the editorial apply to revert to the untouched basin.
     pDoc->GetIDocumentUndoRedo().DoUndo(true);
-    sw::writer2027typesystem::ApplyTypeSystem(*pDoc, *pEditorial, aResolved, nullptr);
-    // Undoing the latest apply must revert the body family away from the preset.
+    // Undo #1: the manual H1 mutation.
     pDoc->GetIDocumentUndoRedo().Undo();
-    const OUString aAfterUndoFamily = pStandard->GetAttrSet().Get(RES_CHRATR_FONT).GetFamilyName();
+    CPPUNIT_ASSERT_EQUAL(u"editorial"_ustr,
+                         sw::writer2027typesystem::DetectCurrentTypeSystem(*pDoc, nullptr));
+    // Undo #2: the editorial apply.
+    pDoc->GetIDocumentUndoRedo().Undo();
+    const OUString aBodyAfterUndo = pStandard->GetAttrSet().Get(RES_CHRATR_FONT).GetFamilyName();
     CPPUNIT_ASSERT_MESSAGE(std::string("undo did not restore prior body family: ")
-                               + std::string(aAfterUndoFamily.toUtf8().getStr()),
-                           aAfterUndoFamily != aResolved.Get(TypeSystemFontRole::Body).maFamily);
+                               + std::string(aBodyAfterUndo.toUtf8().getStr()),
+                           aBodyAfterUndo != aResolved.Get(TypeSystemFontRole::Body).maFamily);
 }
 
 CPPUNIT_TEST_FIXTURE(Writer2027TypeSystemTest, testApplyIdempotent)
@@ -226,17 +249,24 @@ CPPUNIT_TEST_FIXTURE(Writer2027TypeSystemTest, testApplyAffectsExpectedStyles)
     CPPUNIT_ASSERT_EQUAL(aResolved.Get(TypeSystemFontRole::Heading).maFamily,
                          pHeadingBase->GetAttrSet().Get(RES_CHRATR_FONT).GetFamilyName());
 
-    // FIXME(typesystem-backend-scales): ApplyTypeSystem currently fails to
-    // persist heading-level font sizes — lcl_ApplyFormat's Differentiate() sees
-    // the new size as equal to the pooled default and skips the change, so H1
-    // keeps its original height. This breaks DetectCurrentTypeSystem round-trip
-    // (a preset is never detected). Tracked separately from the UI remediation.
-    // For now assert only the confirmed behaviour (body typography persists).
+    // Heading-level font sizes must persist (regression: ChgFormat used to be
+    // skipped for these because a Differentiate() early-out saw the new size as
+    // equal to the pool default). H1/H2/H3 now take the preset scale sizes.
     SwTextFormatColl* pH1 = pDoc->getIDocumentStylePoolAccess().GetTextCollFromPool(
         SwPoolFormatId::COLL_HEADLINE1);
+    SwTextFormatColl* pH2 = pDoc->getIDocumentStylePoolAccess().GetTextCollFromPool(
+        SwPoolFormatId::COLL_HEADLINE2);
+    SwTextFormatColl* pH3 = pDoc->getIDocumentStylePoolAccess().GetTextCollFromPool(
+        SwPoolFormatId::COLL_HEADLINE3);
     CPPUNIT_ASSERT(pH1);
-    // (Defect marker: H1 size is not yet persisted after apply; see FIXME above.)
-    (void)pH1;
+    CPPUNIT_ASSERT(pH2);
+    CPPUNIT_ASSERT(pH3);
+    CPPUNIT_ASSERT_EQUAL(sal_uInt32(rScale.mnH1),
+                         pH1->GetAttrSet().Get(RES_CHRATR_FONTSIZE).GetHeight());
+    CPPUNIT_ASSERT_EQUAL(sal_uInt32(rScale.mnH2),
+                         pH2->GetAttrSet().Get(RES_CHRATR_FONTSIZE).GetHeight());
+    CPPUNIT_ASSERT_EQUAL(sal_uInt32(rScale.mnH3),
+                         pH3->GetAttrSet().Get(RES_CHRATR_FONTSIZE).GetHeight());
 
     // Preformatted mono family.
     SwTextFormatColl* pPre = pDoc->getIDocumentStylePoolAccess().GetTextCollFromPool(
