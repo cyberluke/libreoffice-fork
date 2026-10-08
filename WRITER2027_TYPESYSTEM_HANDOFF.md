@@ -98,3 +98,22 @@ Bottom line: **the Type System picker feature is not delivering a clean, correct
 ---
 
 *End of handoff.*
+---
+
+## UPDATE (2026-10-08, post-remediation)
+
+The remediation spec was executed. The two reported failures are fixed and built:
+
+1. **"Type System is not opening anything"** — root causes: (a) the button fired
+   the inherited `ToolboxController::execute()` which requires a resolved
+   `XDispatch` the no-slot command never has; (b) the popup `.ui` was missing
+   the `container` id that `WeldToolbarPopup` requires (`toolbarmenu.cxx:113`),
+   so the framework-popup path could never display. Fixes in `087f2a8f28d3`
+   (controller override + `.ui` restructure + semantic detail pane).
+2. **"font popup in toolbar not fixed"** — row width now follows the real popup
+   width (`mnPopupContentWidthPx`) and the specimen is measured/fit/clipped
+   (`087f2a8f28d3`).
+3. Backend round-trip defect fixed: `ApplyTypeSystem` now persists heading-scale
+   sizes, so `DetectCurrentTypeSystem` reports the applied preset (`854cd80ec898`).
+
+Full evidence: see `WRITER2027_REMEDIATION_REPORT.md`.
