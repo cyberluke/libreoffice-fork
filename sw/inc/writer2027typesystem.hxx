@@ -12,6 +12,8 @@
 
 #include <rtl/ustring.hxx>
 
+#include <swdllapi.h>
+
 class FontList;
 class SwDoc;
 
@@ -34,7 +36,7 @@ namespace sw::writer2027typesystem
     font items from real installed metrics and may be null (the resolved
     family names are then stored as-is).
  */
-bool ApplyTypeSystem(SwDoc& rDoc, const svx::writer2027::TypeSystemPreset& rPreset,
+bool SW_DLLPUBLIC ApplyTypeSystem(SwDoc& rDoc, const svx::writer2027::TypeSystemPreset& rPreset,
                      const svx::writer2027::ResolvedTypeSystem& rResolved,
                      const FontList* pFontList);
 
@@ -49,7 +51,7 @@ bool ApplyTypeSystem(SwDoc& rDoc, const svx::writer2027::TypeSystemPreset& rPres
     Only invoked on popup open / after applying a preset - never during
     painting.
  */
-OUString DetectCurrentTypeSystem(SwDoc& rDoc, const FontList* pFontList);
+OUString SW_DLLPUBLIC DetectCurrentTypeSystem(SwDoc& rDoc, const FontList* pFontList);
 
 } // namespace sw::writer2027typesystem
 

@@ -86,7 +86,7 @@ struct ResolvedTypeSystem
     }
 
     /** Number of roles whose preferred family is not installed. */
-    int GetMissingCount() const;
+    SVXCORE_DLLPUBLIC int GetMissingCount() const;
 };
 
 /** Restrained semantic color roles (hex "#RRGGBB", empty = not defined).

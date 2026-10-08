@@ -15,6 +15,7 @@ $(eval $(call gb_CppunitTest_use_common_precompiled_header,sw_uibase_uiview))
 
 $(eval $(call gb_CppunitTest_add_exception_objects,sw_uibase_uiview, \
     sw/qa/uibase/uiview/uiview \
+    sw/qa/uibase/uiview/writer2027typesystem \
 ))
 
 $(eval $(call gb_CppunitTest_use_libraries,sw_uibase_uiview, \
@@ -47,6 +48,7 @@ $(eval $(call gb_CppunitTest_set_include,sw_uibase_uiview,\
     -I$(SRCDIR)/sw/source/core/inc \
     -I$(SRCDIR)/sw/source/uibase/inc \
     -I$(SRCDIR)/sw/qa/inc \
+    -I$(SRCDIR)/svx/inc \
     $$(INCLUDE) \
 ))
 
