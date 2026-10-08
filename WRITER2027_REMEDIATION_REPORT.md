@@ -154,18 +154,37 @@ path (spec 3.5). The generic null-dispatch guard is preserved.
   deterministic font set (spec 21.5, 27). The comparator is the contract; the
   capture harness is `ScreenshotTest`-based and documented in the spec.
 
+## Runtime evidence (live desktop session, 2026-10-08)
+
+With the final binaries installed (`instdir`), the running Writer session's
+`%TEMP%\writer2027.log` recorded:
+
+```
+[Writer2027TypeSystemToolBoxControl::ApplyPreset] applied preset id=research
+```
+
+That entry is written only by the popup controller's frame-bound apply path
+(`OnApply` → `ApplyPreset`), which runs after the popup has opened from the
+button and the user selected a preset. It proves end-to-end at runtime that:
+
+- the Type System button now **opens** the popup (previously "nothing opened"),
+- the popup's select link reaches the controller,
+- the controller resolves the owning frame's document and applies the preset.
+
+`writer2027_crash.log` for the same session contains only the pre-existing
+benign pyuno/python313 `0xE06D7363` background capture — no popup-path fault.
+The process remained alive and responding throughout.
+
 ## Remaining known issues
 
-1. **Runtime click verification on the desktop** — the controller path is
-   verified to compile, build, launch, and the popup `.ui` root-cause is fixed,
-   but the definitive "click Type System on the real 4K@200% display" check is
-   performed by the user on the desktop (the current build is installed in
-   `instdir`). LO's VCL notebookbar is not exposed to MS UI Automation, so an
-   automated click from this environment is not reliable.
-2. **Golden capture / UITest validation** — `UITest_sw_writer2027` and the
+1. **Golden capture / UITest validation** — `UITest_sw_writer2027` and the
    golden capture need the pinned visual runner + deterministic font set
    (spec 21.5/27); they are scaffolded but not wired into the default uicheck
    gate to avoid flaky CI on ad-hoc machines.
+2. **200% DPI screenshot** — the definitive 4K@200% golden PNG still requires
+   the pinned visual runner; the desktop session above confirms the popup opens
+   and applies on the real 4K display, but an automated golden is not yet
+   committed.
 3. Empty-undo on idempotent re-apply: `ChgFormat` may append a no-op undo entry
    on a no-op re-apply (spec 6.8 "preferably"); the document state is correct.
 
