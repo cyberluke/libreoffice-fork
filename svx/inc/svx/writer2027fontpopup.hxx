@@ -89,6 +89,8 @@ private:
     DECL_LINK(PopupClosedHdl, weld::Popover&, void);
 
     void RebuildRows();
+    void RebuildModel();   // model only: mrModel.Rebuild + reset hover state
+    void PopulateRows();   // tree only: populate from the existing model
     void ActivateRow(const FontPickerModel::Row& rRow);
     void ApplyFamily(const OUString& rFamily);
     void MoveCursor(int nDelta);

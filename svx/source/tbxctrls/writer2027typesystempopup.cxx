@@ -23,8 +23,6 @@ namespace svx::writer2027
 
 namespace
 {
-const OUString ROW_CUSTOM = u"custom"_ustr;
-
 OUString lcl_RowTagForPreset(const OUString& rPresetId)
 {
     return u"p:"_ustr + rPresetId;
@@ -45,24 +43,47 @@ OUString lcl_ScaleLabel(TypeSystemScaleId eScale)
     }
     return u""_ustr;
 }
+
+OUString lcl_ScaleSummary(const TypeSystemScale& rScale)
+{
+    // "12 / 14 / 16 / 20 / 26 / 36" (body, caption, mono, H3, H2, H1-ish sizes;
+    // fixed UI sample per remediation spec 43).
+    const auto pt = [](sal_uInt16 nTwips) { return nTwips / 20; };
+    OUString aSummary = OUString::number(pt(rScale.mnBody));
+    if (rScale.mnCaption)
+        aSummary += u" / " + OUString::number(pt(rScale.mnCaption));
+    if (rScale.mnMono)
+        aSummary += u" / " + OUString::number(pt(rScale.mnMono));
+    if (rScale.mnH3)
+        aSummary += u" / " + OUString::number(pt(rScale.mnH3));
+    if (rScale.mnH2)
+        aSummary += u" / " + OUString::number(pt(rScale.mnH2));
+    if (rScale.mnH1)
+        aSummary += u" / " + OUString::number(pt(rScale.mnH1));
+    return aSummary;
+}
 } // namespace
 
 Writer2027TypeSystemPopup::Writer2027TypeSystemPopup(weld::Widget* pParent)
     : WeldToolbarPopup(nullptr, pParent, u"svx/ui/writer2027typesystempopup.ui"_ustr,
                        u"Writer2027TypeSystemPopup"_ustr)
     , m_xRows(m_xBuilder->weld_tree_view(u"preset_list"_ustr))
+    , m_xCurrentLabel(m_xBuilder->weld_label(u"typesystem_current"_ustr))
     , m_xDetailName(m_xBuilder->weld_label(u"detail_name"_ustr))
     , m_xRoleHeading(m_xBuilder->weld_label(u"role_heading"_ustr))
+    , m_xPreviewHeading(m_xBuilder->weld_label(u"preview_heading"_ustr))
     , m_xRoleBody(m_xBuilder->weld_label(u"role_body"_ustr))
-    , m_xRoleDisplay(m_xBuilder->weld_label(u"role_display"_ustr))
+    , m_xPreviewBody(m_xBuilder->weld_label(u"preview_body"_ustr))
     , m_xRoleMono(m_xBuilder->weld_label(u"role_mono"_ustr))
+    , m_xPreviewMono(m_xBuilder->weld_label(u"preview_mono"_ustr))
     , m_xRoleScale(m_xBuilder->weld_label(u"role_scale"_ustr))
     , m_xFallbackStatus(m_xBuilder->weld_label(u"fallback_status"_ustr))
+    , m_xApplyButton(m_xBuilder->weld_button(u"apply_button"_ustr))
 {
     m_xRows->set_selection_mode(SelectionMode::Single);
     m_xRows->connect_selection_changed(LINK(this, Writer2027TypeSystemPopup, TreeSelectionHdl));
     m_xRows->connect_key_press(LINK(this, Writer2027TypeSystemPopup, TreeKeyHdl));
-    m_xRows->connect_mouse_press(LINK(this, Writer2027TypeSystemPopup, TreeMouseHdl));
+    m_xApplyButton->connect_clicked(LINK(this, Writer2027TypeSystemPopup, ApplyButtonHdl));
 
     BuildModel();
     PopulatePresetList();
@@ -79,19 +100,11 @@ Writer2027TypeSystemPopup::~Writer2027TypeSystemPopup() = default;
 
 void Writer2027TypeSystemPopup::BuildModel()
 {
-    // spec 4.1: pure data. One row per preset with the resolved semantic
-    // roles stored explicitly; no tree operations, no rendering, no geometry.
+    // Pure data: one row per real preset with resolved semantic roles stored
+    // explicitly. "Custom typography" is state (shown in the CURRENT header),
+    // NOT a fake preset row (remediation spec 18).
     const Writer2027TypeSystemCatalog& rCatalog = Writer2027TypeSystemCatalog::Get();
     maModel.clear();
-
-    // "Custom document typography" is state, not a preset: model it explicitly
-    // but inert, so it never dispatches an apply (spec 4.1).
-    {
-        TypeSystemPickerRow aCustom;
-        aCustom.maPresetId.clear();
-        aCustom.maDisplayName = SvxResId(STR_WRITER2027_TYPESYSTEM_CUSTOM);
-        maModel.push_back(aCustom);
-    }
 
     for (const auto& rPreset : rCatalog.GetPresets())
     {
@@ -105,18 +118,12 @@ void Writer2027TypeSystemPopup::BuildModel()
         aRow.maMonoFamily = aResolved.Get(TypeSystemFontRole::Mono).maFamily;
         aRow.maDisplayFamily = aResolved.Get(TypeSystemFontRole::Display).maFamily;
         aRow.mnMissingCount = aResolved.GetMissingCount();
-
-        // Current-preset comparison uses the still-current detection result;
-        // SetCurrentPreset() marks the matching row after the owner passes the
-        // detected id.
         maModel.push_back(aRow);
     }
 }
 
 void Writer2027TypeSystemPopup::SetCurrentPreset(const OUString& rPresetId)
 {
-    if (rPresetId.isEmpty())
-        return;
     maCurrentPreset = rPresetId;
 
     const int nCount = static_cast<int>(maModel.size());
@@ -126,7 +133,27 @@ void Writer2027TypeSystemPopup::SetCurrentPreset(const OUString& rPresetId)
         rRow.mbCurrent = !rPresetId.isEmpty() && (rRow.maPresetId == rPresetId);
     }
 
-    // Correct the highlight only; the list itself is already populated.
+    // CURRENT header: "Custom typography" when the document does not match a
+    // preset, otherwise the preset display name (spec 18).
+    if (rPresetId.isEmpty())
+        m_xCurrentLabel->set_label(SvxResId(STR_WRITER2027_TYPESYSTEM_CUSTOM));
+    else
+    {
+        bool bFound = false;
+        for (const auto& rRow : maModel)
+        {
+            if (rRow.maPresetId == rPresetId)
+            {
+                m_xCurrentLabel->set_label(rRow.maDisplayName);
+                bFound = true;
+                break;
+            }
+        }
+        if (!bFound)
+            m_xCurrentLabel->set_label(SvxResId(STR_WRITER2027_TYPESYSTEM_CUSTOM));
+    }
+
+    // Highlight the matching preset row (no-op selection already there).
     mbInternalMove = true;
     m_xRows->freeze();
     for (int i = 0; i < nCount; ++i)
@@ -147,7 +174,7 @@ void Writer2027TypeSystemPopup::SetCurrentPreset(const OUString& rPresetId)
 
 void Writer2027TypeSystemPopup::PopulatePresetList()
 {
-    // spec 4.3: populate only after the model exists.
+    // Populate only after the model exists; presets only (no Custom row).
     mbInternalMove = true;
     m_xRows->freeze();
     m_xRows->clear();
@@ -156,10 +183,9 @@ void Writer2027TypeSystemPopup::PopulatePresetList()
         std::unique_ptr<weld::TreeIter> xIter(m_xRows->make_iterator());
         m_xRows->append(xIter.get());
         m_xRows->set_text(*xIter, rRow.maDisplayName, 0);
-        m_xRows->set_id(*xIter, rRow.maPresetId.isEmpty() ? ROW_CUSTOM
-                                                          : lcl_RowTagForPreset(rRow.maPresetId));
+        m_xRows->set_id(*xIter, lcl_RowTagForPreset(rRow.maPresetId));
     }
-    // Initial selection: the current preset if matched, otherwise Custom.
+    // Initial selection: the current preset if matched, otherwise the first.
     const int nCount = static_cast<int>(maModel.size());
     int nSelect = 0;
     for (int i = 0; i < nCount; ++i)
@@ -177,8 +203,6 @@ void Writer2027TypeSystemPopup::PopulatePresetList()
 
 void Writer2027TypeSystemPopup::UpdateDetailPanel()
 {
-    // Find the currently selected model row (fall back to the highlighted
-    // current row, then the first preset).
     int nSel = m_xRows ? m_xRows->get_selected_index() : -1;
     if (nSel < 0 || nSel >= static_cast<int>(maModel.size()))
     {
@@ -195,44 +219,36 @@ void Writer2027TypeSystemPopup::UpdateDetailPanel()
         nSel = 0;
 
     const TypeSystemPickerRow& rRow = maModel[nSel];
-    m_xDetailName->set_label(
-        u"Selected: "_ustr + (rRow.maPresetId.isEmpty() ? SvxResId(STR_WRITER2027_TYPESYSTEM_CUSTOM)
-                                                        : rRow.maDisplayName));
-    m_xRoleHeading->set_label(u"Heading: "_ustr
-                              + (rRow.maHeadingFamily.isEmpty() ? u"—"_ustr
-                                                                : rRow.maHeadingFamily));
-    m_xRoleBody->set_label(u"Body: "_ustr
-                           + (rRow.maBodyFamily.isEmpty() ? u"—"_ustr : rRow.maBodyFamily));
-    m_xRoleDisplay->set_label(u"Display: "_ustr
-                              + (rRow.maDisplayFamily.isEmpty() ? u"—"_ustr
-                                                                : rRow.maDisplayFamily));
-    m_xRoleMono->set_label(u"Code: "_ustr
-                           + (rRow.maMonoFamily.isEmpty() ? u"—"_ustr : rRow.maMonoFamily));
-
-    if (rRow.maPresetId.isEmpty())
-    {
-        m_xRoleScale->set_label(u"Scale / rhythm: —"_ustr);
-        m_xFallbackStatus->set_label(u"Fallbacks: —"_ustr);
-        return;
-    }
-
     const Writer2027TypeSystemCatalog& rCatalog = Writer2027TypeSystemCatalog::Get();
     const TypeSystemPreset* pPreset = rCatalog.FindPreset(rRow.maPresetId);
+
+    // Fixed UI sample text (spec 43) — never document content.
+    m_xDetailName->set_label(rRow.maDisplayName);
+    m_xRoleHeading->set_label(u"Heading · "_ustr
+                              + (rRow.maHeadingFamily.isEmpty() ? u"—"_ustr
+                                                                : rRow.maHeadingFamily));
+    m_xPreviewHeading->set_label(u"A Better Way to Write"_ustr);
+    m_xRoleBody->set_label(u"Body · "_ustr
+                           + (rRow.maBodyFamily.isEmpty() ? u"—"_ustr : rRow.maBodyFamily));
+    m_xPreviewBody->set_label(
+        u"A clear, calm paragraph for long-form reading."_ustr);
+    m_xRoleMono->set_label(u"Code · "_ustr
+                           + (rRow.maMonoFamily.isEmpty() ? u"—"_ustr : rRow.maMonoFamily));
+    m_xPreviewMono->set_label(u"const mode = \""_ustr + rRow.maPresetId + u"\";"_ustr);
+
     if (pPreset)
     {
         const TypeSystemScale& rScale = rCatalog.GetScale(pPreset->meScale);
         OUString aScaleText = lcl_ScaleLabel(pPreset->meScale);
-        if (rScale.mnBody > 0)
-            aScaleText += u" · body " + OUString::number(rScale.mnBody / 20) + "pt";
-        if (rScale.mnLineSpacingPercent > 0)
-            aScaleText += u" · " + OUString::number(rScale.mnLineSpacingPercent) + "%";
-        m_xRoleScale->set_label(u"Scale / rhythm: "_ustr + aScaleText);
+        const OUString aSummary = lcl_ScaleSummary(rScale);
+        if (!aSummary.isEmpty())
+            aScaleText += u" · " + aSummary;
+        m_xRoleScale->set_label(u"Scale · "_ustr + aScaleText);
 
         if (rRow.mnMissingCount > 0)
         {
-            OUString aMsg
-                = SvxResId(STR_WRITER2027_TYPESYSTEM_FONTS_MISSING).replaceFirst(
-                    u"%1"_ustr, OUString::number(rRow.mnMissingCount));
+            OUString aMsg = SvxResId(STR_WRITER2027_TYPESYSTEM_FONTS_MISSING)
+                                .replaceFirst(u"%1"_ustr, OUString::number(rRow.mnMissingCount));
             m_xFallbackStatus->set_label(aMsg);
         }
         else
@@ -240,7 +256,7 @@ void Writer2027TypeSystemPopup::UpdateDetailPanel()
     }
     else
     {
-        m_xRoleScale->set_label(u"Scale / rhythm: —"_ustr);
+        m_xRoleScale->set_label(u"Scale · —"_ustr);
         m_xFallbackStatus->set_label(u"Fallbacks: —"_ustr);
     }
 }
@@ -253,8 +269,8 @@ void Writer2027TypeSystemPopup::GrabFocus()
 
 IMPL_LINK(Writer2027TypeSystemPopup, TreeSelectionHdl, weld::ItemView&, /*rView*/, void)
 {
-    // spec 5.2: changing highlight/keyboard selection only previews the detail
-    // pane; it never mutates the document.
+    // spec 19: changing highlight/keyboard selection only previews the detail
+    // panel; it never mutates the document and never applies.
     if (!mbInternalMove)
         UpdateDetailPanel();
 }
@@ -265,7 +281,7 @@ IMPL_LINK(Writer2027TypeSystemPopup, TreeKeyHdl, const KeyEvent&, rKEvt, bool)
     if (rKeyCode.GetCode() == KEY_RETURN && !rKeyCode.IsShift() && !rKeyCode.IsMod1()
         && !rKeyCode.IsMod2() && !rKeyCode.IsMod3())
     {
-        // spec 5.3: Enter applies the highlighted preset.
+        // spec 19: Enter applies the highlighted preset.
         ApplySelected();
         return true;
     }
@@ -274,23 +290,10 @@ IMPL_LINK(Writer2027TypeSystemPopup, TreeKeyHdl, const KeyEvent&, rKEvt, bool)
     return false;
 }
 
-IMPL_LINK(Writer2027TypeSystemPopup, TreeMouseHdl, const MouseEvent&, rEvent, bool)
+IMPL_LINK(Writer2027TypeSystemPopup, ApplyButtonHdl, weld::Button&, /*rButton*/, void)
 {
-    // spec 5.3: a single (left) click on a preset applies it and closes.
-    if (!rEvent.IsLeft())
-        return false;
-
-    std::unique_ptr<weld::TreeIter> xIter
-        = m_xRows->get_dest_row_at_pos(rEvent.GetPosPixel(), false, false);
-    if (!xIter)
-        return false;
-    const int nIndex = m_xRows->get_iter_index_in_parent(*xIter);
-    if (nIndex < 0 || nIndex >= static_cast<int>(maModel.size()))
-        return false;
-    if (maModel[nIndex].maPresetId.isEmpty())
-        return true; // "Custom" label is inert
+    // spec 19: the Apply button applies the selected preset and closes.
     ApplySelected();
-    return true;
 }
 
 void Writer2027TypeSystemPopup::ApplySelected()
@@ -300,7 +303,7 @@ void Writer2027TypeSystemPopup::ApplySelected()
         return;
     const TypeSystemPickerRow& rRow = maModel[nRow];
     if (rRow.maPresetId.isEmpty())
-        return; // inert "Custom" label never applies
+        return;
 
     // Report + clear the highlight synchronously so a re-open sees a clean list.
     mbInternalMove = true;

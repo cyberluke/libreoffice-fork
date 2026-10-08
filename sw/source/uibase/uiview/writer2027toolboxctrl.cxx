@@ -97,6 +97,7 @@ public:
     // PopupWindowController
     virtual void SAL_CALL initialize(const css::uno::Sequence<css::uno::Any>& rArguments) override;
     virtual void SAL_CALL execute(sal_Int16 nKeyModifier) override;
+    virtual css::uno::Reference<css::awt::XWindow> SAL_CALL createPopupWindow() override;
     virtual VclPtr<vcl::Window> createVclPopupWindow(vcl::Window* pParent) override;
     virtual std::unique_ptr<WeldToolbarPopup> weldPopupWindow() override;
 
@@ -112,21 +113,21 @@ void SAL_CALL Writer2027TypeSystemToolBoxControl::initialize(
 
     // The notebookbar hosts the button on a classic VCL SidebarToolBox (not a
     // weld TransportAsXWindow), so m_pToolbar is null and the popup must use
-    // the InterimToolbarPopup path anchored by the framework. Give the item a
-    // DROPDOWN bit so the dropdown machinery (and our execute() hook below)
-    // both open the popup under the button at any DPI. If we are ever hosted on
-    // a weld toolbar, wire the native popover instead.
+    // the InterimToolbarPopup path anchored by the framework.
+    //
+    // ONE canonical open path (spec 23): this is a plain GtkToolButton, so the
+    // SidebarToolBox SelectHandler fires execute() — that is the supported
+    // no-slot opening path. We deliberately do NOT add ToolBoxItemBits::DROPDOWN
+    // here: doing so created a second (dropdown) entry point into the same
+    // popup lifecycle and is the likely cause of "second click does nothing"
+    // (the framework's dropdown machinery and our execute() hook contended for
+    // popup state). If we are ever hosted on a weld toolbar, wire the native
+    // popover instead (still via execute()).
     if (m_pToolbar)
     {
         mxPopoverContainer.reset(new ToolbarPopupContainer(m_pToolbar));
         m_pToolbar->set_item_popover(m_aCommandURL, mxPopoverContainer->getTopLevel());
-        return;
     }
-
-    ToolBox* pToolBox = nullptr;
-    ToolBoxItemId nId;
-    if (getToolboxId(nId, &pToolBox))
-        pToolBox->SetItemBits(nId, ToolBoxItemBits::DROPDOWN | pToolBox->GetItemBits(nId));
 }
 
 void SAL_CALL Writer2027TypeSystemToolBoxControl::execute(sal_Int16 /*nKeyModifier*/)
@@ -135,6 +136,7 @@ void SAL_CALL Writer2027TypeSystemToolBoxControl::execute(sal_Int16 /*nKeyModifi
     // ToolboxController::execute() would resolve a null XDispatch and do
     // nothing (the button appears dead). Here the controller IS the supported
     // toolbar-opening path: pressing the button opens the popup directly.
+    svx::writer2027::Writer2027LogMessage("typesystem.controller.execute", u"fire"_ustr);
     try
     {
         createPopupWindow();
@@ -153,8 +155,21 @@ void SAL_CALL Writer2027TypeSystemToolBoxControl::execute(sal_Int16 /*nKeyModifi
     }
 }
 
+css::uno::Reference<css::awt::XWindow> SAL_CALL
+Writer2027TypeSystemToolBoxControl::createPopupWindow()
+{
+    // spec 23/38: log the lifecycle. Exactly one createPopupWindow per open is
+    // expected; a second open that never reaches here would show up in the log.
+    svx::writer2027::Writer2027LogMessage("typesystem.controller.createPopupWindow",
+                                          u"fire"_ustr);
+    return PopupWindowController::createPopupWindow();
+}
+
 IMPL_LINK(Writer2027TypeSystemToolBoxControl, OnApply, const OUString&, rPresetId, void)
 {
+    svx::writer2027::Writer2027LogMessage(
+        "typesystem.apply",
+        OUString::Concat(u"preset=") + rPresetId);
     try
     {
         ApplyPreset(rPresetId);
@@ -172,10 +187,13 @@ IMPL_LINK(Writer2027TypeSystemToolBoxControl, OnApply, const OUString&, rPresetI
         svx::writer2027::Writer2027LogUnknownException("Writer2027TypeSystemToolBoxControl::OnApply");
     }
     EndPopupMode();
+    svx::writer2027::Writer2027LogMessage("typesystem.popup.closed",
+                                          u"after apply"_ustr);
 }
 
 std::unique_ptr<WeldToolbarPopup> Writer2027TypeSystemToolBoxControl::weldPopupWindow()
 {
+    svx::writer2027::Writer2027LogMessage("typesystem.popup.created", u"weld popover"_ustr);
     auto xPopup = svx::writer2027::Writer2027TypeSystemPopup::Create(m_pToolbar);
     xPopup->connect_select(LINK(this, Writer2027TypeSystemToolBoxControl, OnApply));
 
@@ -215,11 +233,21 @@ std::unique_ptr<WeldToolbarPopup> Writer2027TypeSystemToolBoxControl::weldPopupW
 
 VclPtr<vcl::Window> Writer2027TypeSystemToolBoxControl::createVclPopupWindow(vcl::Window* pParent)
 {
+    svx::writer2027::Writer2027LogMessage("typesystem.controller.createVclPopupWindow",
+                                          u"fire"_ustr);
+    // spec 25: never keep a stale popup reference across opens. A previous
+    // open/close cycle may have left mxInterimPopover pointing at a disposed
+    // window; releasing it here guarantees the second (and every later) click
+    // creates a fresh popup instead of touching dead state.
+    if (mxInterimPopover)
+        mxInterimPopover.disposeAndClear();
+
     auto xPopup = svx::writer2027::Writer2027TypeSystemPopup::Create(pParent->GetFrameWeld());
     xPopup->connect_select(LINK(this, Writer2027TypeSystemToolBoxControl, OnApply));
     mxInterimPopover = VclPtr<InterimToolbarPopup>::Create(
         getFrameInterface(), pParent, std::move(xPopup));
     mxInterimPopover->Show();
+    svx::writer2027::Writer2027LogMessage("typesystem.popup.created", u"open"_ustr);
     return mxInterimPopover;
 }
 

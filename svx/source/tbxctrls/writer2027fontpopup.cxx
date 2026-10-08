@@ -157,7 +157,10 @@ void Writer2027FontPopup::Open(const FontList* pFontList, const OUString& rCurre
         // never overwritten.
         m_xSearch->set_text(rInitialQuery);
         maQuery = rInitialQuery;
-        RebuildRows();
+        // spec 5 / remediation phase 1: build the MODEL first so the geometry
+        // pass below (which stores mnPopupContentWidthPx) sees the real rows
+        // before the tree is populated/layout out.
+        RebuildModel();
 
     // Geometry: a self-sizing Typography Browser driven by the shared
     // AdaptivePopoverGeometry policy (single source of truth). Width follows
@@ -230,6 +233,11 @@ void Writer2027FontPopup::Open(const FontList* pFontList, const OUString& rCurre
     const tools::Long nPopupH = POPUP_GEOMETRY.clampHeight(nContentH, nMinPopupH, nWorkH);
     m_xRows->set_size_request(nPopupWidth, static_cast<int>(nPopupH));
 
+    // spec 5 / remediation phase 1: only now, with the final geometry stored
+    // (mnPopupContentWidthPx non-zero), populate the rows so the row-measure
+    // callback never sees a zero/stale width during first layout.
+    PopulateRows();
+
     tools::Rectangle aRect(Point(0, 0), rAnchorWin.GetSizePixel());
     weld::Window* pParent = weld::GetPopupParent(rAnchorWin, aRect);
     mbOpen = true;
@@ -274,13 +282,25 @@ void Writer2027FontPopup::SetCurrentFamily(const FontList* pFontList,
     RebuildRows();
 }
 
-void Writer2027FontPopup::RebuildRows()
+void Writer2027FontPopup::RebuildModel()
+{
+    if (!m_xRows || !mpFontList)
+        return;
+    // spec 5 / remediation phase 1: model build is separate from tree
+    // population so Open() can compute the final popup geometry (and therefore
+    // mnPopupContentWidthPx, which the row-measure callback consumes during
+    // layout) BEFORE any row is inserted into the tree. Populating rows with a
+    // zero width first is the same category of bug as the old Type System
+    // geometry ordering.
+    mrModel.Rebuild(mpFontList, maCurrentFamily, maQuery);
+    mnHoverIndex = -1;
+}
+
+void Writer2027FontPopup::PopulateRows()
 {
     if (!m_xRows || !mpFontList)
         return;
 
-    mrModel.Rebuild(mpFontList, maCurrentFamily, maQuery);
-    mnHoverIndex = -1;
     const std::vector<FontPickerModel::Row>& rRows = mrModel.GetRows();
 
     // Keep the whole population + selection under mbInternalMove so no
@@ -335,6 +355,12 @@ void Writer2027FontPopup::RebuildRows()
     }
     m_xRows->thaw();
     mbInternalMove = false;
+}
+
+void Writer2027FontPopup::RebuildRows()
+{
+    RebuildModel();
+    PopulateRows();
 }
 
 bool Writer2027FontPopup::IsSelectableRow(const FontPickerModel::Row& rRow) const
@@ -855,13 +881,19 @@ void Writer2027FontPopup::RowRender(vcl::RenderContext& rCtx, const tools::Recta
             {
                 // Specimen box: vertically centered within the row, with
                 // explicit padding so the glyph never touches the row edges.
-                tools::Rectangle aSpecimenRect(
+                const tools::Rectangle aSpecimenRect(
                     rRect.Left() + 4,
                     rRect.Top() + 4,
                     rRect.Left() + ROW_MARGIN + PREVIEW_BLOCK_WIDTH - 4,
                     rRect.Bottom() - 4);
-                // Intersect again with the specimen box: measure and draw are
-                // bound to the intended specimen area (spec 9.3).
+                // Specimen scope: a NESTED clip so the specimen can never leak
+                // into the text band, and — critically — a matching Pop() that
+                // restores the row clip BEFORE the text scope below. Without
+                // the Pop() the active clip stays (row ∩ specimen), and the
+                // later text IntersectClipRegion(aTextBand) becomes
+                // row ∩ specimen ∩ textBand == empty, clipping the family name
+                // and metadata out entirely (the "Aa/Aa/Aa" screenshot).
+                rCtx.Push(vcl::PushFlags::CLIPREGION);
                 rCtx.IntersectClipRegion(aSpecimenRect);
 
                 // Real glyph-bounds fit (spec 9.2): choose a font size whose
@@ -885,6 +917,7 @@ void Writer2027FontPopup::RowRender(vcl::RenderContext& rCtx, const tools::Recta
                         u"Aa"_ustr);
                     rCtx.Pop();
                 }
+                rCtx.Pop(); // pop the specimen clip, restoring the row clip
             }
 
             const tools::Long nTextX = rRect.Left() + ROW_TEXT_START;
