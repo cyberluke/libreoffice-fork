@@ -7,45 +7,42 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 #
 
-# Writer 2027 Typography Browser UI tests (WRITER2027_REMEDIATION_SPEC, spec 19
-# + 33). The custom-rendered font rows must not overlap, the specimen must stay
-# inside its box at 200% DPI, and the popup width must be the Typography Browser
-# band (not a 200 px combo). These target the pinned visual runner / font set
-# (spec 27); the geometry helpers are the domain of the CppUnit golden layer.
+# Writer 2027 Typography Browser UI tests (remediation spec 30).
+#
+# The browser list is a custom drawing surface (Writer2027TypographyList) on a
+# GtkDrawingArea, so the harness verifies open/search/close/reopen behaviour
+# (the paint-level invariants are covered by the golden comparator layer):
+# - open, search, clear search, close, reopen
+# - no crash and a stable popup on repeated open/close
 
 from uitest.framework import UITestCase
 
 
 class Writer2027TypographyBrowser(UITestCase):
 
-    def test_font_browser_opens(self):
-        with self.ui_test.create_doc_in_start_center("writer") as writer_doc:
-            # Open the font-name control and its custom Typography popup.
-            # The control exposes the browser popup as a float window.
-            self.xUITest.executeCommand(".uno:CharFontName")
-            # The popup is a float popover; assert it exists (broad geometry
-            # invariants are covered by the golden comparator layer).
-            try:
-                xPopup = self.xUITest.getFloatWindow()
-                self.assertIsNotNone(xPopup)
-            except Exception:
-                # Some platforms expose the font dropdown without a float
-                # window handle; the acceptance gate is the screenshot golden.
-                pass
+    def _open_font_browser(self):
+        self.xUITest.executeCommand(".uno:CharFontName")
+        return self.xUITest.getFloatWindow()
 
-    def test_search_filters_rows(self):
-        with self.ui_test.create_doc_in_start_center("writer") as writer_doc:
-            self.xUITest.executeCommand(".uno:CharFontName")
-            try:
-                xPopup = self.xUITest.getFloatWindow()
-                xSearch = xPopup.getChild("search")
-                xSearch.executeAction("TYPE", {"TEXT": "Inter"})
-                xRows = xPopup.getChild("rows")
-                # At least one matching row remains; no crash on search rebuild.
-                self.assertGreater(len(xRows.getChildren()), 0)
-            except Exception:
-                # Covered by the golden layer on the pinned runner.
-                pass
+    def test_open_search_clear_close_reopen(self):
+        with self.ui_test.create_doc_in_start_center("writer") as _:
+            xPopup = self._open_font_browser()
+            self.assertIsNotNone(xPopup)
+            xSearch = xPopup.getChild("search")
+            xSearch.executeAction("TYPE", {"TEXT": "Inter"})
+            xSearch.executeAction("TYPE", {"KEYCODE": "ESCAPE"})
+            xPopup.executeAction("TYPE", {"KEYCODE": "ESCAPE"})
+            # Reopen.
+            xPopup2 = self._open_font_browser()
+            self.assertIsNotNone(xPopup2)
+            xPopup2.executeAction("TYPE", {"KEYCODE": "ESCAPE"})
+
+    def test_open_close_loop(self):
+        with self.ui_test.create_doc_in_start_center("writer") as _:
+            for i in range(10):
+                xPopup = self._open_font_browser()
+                self.assertIsNotNone(xPopup)
+                xPopup.executeAction("TYPE", {"KEYCODE": "ESCAPE"})
 
 
 # vim: set shiftwidth=4 softtabstop=4 expandtab:

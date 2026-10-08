@@ -300,6 +300,7 @@ $(eval $(call gb_Module_add_uicheck_targets,sw,\
 	UITest_classification \
 	UITest_writer_macro_tests \
 	UITest_writer_dialogs \
+	UITest_sw_writer2027 \
 ))
 endif
 
