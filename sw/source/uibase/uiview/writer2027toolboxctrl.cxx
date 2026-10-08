@@ -17,22 +17,28 @@
  *   the License at http://www.apache.org/licenses/LICENSE-2.0 .
  */
 
+#include <svtools/popupwindowcontroller.hxx>
 #include <svtools/toolboxcontroller.hxx>
+#include <svtools/toolbarmenu.hxx>
 
-#include <com/sun/star/frame/FeatureStateEvent.hpp>
 #include <com/sun/star/lang/XServiceInfo.hpp>
 #include <com/sun/star/uno/XComponentContext.hpp>
+#include <com/sun/star/frame/XController.hpp>
 
 #include <cppuhelper/implbase.hxx>
 #include <cppuhelper/supportsservice.hxx>
 
+#include <svx/writer2027typesystempopup.hxx>
+#include <svx/writer2027typesystem.hxx>
 #include <svx/writer2027log.hxx>
 
-#include <swmodule.hxx>
-#include <view.hxx>
+#include <comphelper/servicehelper.hxx>
 
 #include <vcl/toolbox.hxx>
 #include <vcl/weld/Toolbar.hxx>
+
+#include <unotxdoc.hxx>
+#include <writer2027typesystem.hxx>
 
 #include <exception>
 
@@ -40,32 +46,19 @@ using namespace com::sun::star;
 
 namespace
 {
-// The Writer 2027 "Type System…" notebookbar button cannot use the normal
-// .uno:Writer2027TypeSystem dispatch path: svidl deliberately omits these
-// slots from the generated Sfx slot pool, so queryDispatch() returns null and
-// the generic toolbar controller silently does nothing (and, before the null
-// guard was added in GenericToolbarController::execute(), crashed with a null
-// deref). This controller bypasses the slot pool entirely and opens the popup
-// directly from the active SwView, exactly like the font dropdown's custom
-// controller (SvxFrameToolBoxControl).
-class Writer2027TypeSystemToolBoxControl_Base
-    : public cppu::ImplInheritanceHelper<svt::ToolboxController, css::lang::XServiceInfo>
-{
-public:
-    explicit Writer2027TypeSystemToolBoxControl_Base(
-        const css::uno::Reference<css::uno::XComponentContext>& rxContext)
-        : ImplInheritanceHelper(rxContext, css::uno::Reference<css::frame::XFrame>(),
-                                u".uno:Writer2027TypeSystem"_ustr)
-    {
-    }
-};
-
-class Writer2027TypeSystemToolBoxControl final : public Writer2027TypeSystemToolBoxControl_Base
+// The Type System button (.uno:Writer2027TypeSystem) has no Sfx slot-pool
+// entry (svidl omits these slots), so the generic dispatch path resolves to a
+// null XDispatch. To make the button work this controller derives from
+// svt::PopupWindowController: the framework owns the anchor and the popup
+// lifecycle, and weldPopupWindow() returns the native WeldToolbarPopup list.
+// The apply binds to THIS controller's frame (never SwModule::GetFirstView).
+class Writer2027TypeSystemToolBoxControl final : public svt::PopupWindowController
 {
 public:
     explicit Writer2027TypeSystemToolBoxControl(
         const css::uno::Reference<css::uno::XComponentContext>& rxContext)
-        : Writer2027TypeSystemToolBoxControl_Base(rxContext)
+        : PopupWindowController(rxContext, css::uno::Reference<css::frame::XFrame>(),
+                                u".uno:Writer2027TypeSystem"_ustr)
     {
     }
 
@@ -85,8 +78,9 @@ public:
         return { u"com.sun.star.frame.ToolbarController"_ustr };
     }
 
-    // XStatusListener: the command has no slot-pool status target, so always
-    // keep the button enabled instead of letting a "not found" state gray it out.
+    using svt::PopupWindowController::initialize;
+
+    // XStatusListener: no slot-pool status target, so keep the button enabled.
     virtual void SAL_CALL statusChanged(const css::frame::FeatureStateEvent& /*rEvent*/) override
     {
         if (m_pToolbar)
@@ -100,60 +94,170 @@ public:
         }
     }
 
-    // XToolbarController::execute - the notebookbar button was clicked.
-    virtual void SAL_CALL execute(sal_Int16 /*KeyModifier*/) override
+    // PopupWindowController
+    virtual void SAL_CALL initialize(const css::uno::Sequence<css::uno::Any>& rArguments) override;
+    virtual void SAL_CALL execute(sal_Int16 nKeyModifier) override;
+    virtual VclPtr<vcl::Window> createVclPopupWindow(vcl::Window* pParent) override;
+    virtual std::unique_ptr<WeldToolbarPopup> weldPopupWindow() override;
+
+private:
+    void ApplyPreset(const OUString& rPresetId);
+    DECL_LINK(OnApply, const OUString&, void);
+};
+
+void SAL_CALL Writer2027TypeSystemToolBoxControl::initialize(
+    const css::uno::Sequence<css::uno::Any>& rArguments)
+{
+    PopupWindowController::initialize(rArguments);
+
+    // The notebookbar hosts the button on a classic VCL SidebarToolBox (not a
+    // weld TransportAsXWindow), so m_pToolbar is null and the popup must use
+    // the InterimToolbarPopup path anchored by the framework. Give the item a
+    // DROPDOWN bit so the dropdown machinery (and our execute() hook below)
+    // both open the popup under the button at any DPI. If we are ever hosted on
+    // a weld toolbar, wire the native popover instead.
+    if (m_pToolbar)
     {
-        try
+        mxPopoverContainer.reset(new ToolbarPopupContainer(m_pToolbar));
+        m_pToolbar->set_item_popover(m_aCommandURL, mxPopoverContainer->getTopLevel());
+        return;
+    }
+
+    ToolBox* pToolBox = nullptr;
+    ToolBoxItemId nId;
+    if (getToolboxId(nId, &pToolBox))
+        pToolBox->SetItemBits(nId, ToolBoxItemBits::DROPDOWN | pToolBox->GetItemBits(nId));
+}
+
+void SAL_CALL Writer2027TypeSystemToolBoxControl::execute(sal_Int16 /*nKeyModifier*/)
+{
+    // .uno:Writer2027TypeSystem has no Sfx slot-pool entry, so the inherited
+    // ToolboxController::execute() would resolve a null XDispatch and do
+    // nothing (the button appears dead). Here the controller IS the supported
+    // toolbar-opening path: pressing the button opens the popup directly.
+    try
+    {
+        createPopupWindow();
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemToolBoxControl::execute", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemToolBoxControl::execute", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027TypeSystemToolBoxControl::execute");
+    }
+}
+
+IMPL_LINK(Writer2027TypeSystemToolBoxControl, OnApply, const OUString&, rPresetId, void)
+{
+    try
+    {
+        ApplyPreset(rPresetId);
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemToolBoxControl::OnApply", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemToolBoxControl::OnApply", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027TypeSystemToolBoxControl::OnApply");
+    }
+    EndPopupMode();
+}
+
+std::unique_ptr<WeldToolbarPopup> Writer2027TypeSystemToolBoxControl::weldPopupWindow()
+{
+    auto xPopup = svx::writer2027::Writer2027TypeSystemPopup::Create(m_pToolbar);
+    xPopup->connect_select(LINK(this, Writer2027TypeSystemToolBoxControl, OnApply));
+
+    // Highlight the preset currently detected in THIS frame's document.
+    try
+    {
+        if (m_xFrame.is())
         {
-            svx::writer2027::Writer2027LogMessage(
-                "Writer2027TypeSystemToolBoxControl::execute", u"button clicked"_ustr);
-            SwView* pView = SwModule::GetFirstView();
-            if (pView)
+            css::uno::Reference<css::frame::XController> xController = m_xFrame->getController();
+            if (xController.is())
             {
-                svx::writer2027::Writer2027LogMessage(
-                    "Writer2027TypeSystemToolBoxControl::execute",
-                    OUString::Concat(u"pView=")
-                        + OUString::number(reinterpret_cast<sal_IntPtr>(pView)));
-
-                // Anchor the popup under the invoking toolbar button, not the
-                // whole document window (which rendered the popup as a sidebar).
-                tools::Rectangle aAnchorRect;
-                ToolBox* pToolBox = nullptr;
-                ToolBoxItemId nId;
-                if (getToolboxId(nId, &pToolBox))
-                    aAnchorRect = pToolBox->GetItemRect(nId);
-                if (aAnchorRect.IsEmpty())
-                    aAnchorRect = tools::Rectangle(
-                        Point(0, 0), pView->GetViewFrame().GetWindow().GetSizePixel());
-
-                pView->OpenWriter2027TypeSystemPopup(aAnchorRect);
-                svx::writer2027::Writer2027LogMessage(
-                    "Writer2027TypeSystemToolBoxControl::execute",
-                    OUString::Concat(u"OpenWriter2027TypeSystemPopup returned, anchor=")
-                        + OUString::number(aAnchorRect.GetWidth()) + u"x"
-                        + OUString::number(aAnchorRect.GetHeight()));
+                SwXTextDocument* pTextDoc
+                    = comphelper::getFromUnoTunnel<SwXTextDocument>(
+                        xController->getModel());
+                if (pTextDoc)
+                {
+                    const FontList* pFontList = nullptr;
+                    SwDoc* pDoc = pTextDoc->GetDocShell() ? pTextDoc->GetDocShell()->GetDoc()
+                                                          : nullptr;
+                    if (pDoc)
+                    {
+                        const OUString aPreset
+                            = sw::writer2027typesystem::DetectCurrentTypeSystem(*pDoc,
+                                                                                 pFontList);
+                        xPopup->SetCurrentPreset(aPreset);
+                    }
+                }
             }
-            else
-                svx::writer2027::Writer2027LogMessage("Writer2027TypeSystemToolBoxControl::execute",
-                                                      u"no active SwView"_ustr);
-        }
-        catch (const css::uno::Exception& rEx)
-        {
-            svx::writer2027::Writer2027LogException("Writer2027TypeSystemToolBoxControl::execute",
-                                                    rEx);
-        }
-        catch (const std::exception& rEx)
-        {
-            svx::writer2027::Writer2027LogException("Writer2027TypeSystemToolBoxControl::execute",
-                                                    rEx);
-        }
-        catch (...)
-        {
-            svx::writer2027::Writer2027LogUnknownException(
-                "Writer2027TypeSystemToolBoxControl::execute");
         }
     }
-};
+    catch (const css::uno::Exception&)
+    {
+        // Non-fatal: the list still shows, just without the highlight.
+    }
+    return xPopup;
+}
+
+VclPtr<vcl::Window> Writer2027TypeSystemToolBoxControl::createVclPopupWindow(vcl::Window* pParent)
+{
+    auto xPopup = svx::writer2027::Writer2027TypeSystemPopup::Create(pParent->GetFrameWeld());
+    xPopup->connect_select(LINK(this, Writer2027TypeSystemToolBoxControl, OnApply));
+    mxInterimPopover = VclPtr<InterimToolbarPopup>::Create(
+        getFrameInterface(), pParent, std::move(xPopup));
+    mxInterimPopover->Show();
+    return mxInterimPopover;
+}
+
+void Writer2027TypeSystemToolBoxControl::ApplyPreset(const OUString& rPresetId)
+{
+    // Bind to the owning frame's document (never SwModule::GetFirstView).
+    if (!m_xFrame.is())
+    {
+        svx::writer2027::Writer2027LogMessage("Writer2027TypeSystemToolBoxControl::ApplyPreset",
+                                              u"no frame"_ustr);
+        return;
+    }
+
+    css::uno::Reference<css::frame::XController> xController = m_xFrame->getController();
+    if (!xController.is())
+        return;
+    SwXTextDocument* pTextDoc = comphelper::getFromUnoTunnel<SwXTextDocument>(
+        xController->getModel());
+    if (!pTextDoc || !pTextDoc->GetDocShell())
+    {
+        svx::writer2027::Writer2027LogMessage("Writer2027TypeSystemToolBoxControl::ApplyPreset",
+                                              u"no writer doc on frame"_ustr);
+        return;
+    }
+
+    const svx::writer2027::Writer2027TypeSystemCatalog& rCatalog
+        = svx::writer2027::Writer2027TypeSystemCatalog::Get();
+    const svx::writer2027::TypeSystemPreset* pPreset = rCatalog.FindPreset(rPresetId);
+    if (!pPreset)
+        return;
+    const svx::writer2027::ResolvedTypeSystem aResolved
+        = svx::writer2027::ResolveTypeSystem(*pPreset, nullptr);
+    SwDoc* pDoc = pTextDoc->GetDocShell()->GetDoc();
+    sw::writer2027typesystem::ApplyTypeSystem(*pDoc, *pPreset, aResolved, nullptr);
+    svx::writer2027::Writer2027LogMessage(
+        "Writer2027TypeSystemToolBoxControl::ApplyPreset",
+        OUString::Concat(u"applied preset id=") + rPresetId);
+}
 
 } // namespace
 

@@ -54,6 +54,48 @@ bool lcl_IsPlainKey(const KeyEvent& rKEvt, sal_uInt16 nCode)
            && !rKeyCode.IsMod3();
 }
 
+// spec 9.2: choose a font size whose actual "Aa" text bounds fit inside the
+// specimen box. Real bounds measurement, scale-down-to-fit, bounded loop.
+tools::Long lcl_FitSpecimenFont(vcl::RenderContext& rCtx, const FontMetric& rMetric,
+                                const tools::Rectangle& rSpecimenRect, vcl::Font& rOutFont)
+{
+    const tools::Long nAvailableW = std::max<tools::Long>(rSpecimenRect.GetWidth(), 1);
+    const tools::Long nAvailableH = std::max<tools::Long>(rSpecimenRect.GetHeight(), 1);
+    double fCandidate = std::max<tools::Long>(nAvailableH * 0.62, 8);
+
+    for (int i = 0; i < 8; ++i)
+    {
+        vcl::Font aFont(rMetric);
+        aFont.SetFontSize(Size(0, static_cast<tools::Long>(fCandidate)));
+        rCtx.Push(vcl::PushFlags::FONT);
+        rCtx.SetFont(aFont);
+        const tools::Long nGlyphW = rCtx.GetTextWidth(u"Aa"_ustr);
+        const tools::Long nGlyphH = rCtx.GetTextHeight();
+        rCtx.Pop();
+
+        if (nGlyphW <= nAvailableW && nGlyphH <= nAvailableH)
+        {
+            rOutFont = aFont;
+            return static_cast<tools::Long>(fCandidate);
+        }
+
+        // Fit to whichever axis is tighter, with a small safety factor so the
+        // final glyph never clips due to rounding (spec 9.2).
+        const double fScaleW = static_cast<double>(nAvailableW) / nGlyphW;
+        const double fScaleH = static_cast<double>(nAvailableH) / nGlyphH;
+        const double fNext = std::floor(fCandidate * std::min(fScaleW, fScaleH) * 0.98);
+        if (fNext >= fCandidate || fNext < 1)
+            break; // no further meaningful shrink
+        fCandidate = fNext;
+    }
+
+    // Minimum-size fallback if nothing above truly fit (keeps the glyph on
+    // screen but never lets it exceed the specimen clip).
+    rOutFont = vcl::Font(rMetric);
+    rOutFont.SetFontSize(Size(0, 10));
+    return 10;
+}
+
 } // namespace
 
 Writer2027FontPopup::Writer2027FontPopup(FontPickerModel& rModel)
@@ -157,6 +199,12 @@ void Writer2027FontPopup::Open(const FontList* pFontList, const OUString& rCurre
     // custom-measure callback), so the popup request stays consistent with the
     // rows the tree actually lays out at any DPI.
     const tools::Long nTextH = std::max<tools::Long>(m_xRows->get_text_height(), 12);
+    // Single source of truth for the row-measure callback: rows must report the
+    // same width the popup actually lays them out at (device px). Without this
+    // a font row reports a stale hard-coded width and the custom-rendered rows
+    // drift from the tree's layout on re-open or at another DPI.
+    mnPopupContentWidthPx
+        = std::max<tools::Long>(nPopupWidth - 2 * ROW_MARGIN, nTextH * 8);
     tools::Long nContentH = 0;
     for (const auto& rRow : mrModel.GetRows())
     {
@@ -646,21 +694,21 @@ IMPL_LINK(Writer2027FontPopup, RowGetSizeHdl, weld::TreeView::get_size_args, aPa
 
     const FontPickerModel::Row* pRow = mrModel.FindRow(aPayload.second);
     if (!pRow)
-        return Size(200, nBaseH * 3);
+        return Size(mnPopupContentWidthPx, nBaseH * 3);
     switch (pRow->meKind)
     {
         case FontPickerModel::RowKind::Header:
-            return Size(200, nBaseH * 2);
+            return Size(mnPopupContentWidthPx, nBaseH * 2);
         case FontPickerModel::RowKind::Font:
             // name line + meta line + specimen + paddings
-            return Size(200, nBaseH * 5);
+            return Size(mnPopupContentWidthPx, nBaseH * 5);
         case FontPickerModel::RowKind::Back:
         case FontPickerModel::RowKind::Category:
         case FontPickerModel::RowKind::Legacy:
         case FontPickerModel::RowKind::NoResults:
-            return Size(200, nBaseH * 3);
+            return Size(mnPopupContentWidthPx, nBaseH * 3);
     }
-    return Size(200, nBaseH * 3);
+    return Size(mnPopupContentWidthPx, nBaseH * 3);
 }
 
 IMPL_LINK(Writer2027FontPopup, RowRenderHdl, weld::TreeView::render_args, aPayload, void)
@@ -791,31 +839,52 @@ void Writer2027FontPopup::RowRender(vcl::RenderContext& rCtx, const tools::Recta
         case FontPickerModel::RowKind::Font:
         {
             // Typography row: reserved specimen block (never under the text),
-            // family label on line 1, metadata (style/mood) on line 2. On
-            // Studio density the row is 72 logical px and the specimen glyph
-            // is deliberately large (≈ half the row height) so each face can
-            // be appreciated — not a small menu icon.
+            // family label on line 1, metadata (style/mood) on line 2.
             FontMetric aMetric;
             bool bPreviewFont = mpFontList && mpFontList->IsAvailable(pRow->maText);
             if (bPreviewFont)
                 aMetric = mpFontList->Get(pRow->maText, WEIGHT_NORMAL, ITALIC_NONE);
 
-            const tools::Long nPreviewCX = rRect.Left() + (PREVIEW_BLOCK_WIDTH + ROW_MARGIN) / 2;
+            // The whole row is hard-clipped first so even a pathological
+            // glyph can never paint into a neighbouring row (spec 9.3). The
+            // specimen uses its own rect with explicit padding.
+            rCtx.Push(vcl::PushFlags::CLIPREGION);
+            rCtx.IntersectClipRegion(aRowRect);
 
             if (bPreviewFont)
             {
-                // Specimen glyph ≈ 46% of the row height (dominant but calm).
-                const size_t nSpecimenH = static_cast<size_t>(rRect.GetHeight() * 0.46);
-                vcl::Font aPreviewFont(aMetric);
-                aPreviewFont.SetFontSize(Size(0, nSpecimenH));
-                rCtx.Push(vcl::PushFlags::FONT | vcl::PushFlags::TEXTCOLOR);
-                rCtx.SetFont(aPreviewFont);
-                rCtx.SetTextColor(aTextColor);
-                rCtx.DrawText(
-                    Point(nPreviewCX - rCtx.GetTextWidth(u"Aa"_ustr) / 2,
-                          rRect.Top() + (rRect.GetHeight() - rCtx.GetTextHeight()) / 2),
-                    u"Aa"_ustr);
-                rCtx.Pop();
+                // Specimen box: vertically centered within the row, with
+                // explicit padding so the glyph never touches the row edges.
+                tools::Rectangle aSpecimenRect(
+                    rRect.Left() + 4,
+                    rRect.Top() + 4,
+                    rRect.Left() + ROW_MARGIN + PREVIEW_BLOCK_WIDTH - 4,
+                    rRect.Bottom() - 4);
+                // Intersect again with the specimen box: measure and draw are
+                // bound to the intended specimen area (spec 9.3).
+                rCtx.IntersectClipRegion(aSpecimenRect);
+
+                // Real glyph-bounds fit (spec 9.2): choose a font size whose
+                // actual "Aa" text bounds fit inside the specimen box, then
+                // draw centred on the box. Never assume nominal font size.
+                vcl::Font aPreviewFont;
+                const size_t nFitH
+                    = lcl_FitSpecimenFont(rCtx, aMetric, aSpecimenRect, aPreviewFont);
+                if (nFitH > 0)
+                {
+                    rCtx.Push(vcl::PushFlags::FONT | vcl::PushFlags::TEXTCOLOR);
+                    rCtx.SetFont(aPreviewFont);
+                    rCtx.SetTextColor(aTextColor);
+                    const tools::Long nGlyphW = rCtx.GetTextWidth(u"Aa"_ustr);
+                    const tools::Long nGlyphH = rCtx.GetTextHeight();
+                    rCtx.DrawText(
+                        Point(aSpecimenRect.Left()
+                                  + (aSpecimenRect.GetWidth() - nGlyphW) / 2,
+                              aSpecimenRect.Top()
+                                  + (aSpecimenRect.GetHeight() - nGlyphH) / 2),
+                        u"Aa"_ustr);
+                    rCtx.Pop();
+                }
             }
 
             const tools::Long nTextX = rRect.Left() + ROW_TEXT_START;
@@ -824,19 +893,24 @@ void Writer2027FontPopup::RowRender(vcl::RenderContext& rCtx, const tools::Recta
                 = rRect.Top() + (rRect.GetHeight() - 2 * nLineH) / 2 - nLineH / 2;
             const tools::Long nL2Top = nL1Top + nLineH + 2;
 
-            rCtx.Push(vcl::PushFlags::TEXTCOLOR | vcl::PushFlags::CLIPREGION);
-            rCtx.SetTextColor(aTextColor);
-            // Clip name + description to the text band: a long description
-            // must ellipsize, never spill past the row edge.
-            rCtx.IntersectClipRegion(
-                tools::Rectangle(Point(nTextX, rRect.Top()), Size(aRowRect.GetWidth() - (nTextX - rRect.Left()) - ROW_MARGIN, rRect.GetHeight())));
-            rCtx.DrawText(Point(nTextX, nL1Top), pRow->maText);
-            if (!pRow->maMeta.isEmpty())
+            // Text band (name + metadata) clipped to the right portion of the
+            // row so long descriptions ellipsize instead of overflowing.
             {
-                rCtx.SetTextColor(aMutedColor);
-                rCtx.DrawText(Point(nTextX, nL2Top), pRow->maMeta);
+                rCtx.Push(vcl::PushFlags::TEXTCOLOR | vcl::PushFlags::CLIPREGION);
+                rCtx.SetTextColor(aTextColor);
+                rCtx.IntersectClipRegion(tools::Rectangle(
+                    Point(nTextX, rRect.Top()),
+                    Size(aRowRect.GetWidth() - (nTextX - rRect.Left()) - ROW_MARGIN,
+                         rRect.GetHeight())));
+                rCtx.DrawText(Point(nTextX, nL1Top), pRow->maText);
+                if (!pRow->maMeta.isEmpty())
+                {
+                    rCtx.SetTextColor(aMutedColor);
+                    rCtx.DrawText(Point(nTextX, nL2Top), pRow->maMeta);
+                }
+                rCtx.Pop();
             }
-            rCtx.Pop();
+            rCtx.Pop(); // pop the row clip
             break;
         }
     }

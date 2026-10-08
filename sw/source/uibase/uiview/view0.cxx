@@ -554,15 +554,6 @@ case FN_WRITER2027_STORY:
         bApplyPageWidthZoom = true;
         break;
 
-    case FN_WRITER2027_TYPE_SYSTEM:
-        // Type System picker: a document-formatting operation (explicit user
-        // action only). The popup is pure UI; applying happens through the
-        // canonical Writer style APIs with a grouped undo action. This slot
-        // path has no toolbar button anchor; fall back to the window rect.
-        OpenWriter2027TypeSystemPopup(
-            tools::Rectangle(Point(0, 0), GetViewFrame().GetWindow().GetSizePixel()));
-        break;
-
     case FN_WRITER2027_INSERT_BLOCK:
         // Insert Block gallery: pure UI; insertion happens through the
         // canonical Writer structural APIs with one grouped undo action.
@@ -1064,111 +1055,6 @@ void SwView::ExecNavigatorWin(const SfxRequest& rReq)
         default:
             assert(false && "invalid slot!");
             break;
-    }
-}
-
-void SwView::OpenWriter2027TypeSystemPopup(const tools::Rectangle& rAnchorRect)
-{
-    // Hard SEH access violations are not catchable (the build is /EHsc) and
-    // LO's own UAE filter swallows them without a WER dump; install a
-    // vectored crash capture so a fault inside the popup path still writes a
-    // backtrace to %TEMP%/writer2027_crash.log before the process dies.
-    svx::writer2027::Writer2027InstallCrashCapture();
-
-    try
-    {
-        SwDocShell* pDocShell = GetDocShell();
-        if (!pDocShell || pDocShell->IsReadOnly())
-        {
-            svx::writer2027::Writer2027LogMessage(
-                "OpenWriter2027TypeSystemPopup",
-                OUString::Concat(u"early return: pDocShell=")
-                    + OUString::number(reinterpret_cast<sal_IntPtr>(pDocShell))
-                    + (pDocShell ? (pDocShell->IsReadOnly() ? u" readonly"_ustr : u""_ustr)
-                                 : u" null"_ustr));
-            return;
-        }
-
-        const SvxFontListItem* pFontListItem = pDocShell->GetItem(SID_ATTR_CHAR_FONTLIST);
-        const FontList* pFontList = pFontListItem ? pFontListItem->GetFontList() : nullptr;
-
-        SwDoc* pDoc = pDocShell->GetDoc();
-        if (!pDoc)
-        {
-            svx::writer2027::Writer2027LogMessage("OpenWriter2027TypeSystemPopup",
-                                                  u"no SwDoc available"_ustr);
-            return;
-        }
-        const OUString aCurrentPresetId
-            = sw::writer2027typesystem::DetectCurrentTypeSystem(*pDoc, pFontList);
-
-        if (!m_xWriter2027TypeSystemPopup)
-        {
-            m_xWriter2027TypeSystemPopup.reset(new svx::writer2027::Writer2027TypeSystemPopup());
-            m_xWriter2027TypeSystemPopup->connect_select(
-                LINK(this, SwView, Writer2027TypeSystemSelectHdl));
-        }
-
-        vcl::Window* pAnchor = &GetViewFrame().GetWindow();
-        if (!pAnchor)
-            return;
-        m_xWriter2027TypeSystemPopup->Open(pFontList, aCurrentPresetId, *pAnchor, rAnchorRect);
-    }
-    catch (const css::uno::Exception& rEx)
-    {
-        svx::writer2027::Writer2027LogException("OpenWriter2027TypeSystemPopup", rEx);
-    }
-    catch (const std::exception& rEx)
-    {
-        svx::writer2027::Writer2027LogException("OpenWriter2027TypeSystemPopup", rEx);
-    }
-    catch (...)
-    {
-        svx::writer2027::Writer2027LogUnknownException("OpenWriter2027TypeSystemPopup");
-    }
-}
-
-IMPL_LINK(SwView, Writer2027TypeSystemSelectHdl, const OUString&, rPresetId, void)
-{
-    try
-    {
-        SwDocShell* pDocShell = GetDocShell();
-        if (!pDocShell || pDocShell->IsReadOnly())
-            return;
-
-        const svx::writer2027::TypeSystemPreset* pPreset
-            = svx::writer2027::Writer2027TypeSystemCatalog::Get().FindPreset(rPresetId);
-        if (!pPreset)
-            return;
-
-        const SvxFontListItem* pFontListItem = pDocShell->GetItem(SID_ATTR_CHAR_FONTLIST);
-        const FontList* pFontList = pFontListItem ? pFontListItem->GetFontList() : nullptr;
-
-        SwDoc* pDoc = pDocShell->GetDoc();
-        if (!pDoc)
-        {
-            svx::writer2027::Writer2027LogMessage("Writer2027TypeSystemSelectHdl",
-                                                  u"no SwDoc available"_ustr);
-            return;
-        }
-
-        // One explicit user action -> one grouped undoable style change; the
-        // document is marked modified normally (see ApplyTypeSystem).
-        const svx::writer2027::ResolvedTypeSystem aResolved
-            = svx::writer2027::ResolveTypeSystem(*pPreset, pFontList);
-        sw::writer2027typesystem::ApplyTypeSystem(*pDoc, *pPreset, aResolved, pFontList);
-    }
-    catch (const css::uno::Exception& rEx)
-    {
-        svx::writer2027::Writer2027LogException("Writer2027TypeSystemSelectHdl", rEx);
-    }
-    catch (const std::exception& rEx)
-    {
-        svx::writer2027::Writer2027LogException("Writer2027TypeSystemSelectHdl", rEx);
-    }
-    catch (...)
-    {
-        svx::writer2027::Writer2027LogUnknownException("Writer2027TypeSystemSelectHdl");
     }
 }
 

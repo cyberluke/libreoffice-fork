@@ -12,96 +12,92 @@
 
 #include <svx/svxdllapi.h>
 
+#include <svx/writer2027typesystem.hxx>
+#include <svtools/toolbarmenu.hxx>
 #include <vcl/weld/Builder.hxx>
-#include <vcl/weld/Popover.hxx>
+#include <vcl/weld/Label.hxx>
 #include <vcl/weld/TreeView.hxx>
+#include <tools/link.hxx>
 
 #include <memory>
 #include <vector>
 
-class FontList;
-class vcl::Window;
-namespace svx::writer2027
-{
-struct ResolvedTypeSystem;
-}
-
 namespace svx::writer2027
 {
 
-/** Writer 2027 Type System picker popup.
+/** One preset row in the Writer 2027 Type System picker (spec 4.1).
 
-    A weld::Popover with a custom-rendered card list: one card per curated
-    preset showing the preset name, a heading/body pairing sample in the
-    resolved installed families, the "Family + Family" pairing line and, when
-    fonts are missing, an explicit "N fonts missing / Using: ..." block.
+    Pure model data: built once per open, before any geometry or widget
+    population, with the resolved semantic roles stored explicitly so the UI
+    never re-resolves fonts during paint/layout.
+*/
+struct TypeSystemPickerRow
+{
+    OUString maPresetId;
+    OUString maDisplayName;
 
-    Pure UI: hovering never mutates the document. Selecting a preset closes
-    the popup and hands the preset id to the caller, which applies it through
-    the canonical Writer style APIs.
+    OUString maHeadingFamily;
+    OUString maBodyFamily;
+    OUString maMonoFamily;
+    OUString maDisplayFamily;
+
+    int mnMissingCount = 0; // roles whose preferred family is not installed
+    bool mbCurrent = false;
+};
+
+/** Writer 2027 Type System picker content, hosted as a WeldToolbarPopup.
+
+    The framework's PopupWindowController owns the anchor (the invoking toolbar
+    item) and the popup lifecycle, so the picker opens under the button at any
+    DPI rather than as a sidebar (spec 2.1). Content is a native one-line-per-
+    preset list plus a semantic detail pane (Heading / Body / Display / Code /
+    scale / fallback status). Pure UI: selecting a preset closes the popup and
+    hands the preset id to the owner via the select link; nothing is mutated on
+    open or hover.
  */
-class SVXCORE_DLLPUBLIC Writer2027TypeSystemPopup
+class SVXCORE_DLLPUBLIC Writer2027TypeSystemPopup : public WeldToolbarPopup
 {
 public:
-    Writer2027TypeSystemPopup();
-    ~Writer2027TypeSystemPopup();
+    Writer2027TypeSystemPopup(weld::Widget* pParent);
+    ~Writer2027TypeSystemPopup() override;
 
-    /** Open anchored below the given anchor rectangle (the invoking toolbar
-        button, in rAnchorWin's coordinate space). rCurrentPresetId is the
-        preset currently detected in the document (empty = Custom). */
-    void Open(const FontList* pFontList, const OUString& rCurrentPresetId,
-              vcl::Window& rAnchorWin, tools::Rectangle rAnchorRect);
+    /** Return the popup to the owner (PopupWindowController::weldPopupWindow). */
+    static std::unique_ptr<Writer2027TypeSystemPopup> Create(weld::Widget* pParent);
 
-    /** Close the popup if open (no selection made). */
-    void Close();
+    /** Called (by the owner) before showing with the current preset id
+        (empty = custom) so the list highlights it. */
+    void SetCurrentPreset(const OUString& rPresetId);
 
-    bool IsOpen() const { return mbOpen; }
-
-    /** Called when the popup closes for any reason (selection, Escape,
-        outside click). */
-    void connect_closed(const Link<Writer2027TypeSystemPopup&, void>& rLink)
-    {
-        m_aCloseHdl = rLink;
-    }
-
-    /** Called with the preset id when the user picks a preset. The owner
-        applies it through the canonical style path; the popup closes itself
-        right after. */
+    /** Connect the apply handler; receives the preset id on selection. */
     void connect_select(const Link<const OUString&, void>& rLink) { m_aSelectHdl = rLink; }
 
+    // Exposed for tests (geometry invariant checks).
+    const std::vector<TypeSystemPickerRow>& GetModelRows() const { return maModel; }
+
 private:
-    DECL_LINK(TreeKeyHdl, const KeyEvent&, bool);
     DECL_LINK(TreeSelectionHdl, weld::ItemView&, void);
-    DECL_LINK(TreeMousePressHdl, const MouseEvent&, bool);
-    DECL_LINK(RowGetSizeHdl, weld::TreeView::get_size_args, Size);
-    DECL_LINK(RowRenderHdl, weld::TreeView::render_args, void);
-    DECL_LINK(PopupClosedHdl, weld::Popover&, void);
+    DECL_LINK(TreeKeyHdl, const KeyEvent&, bool);
+    DECL_LINK(TreeMouseHdl, const MouseEvent&, bool);
 
-    void RebuildRows();
-    void ApplyPreset(const OUString& rPresetId);
-    void MoveCursor(int nDelta);
-    void SelectRowIndex(int nIndex, bool bScroll);
-    int GetNextSelectableIndex(int nFrom, int nDelta) const;
-    bool IsSelectableIndex(int nIndex) const;
-    void RowRender(vcl::RenderContext& rCtx, const tools::Rectangle& rRect, bool bSelected,
-                   const OUString& rId);
+    void BuildModel();      // spec 4.1: pure data, no tree/geometry
+    void PopulatePresetList(); // spec 4.3: clear + repopulate the tree
+    void UpdateDetailPanel();  // spec 4.3: semantic role text under the list
+    void ApplySelected();
 
-    std::unique_ptr<weld::Builder> m_xBuilder;
-    std::unique_ptr<weld::Popover> m_xPopup;
+    virtual void GrabFocus() override;
+
     std::unique_ptr<weld::TreeView> m_xRows;
+    std::unique_ptr<weld::Label> m_xDetailName;
+    std::unique_ptr<weld::Label> m_xRoleHeading;
+    std::unique_ptr<weld::Label> m_xRoleBody;
+    std::unique_ptr<weld::Label> m_xRoleDisplay;
+    std::unique_ptr<weld::Label> m_xRoleMono;
+    std::unique_ptr<weld::Label> m_xRoleScale;
+    std::unique_ptr<weld::Label> m_xFallbackStatus;
 
-    const FontList* mpFontList = nullptr;
-    OUString maCurrentPresetId;
-    std::vector<OUString> maRowIds; // "custom" (inert) or "p:<preset id>"
-    std::vector<ResolvedTypeSystem> maResolved; // parallel to the catalog
-    int mnLastSelectedIndex = -1;
+    std::vector<TypeSystemPickerRow> maModel;
+    OUString maCurrentPreset; // empty = custom
     bool mbInternalMove = false;
-    bool mbOpen = false;
-    // Content width (device px) the popup is sized to; the custom row-measure
-    // callback returns this as the row width so the text is never clipped to a
-    // narrow default cell (which previously truncated the sample lines).
-    tools::Long mnPopupContentWidth = 0;
-    Link<Writer2027TypeSystemPopup&, void> m_aCloseHdl;
     Link<const OUString&, void> m_aSelectHdl;
 };
 

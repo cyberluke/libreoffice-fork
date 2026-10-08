@@ -204,16 +204,11 @@ class SW_DLLPUBLIC SwView: public SfxViewShell
     std::unique_ptr<SwWrtShell> m_pWrtShell;
     std::unique_ptr<SwViewGlueDocShell> m_xGlueDocShell;
 
-    // Writer 2027 Type System picker (Phase 6): reused across opens.
-    // Public: opened directly by the Writer 2027 toolbar controller, because
-    // the .uno:Writer2027TypeSystem command has no Sfx slot-pool entry (svidl
-    // omits these slots) and therefore never resolves via the normal dispatch.
-public:
-    std::unique_ptr<svx::writer2027::Writer2027TypeSystemPopup> m_xWriter2027TypeSystemPopup;
-    void OpenWriter2027TypeSystemPopup(const tools::Rectangle& rAnchorRect);
-    DECL_LINK(Writer2027TypeSystemSelectHdl, const OUString&, void);
+    // Writer 2027 Type System picker is owned by the notebookbar
+    // PopupWindowController (Writer2027TypeSystemToolBoxControl), which binds
+    // the apply to its own frame. It is no longer hosted by SwView (see
+    // WRITER2027_REMEDIATION_SPEC Phase B).
 
-private:
     // Writer 2027 Editorial Blocks (Phase 7): Insert Block gallery + Document
     // Kit picker, both reused across opens. The active kit is a session-level
     // insertion aid (the document remains authoritative, see §27).

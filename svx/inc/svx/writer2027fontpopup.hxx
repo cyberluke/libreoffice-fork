@@ -18,6 +18,7 @@
 #include <vcl/weld/TreeView.hxx>
 #include <svx/writer2027typography.hxx>
 
+#include <tools/long.hxx>
 #include <memory>
 
 class FontList;
@@ -99,6 +100,12 @@ private:
     void HandleSearchEscape();
     void HandleTreeEscape();
     void RowRender(vcl::RenderContext& rCtx, const tools::Rectangle& rRect, const OUString& rId);
+
+    // Single source of truth for the row width (device px) returned by the
+    // row-measure callback. Populated on open from the same policy band the
+    // tree's layout uses, so a custom-rendered row can never request a width
+    // that disagrees with the popup's own width.
+    tools::Long mnPopupContentWidthPx = 0;
 
     FontPickerModel& mrModel;
     std::unique_ptr<weld::Builder> m_xBuilder;
