@@ -12,11 +12,12 @@
 
 #include <svx/svxdllapi.h>
 
+#include <svx/writer2027typography.hxx>
+#include <svx/writer2027typographylist.hxx>
+
 #include <vcl/weld/Builder.hxx>
 #include <vcl/weld/Entry.hxx>
 #include <vcl/weld/Popover.hxx>
-#include <vcl/weld/TreeView.hxx>
-#include <svx/writer2027typography.hxx>
 
 #include <tools/long.hxx>
 #include <memory>
@@ -30,15 +31,16 @@ namespace svx::writer2027
 /** Writer 2027 premium font picker popup shell.
 
     Replaces the native ComboBox dropdown for the font-name control in Writer
-    documents. The popup owns its own search field and a custom-rendered
-    grouped row list driven by the shared FontPickerModel. Font selection is
-    handed back to the caller, which keeps dispatching through the canonical
-    `.uno:CharFontName` path.
+    documents. The popup owns its own search field and a Writer2027TypographyList
+    (custom drawing surface with explicit row geometry, painting, hit-testing,
+    hover/selection and scrolling — remediation spec 6-13) driven by the shared
+    FontPickerModel. Font selection is handed back to the caller, which keeps
+    dispatching through the canonical `.uno:CharFontName` path.
 
     The popup is a weld::Popover (a VCL DockingWindow in popup mode), the same
-    primitive the WeldToolbarPopup framework uses for toolbar dropdowns, so
-    it works on Windows, GTK and Qt, anchors to the font control, flips above
-    when there is no room below, and clamps to the active monitor's work area.
+    primitive the WeldToolbarPopup framework uses for toolbar dropdowns, so it
+    works on Windows, GTK and Qt, anchors to the font control, flips above when
+    there is no room below, and clamps to the active monitor's work area.
  */
 class SVXCORE_DLLPUBLIC Writer2027FontPopup
 {
@@ -80,48 +82,29 @@ public:
 private:
     DECL_LINK(SearchChangedHdl, weld::TextWidget&, void);
     DECL_LINK(SearchKeyHdl, const KeyEvent&, bool);
-    DECL_LINK(TreeKeyHdl, const KeyEvent&, bool);
-    DECL_LINK(TreeSelectionHdl, weld::ItemView&, void);
-    DECL_LINK(TreeMousePressHdl, const MouseEvent&, bool);
-    DECL_LINK(TreeMouseMoveHdl, const MouseEvent&, bool);
-    DECL_LINK(RowGetSizeHdl, weld::TreeView::get_size_args, Size);
-    DECL_LINK(RowRenderHdl, weld::TreeView::render_args, void);
+    DECL_LINK(ListActivateHdl, const FontPickerModel::Row&, bool);
+    DECL_LINK(ApplyFamily, const OUString&, void);
     DECL_LINK(PopupClosedHdl, weld::Popover&, void);
 
-    void RebuildRows();
-    void RebuildModel();   // model only: mrModel.Rebuild + reset hover state
-    void PopulateRows();   // tree only: populate from the existing model
-    void ActivateRow(const FontPickerModel::Row& rRow);
-    void ApplyFamily(const OUString& rFamily);
-    void MoveCursor(int nDelta);
-    void MoveCursorPage(int nDelta);
-    void MoveCursorHomeOrEnd(bool bHome);
-    int GetNextSelectableIndex(int nFrom, int nDelta) const;
-    bool IsSelectableRow(const FontPickerModel::Row& rRow) const;
-    void SelectRowIndex(int nIndex, bool bScroll);
+    void RebuildModel();       // model only: mrModel.Rebuild + reset list state
+    void RebuildList();        // list: rows + layout + viewport
     void HandleSearchEscape();
-    void HandleTreeEscape();
-    void RowRender(vcl::RenderContext& rCtx, const tools::Rectangle& rRect, const OUString& rId);
 
-    // Single source of truth for the row width (device px) returned by the
-    // row-measure callback. Populated on open from the same policy band the
-    // tree's layout uses, so a custom-rendered row can never request a width
-    // that disagrees with the popup's own width.
+    // Single source of truth for the row width (device px). Populated on open
+    // from the same policy band the list's layout uses, so a custom row can
+    // never request a width that disagrees with the popup's own width.
     tools::Long mnPopupContentWidthPx = 0;
 
     FontPickerModel& mrModel;
     std::unique_ptr<weld::Builder> m_xBuilder;
     std::unique_ptr<weld::Popover> m_xPopup;
     std::unique_ptr<weld::Entry> m_xSearch;
-    std::unique_ptr<weld::TreeView> m_xRows;
+    std::unique_ptr<Writer2027TypographyList> m_xList;
 
     const FontList* mpFontList = nullptr;
     OUString maCurrentFamily;
     OUString maQuery;
-    int mnLastSelectedIndex = -1;
-    int mnHoverIndex = -1; // row under the mouse (for the hover tint)
-    bool mbInternalMove = false; // selection moves done by the popup itself
-    bool mbOpen = false;         // popup currently shown
+    bool mbOpen = false; // popup currently shown
     Link<Writer2027FontPopup&, void> m_aCloseHdl;
     Link<const OUString&, void> m_aSelectHdl;
 };

@@ -440,6 +440,7 @@ $(eval $(call gb_Library_add_exception_objects,svxcore,\
     svx/source/tbxctrls/tbcontrl \
     svx/source/tbxctrls/tbxcolorupdate \
     svx/source/tbxctrls/writer2027typography \
+    svx/source/tbxctrls/writer2027typographylist \
     svx/source/tbxctrls/writer2027fontpopup \
     svx/source/tbxctrls/writer2027typesystem \
     svx/source/tbxctrls/writer2027typesystempopup \
