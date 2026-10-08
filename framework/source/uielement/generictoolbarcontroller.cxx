@@ -153,6 +153,17 @@ void SAL_CALL GenericToolbarController::execute( sal_Int16 KeyModifier )
 
         aCommandURL = m_aCommandURL;
         xDispatch = pIter->second;
+        if ( !xDispatch.is() )
+        {
+            // The listener was registered with a null dispatch target (e.g. a
+            // command that has no dispatch object at the moment). Dispatching
+            // it would crash with a null deref in ExecuteHdl_Impl; mirror the
+            // null check used by svt::ToolboxController::execute.
+            SAL_INFO("framework.uielement",
+                     "GenericToolbarController::execute: no dispatch for "
+                         << m_aCommandURL);
+            return;
+        }
 
         // tdf#138234 If this toolbar is a floating window then
         // clicking on a button probably took the window focus. Let’s
@@ -334,6 +345,13 @@ IMPL_STATIC_LINK( GenericToolbarController, ExecuteHdl_Impl, void*, p, void )
         // Asynchronous execution as this can lead to our own destruction!
         // Framework can recycle our current frame and the layout manager disposes all user interface
         // elements if a component gets detached from its frame!
+        if ( !pExecuteInfo->xDispatch.is() )
+        {
+            // Defensive: a null dispatch target posted earlier would crash
+            // here with a null deref. Never dispatch a null target.
+            delete pExecuteInfo;
+            return;
+        }
         pExecuteInfo->xDispatch->dispatch( pExecuteInfo->aTargetURL, pExecuteInfo->aArgs );
    }
    catch ( const Exception& )

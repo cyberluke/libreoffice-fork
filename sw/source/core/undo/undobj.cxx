@@ -709,6 +709,12 @@ OUString GetUndoComment(SwUndoId eId)
         case SwUndoId::RENAME_TABLE:
             pId = STR_RENAMETABLE_UNDO;
             break;
+        case SwUndoId::WRITER2027_TYPE_SYSTEM:
+            pId = STR_UNDO_WRITER2027_TYPE_SYSTEM;
+            break;
+        case SwUndoId::WRITER2027_BLOCK_INSERT:
+            pId = STR_UNDO_WRITER2027_BLOCK_INSERT;
+            break;
     }
 
     assert(pId);

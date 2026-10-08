@@ -141,8 +141,8 @@ static void lcl_SetDfltBoxAttr( SwFrameFormat& rFormat, sal_uInt8 nId )
     Color aCol = COL_BLACK;
     if (!bHTML)
     {
-        const SwPageDesc& rStdDesc = rFormat.GetDoc().getIDocumentStylePoolAccess()
-                                         .GetPageDescFromPool(SwPoolFormatId::PAGE_STANDARD);
+        const SwPageDesc& rStdDesc = *rFormat.GetDoc().getIDocumentStylePoolAccess()
+                                          .GetPageDescFromPool(SwPoolFormatId::PAGE_STANDARD);
         const SvxBrushItem& rBrush = rStdDesc.GetMaster().GetFormatAttr(RES_BACKGROUND);
         if (rBrush.GetColor() != COL_AUTO && rBrush.GetColor().IsDark())
             aCol = sw::writer2027::Hairline;

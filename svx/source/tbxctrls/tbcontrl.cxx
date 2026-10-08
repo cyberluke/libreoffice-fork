@@ -57,7 +57,7 @@
 #include <toolkit/helper/vclunohelper.hxx>
 #include <sfx2/viewfrm.hxx>
 #include <vcl/image.hxx>
-#include <vcl/rendercontext.hxx>
+#include <vcl/outdev.hxx>
 #include <vcl/svapp.hxx>
 #include <vcl/settings.hxx>
 #include <vcl/virdev.hxx>
@@ -99,6 +99,7 @@
 #include <svx/tbcontrl.hxx>
 #include <svx/writer2027typography.hxx>
 #include <svx/writer2027fontpopup.hxx>
+#include <svx/writer2027log.hxx>
 #include <svx/dialmgr.hxx>
 #include <svx/PaletteManager.hxx>
 #include <memory>
@@ -426,7 +427,7 @@ public:
     void FillModern(const FontList* pList);
     void OpenModernPopup(const OUString& rInitialQuery);
     void CloseModernPopup();
-    void SelectModernFont(const OUString& rFamily);
+    DECL_LINK(SelectModernFont, const OUString&, void);
 
     static bool IsWriterTextDocument(const Reference<XFrame>& rFrame);
 
@@ -2166,7 +2167,22 @@ void SvxFontNameBox_Base::OpenModernPopup(const OUString& rInitialQuery)
         return;
     if (!pFontList)
         lcl_GetDocFontList(&pFontList, *this);
-    mxFontPopup->Open(pFontList, aCurFont.GetFamilyName(), rInitialQuery, *mpAnchorWindow);
+    try
+    {
+        mxFontPopup->Open(pFontList, aCurFont.GetFamilyName(), rInitialQuery, *mpAnchorWindow);
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("SvxFontNameBox_Base::OpenModernPopup", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("SvxFontNameBox_Base::OpenModernPopup", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("SvxFontNameBox_Base::OpenModernPopup");
+    }
 }
 
 void SvxFontNameBox_Base::CloseModernPopup()
@@ -2175,7 +2191,7 @@ void SvxFontNameBox_Base::CloseModernPopup()
         mxFontPopup->Close();
 }
 
-void SvxFontNameBox_Base::SelectModernFont(const OUString& rFamily)
+IMPL_LINK(SvxFontNameBox_Base, SelectModernFont, const OUString&, rFamily, void)
 {
     if (!mbModernPicker || rFamily.isEmpty())
         return;
@@ -2183,10 +2199,28 @@ void SvxFontNameBox_Base::SelectModernFont(const OUString& rFamily)
     // Canonical selection path preserved: put the installed family into the
     // closed control, then dispatch through the classic Select() ->
     // .uno:CharFontName chain. The popup closes itself afterwards.
-    mbInternalUpdate = true;
-    set_active_or_entry_text(rFamily);
-    mbInternalUpdate = false;
-    Select(true);
+    try
+    {
+        mbInternalUpdate = true;
+        set_active_or_entry_text(rFamily);
+        mbInternalUpdate = false;
+        Select(true);
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        mbInternalUpdate = false;
+        svx::writer2027::Writer2027LogException("SvxFontNameBox_Base::SelectModernFont", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        mbInternalUpdate = false;
+        svx::writer2027::Writer2027LogException("SvxFontNameBox_Base::SelectModernFont", rEx);
+    }
+    catch (...)
+    {
+        mbInternalUpdate = false;
+        svx::writer2027::Writer2027LogUnknownException("SvxFontNameBox_Base::SelectModernFont");
+    }
 }
 
 IMPL_LINK(SvxFontNameBox_Base, ModernMousePressHdl, const MouseEvent&, rEvent, bool)
@@ -3678,7 +3712,8 @@ css::uno::Reference<css::awt::XWindow> SvxFontNameToolBoxControl::createItemWind
 
         xItemWindow = css::uno::Reference<css::awt::XWindow>(new weld::TransportAsXWindow(xWidget.get()));
 
-        m_xWeldBox.reset(new SvxFontNameBox_Base(std::move(xWidget), m_xFrame, *this));
+        m_xWeldBox.reset(new SvxFontNameBox_Base(std::move(xWidget), m_xFrame, *this,
+                                                  VCLUnoHelper::GetWindow(rParent)));
         m_pBox = m_xWeldBox.get();
     }
     else

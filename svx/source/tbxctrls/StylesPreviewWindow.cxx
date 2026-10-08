@@ -785,7 +785,7 @@ void StylesPreviewWindow_Impl::dispose()
     InterimItemWindow::dispose();
 }
 
-IMPL_LINK(StylesPreviewWindow_Impl, ParentResizeHdl, const VclWindowEvent&, rEvent, void)
+IMPL_LINK(StylesPreviewWindow_Impl, ParentResizeHdl, VclWindowEvent&, rEvent, void)
 {
     if (rEvent.GetId() == VclEventId::WindowResize)
         FitToParent();

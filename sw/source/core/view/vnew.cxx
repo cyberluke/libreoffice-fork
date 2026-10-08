@@ -31,6 +31,7 @@
 #include <IDocumentState.hxx>
 #include <docsh.hxx>
 #include <viewsh.hxx>
+#include <writer2027view.hxx>
 #include <rootfrm.hxx>
 #include <viewimp.hxx>
 #include <viewopt.hxx>
@@ -310,6 +311,13 @@ SwViewShell::~SwViewShell()
     }
 
     mpAccOptions.reset();
+
+    // Writer 2027 digital canvas: remember whether the document carries the
+    // digital page background. The document never changes for a shell, so the
+    // doc part is cached here; the theme part is evaluated live at paint time
+    // (see SwViewShellImp::GetRetoucheColor).
+    if (Imp())
+        Imp()->m_bWriter2027DarkDocument = sw::writer2027view::IsWriter2027DarkDocument(*mxDoc);
 }
 
 bool SwViewShell::HasDrawView() const

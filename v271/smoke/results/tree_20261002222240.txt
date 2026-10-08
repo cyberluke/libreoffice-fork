@@ -1,0 +1,7 @@
+== profile not ready; running --terminate_after_init setup ==
+setup exit code: 0
+profile ready
+== launching soffice.bin (scenario: tree) ==
+launcher pid: 5580
+RESULT: ERROR
+DETAIL: main window never appeared (300s)

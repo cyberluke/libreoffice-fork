@@ -48,6 +48,7 @@
 #include <fmtpdsc.hxx>
 #include <PostItMgr.hxx>
 #include <vprint.hxx>
+#include <writer2027view.hxx>
 
 using namespace ::com::sun::star;
 
@@ -661,12 +662,22 @@ SwDrawViewSave::~SwDrawViewSave()
 // OD 09.01.2003 #i6467# - method also called for page preview
 void SwViewShell::PrepareForPrint( const SwPrintData &rOptions, bool bIsPDFExport )
  {
+    // Writer 2027 output intent (Phase 5): Print Friendly is a rendering
+    // transform, so it is only effective for actual Writer 2027 dark
+    // documents (canonical predicate) — imported/classic documents keep
+    // their existing behavior even if a job carries the flag.
+    const bool bWriter2027PrintFriendly = rOptions.m_bWriter2027PrintFriendly
+        && sw::writer2027view::IsWriter2027DarkDocument(*GetDoc());
+    mpOpt->SetWriter2027PrintFriendly( bWriter2027PrintFriendly );
+
     mpOpt->SetGraphic  ( rOptions.m_bPrintGraphic );
     mpOpt->SetDraw     ( rOptions.m_bPrintGraphic );
     mpOpt->SetControl  ( rOptions.m_bPrintControl );
     mpOpt->SetPageBack ( rOptions.m_bPrintPageBackground );
-    // Font should not be black if it's a PDF Export
-    mpOpt->SetBlackFont( rOptions.m_bPrintBlackFont && !bIsPDFExport );
+    // Font should not be black if it's a PDF Export. The Writer 2027 Print
+    // Friendly transform owns the text colors (palette-aware, keeps link
+    // semantics), so the legacy all-black toggle is not applied on top.
+    mpOpt->SetBlackFont( rOptions.m_bPrintBlackFont && !bIsPDFExport && !bWriter2027PrintFriendly );
 
     if ( !HasDrawView() )
         return;

@@ -124,8 +124,8 @@ void ApplyDigitalDocumentDefaults(SwDoc& rDoc)
     // same pattern DocumentStylePoolManager::CreatePageDesc uses when it
     // puts attributes on a page description.
     const SvxBrushItem aDigitalPage(sw::writer2027::PageBackground, RES_BACKGROUND);
-    SwPageDesc& rStdDesc = rDoc.getIDocumentStylePoolAccess()
-                               .GetPageDescFromPool(SwPoolFormatId::PAGE_STANDARD);
+SwPageDesc& rStdDesc = *rDoc.getIDocumentStylePoolAccess()
+                            .GetPageDescFromPool(SwPoolFormatId::PAGE_STANDARD);
     rStdDesc.GetMaster().SetFormatAttr(aDigitalPage);
     rStdDesc.GetLeft().SetFormatAttr(aDigitalPage);
     rStdDesc.GetFirstMaster().SetFormatAttr(aDigitalPage);

@@ -30,6 +30,8 @@
 #include <utility>
 #include <memory>
 
+#include <writer2027view.hxx>
+
 class SwDoc;
 class SwDocShell;
 class SetGetExpFields;
@@ -65,6 +67,10 @@ public:
              /// Print empty pages
              m_bPrintEmptyPages;
 
+    /// Writer 2027 output intent for this job (Phase 5): true = Print Friendly.
+    /// Job-local only; never serialized into the document.
+    bool m_bWriter2027PrintFriendly;
+
     SwPostItMode    m_nPrintPostIts;
     OUString       m_sFaxName;
 
@@ -84,7 +90,8 @@ public:
         m_bPrintProspectRTL       =
         m_bPrintBlackFont         =
         m_bPrintHiddenText        =
-        m_bPrintTextPlaceholder   = false;
+        m_bPrintTextPlaceholder   =
+        m_bWriter2027PrintFriendly = false;
 
         m_nPrintPostIts           = SwPostItMode::NONE;
     }
@@ -112,7 +119,8 @@ public:
         m_nPrintPostIts       ==   rData.m_nPrintPostIts        &&
         m_sFaxName            ==   rData.m_sFaxName             &&
         m_bPrintHiddenText    ==   rData.m_bPrintHiddenText     &&
-        m_bPrintTextPlaceholder   ==   rData.m_bPrintTextPlaceholder;
+        m_bPrintTextPlaceholder   ==   rData.m_bPrintTextPlaceholder &&
+        m_bWriter2027PrintFriendly == rData.m_bWriter2027PrintFriendly;
     }
 
     /** Note: in the context where this class is used the pointers should always be valid
@@ -134,6 +142,7 @@ public:
     const OUString& GetFaxName() const      { return m_sFaxName; }
     bool IsPrintHiddenText() const          { return m_bPrintHiddenText; }
     bool IsPrintTextPlaceholder() const     { return m_bPrintTextPlaceholder; }
+    bool IsWriter2027PrintFriendly() const  { return m_bWriter2027PrintFriendly; }
 
     void SetPrintGraphic( bool b )              { doSetModified(); m_bPrintGraphic = b; }
     void SetPrintControl( bool b )              { doSetModified(); m_bPrintControl = b; }
@@ -149,6 +158,7 @@ public:
     void SetFaxName( const OUString& rSet )     { m_sFaxName = rSet; }
     void SetPrintHiddenText( bool b )           { doSetModified(); m_bPrintHiddenText = b; }
     void SetPrintTextPlaceholder( bool b )      { doSetModified(); m_bPrintTextPlaceholder = b; }
+    void SetWriter2027PrintFriendly( bool b )   { m_bWriter2027PrintFriendly = b; }
 
     virtual void doSetModified () {}
 };
@@ -157,9 +167,17 @@ class SwPrintUIOptions final : public vcl::PrinterOptionsHelper
 {
     VclPtr< OutputDevice > m_pLast;
     const SwPrintData & m_rDefaultPrintData;
+    /// true when the document is a Writer 2027 dark document (Phase 4 predicate).
+    bool m_bIsWriter2027DarkDocument;
+    /// true when the last processed job properties contained the print-dialog
+    /// output-intent choice ("Writer2027OutputIntent").
+    bool m_bWriter2027OutputIntentExplicit;
+    /// true when the last processed job properties contained the PDF-dialog
+    /// output-intent choice ("Writer2027PDFOutputIntent").
+    bool m_bWriter2027PDFOutputIntentExplicit;
 
 public:
-    SwPrintUIOptions( sal_uInt16 nCurrentPage, bool bWeb, bool bSwSrcView, bool bHasSelection, bool bHasPostIts, const SwPrintData &rDefaultPrintData );
+    SwPrintUIOptions( sal_uInt16 nCurrentPage, bool bWeb, bool bSwSrcView, bool bHasSelection, bool bHasPostIts, const SwPrintData &rDefaultPrintData, bool bIsWriter2027DarkDocument );
     ~SwPrintUIOptions();
 
     bool processPropertiesAndCheckFormat( const css::uno::Sequence< css::beans::PropertyValue >& i_rNewProp );
@@ -173,6 +191,11 @@ public:
     bool IsPrintWithBlackTextColor() const      { return getBoolValue( "PrintBlackFonts",      m_rDefaultPrintData.m_bPrintBlackFont ); }
     SwPostItMode GetPrintPostItsType() const       { return static_cast< SwPostItMode >(getIntValue( "PrintAnnotationMode", static_cast<sal_uInt16>(m_rDefaultPrintData.m_nPrintPostIts) )); }
     bool IsPaperFromSetup() const               { return getBoolValue( "PrintPaperFromSetup",  m_rDefaultPrintData.m_bPaperFromSetup ); }
+
+    /// Output intent for the current job (Phase 5): an explicit user choice in
+    /// the job properties wins, otherwise the deterministic job default
+    /// (see sw::writer2027view::DefaultOutputIntent).
+    bool IsWriter2027PrintFriendly( bool bIsPDFExport ) const;
 
     bool IsPrintLeftPages() const;
     bool IsPrintRightPages() const;
@@ -240,7 +263,7 @@ public:
 
     bool HasSwPrtOptions() const    { return m_pPrtOptions != nullptr; }
     SwPrintData const*  GetSwPrtOptions() const { return m_pPrtOptions.get(); }
-    void MakeSwPrtOptions( SwDocShell const*const pDocShell,
+    void MakeSwPrtOptions( SwDocShell *const pDocShell,
             SwPrintUIOptions const*const pOpt, bool const bIsPDFExport );
 
     typedef std::vector< std::pair< sal_Int32, sal_Int32 > >    PagePairsVec_t;

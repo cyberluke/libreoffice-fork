@@ -113,7 +113,7 @@ void SwRenderData::ViewOptionAdjustCrashPreventionKludge()
 }
 
 void SwRenderData::MakeSwPrtOptions(
-    SwDocShell const*const pDocShell,
+    SwDocShell *const pDocShell,
     SwPrintUIOptions const*const pOpt,
     bool const bIsPDFExport)
 {
@@ -144,6 +144,26 @@ void SwRenderData::MakeSwPrtOptions(
     rOptions.m_bPrintTextPlaceholder  = pOpt->IsPrintTextPlaceholders();
     rOptions.m_nPrintPostIts          = pOpt->GetPrintPostItsType();
 
+    // Writer 2027 output intent (Phase 5).
+    //
+    // The intent is the semantic source of truth for the job: an explicit
+    // dialog choice wins, otherwise the deterministic job default applies
+    // (Print Friendly for physical print of Writer 2027 dark documents,
+    // Digital Appearance everywhere else — in particular for PDF export).
+    const bool bWriter2027Dark = sw::writer2027view::IsWriter2027DarkDocument(*pDocShell->GetDoc());
+    const bool bPrintFriendly  = pOpt->IsWriter2027PrintFriendly( bIsPDFExport );
+    rOptions.m_bWriter2027PrintFriendly = bPrintFriendly;
+
+    // Print Friendly means white paper: suppress the page fill for the job.
+    // Digital Appearance keeps the authored page fill, and for PDF export of
+    // Writer 2027 documents it is restored explicitly, so that a physical
+    // print session can never strip the PDF page background by accident
+    // (the upstream "Print page background" toggle is shared state).
+    if (bPrintFriendly)
+        rOptions.m_bPrintPageBackground = false;
+    else if (bIsPDFExport && bWriter2027Dark)
+        rOptions.m_bPrintPageBackground = true;
+
     //! needs to be set after MakeOptions since the assignment operation in that
     //! function will destroy the pointers
     rOptions.SetRenderData( this );
@@ -155,8 +175,12 @@ SwPrintUIOptions::SwPrintUIOptions(
     bool bSwSrcView,
     bool bHasSelection,
     bool bHasPostIts,
-    const SwPrintData &rDefaultPrintData ) :
-    m_rDefaultPrintData( rDefaultPrintData )
+    const SwPrintData &rDefaultPrintData,
+    bool bIsWriter2027DarkDocument ) :
+    m_rDefaultPrintData( rDefaultPrintData ),
+    m_bIsWriter2027DarkDocument( bIsWriter2027DarkDocument ),
+    m_bWriter2027OutputIntentExplicit( false ),
+    m_bWriter2027PDFOutputIntentExplicit( false )
 {
     // printing HTML sources does not have any valid UI options.
     // It's just the source code that gets printed...
@@ -172,7 +196,10 @@ SwPrintUIOptions::SwPrintUIOptions(
     // create sequence of print UI options
     // (5 options are not available for Writer-Web)
     const int nRTLOpts = bRTL ? 1 : 0;
-    const int nNumProps = nRTLOpts + (bWeb ? 15 : 19);
+    // Writer 2027 dark documents get an extra "Appearance" (output intent)
+    // subgroup plus its radio group.
+    const int nWriter2027Opts = bIsWriter2027DarkDocument ? 2 : 0;
+    const int nNumProps = nRTLOpts + (bWeb ? 15 : 19) + nWriter2027Opts;
     m_aUIProperties.resize( nNumProps);
     int nIdx = 0;
 
@@ -235,6 +262,27 @@ SwPrintUIOptions::SwPrintUIOptions(
                                                         u".HelpID:vcl:PrintDialog:PrintBlackFonts:CheckBox"_ustr,
                                                         u"PrintBlackFonts"_ustr,
                                                         bDefaultVal);
+
+    // Writer 2027 output intent (Phase 5): "Appearance" — Print Friendly
+    // (white paper, dark text, reduced ink) vs Digital Appearance (preserve
+    // document colors and page background). Only offered for Writer 2027 dark
+    // documents, where the two intents really differ. The choice is a job
+    // property ("Writer2027OutputIntent"); it is never stored in the document.
+    if (bIsWriter2027DarkDocument)
+    {
+        m_aUIProperties[ nIdx++ ].Value = setSubgroupControlOpt(u"appearance"_ustr, SwResId( STR_PRINTOPTUI_OUTPUT_APPEARANCE), OUString());
+
+        static constexpr OUString aIntentPropertyName( u"Writer2027OutputIntent"_ustr );
+        uno::Sequence< OUString > aIntentChoices{ SwResId( STR_PRINTOPTUI_PRINTFRIENDLY ),
+                                                  SwResId( STR_PRINTOPTUI_DIGITALAPPEARANCE ) };
+        uno::Sequence< OUString > aIntentHelpIds{ u".HelpID:vcl:PrintDialog:Writer2027OutputIntent:RadioButton:0"_ustr,
+                                                  u".HelpID:vcl:PrintDialog:Writer2027OutputIntent:RadioButton:1"_ustr };
+        uno::Sequence< OUString > aIntentWidgetIds{ u"rbOutputPrintFriendly"_ustr, u"rbOutputDigitalAppearance"_ustr };
+        m_aUIProperties[ nIdx++ ].Value = setChoiceRadiosControlOpt(aIntentWidgetIds, OUString(),
+                                                            aIntentHelpIds, aIntentPropertyName,
+                                                            aIntentChoices, 0 /* Print Friendly */,
+                                                            uno::Sequence< sal_Bool >());
+    }
 
     if (!bWeb)
     {
@@ -362,6 +410,24 @@ SwPrintUIOptions::SwPrintUIOptions(
     assert(nIdx == nNumProps);
 }
 
+bool SwPrintUIOptions::IsWriter2027PrintFriendly( bool bIsPDFExport ) const
+{
+    // An explicit dialog choice for the current job wins. The two dialogs use
+    // independent transports, so print and PDF defaults can never bleed into
+    // each other. Without a choice the deterministic job default applies.
+    const bool bExplicit = bIsPDFExport ? m_bWriter2027PDFOutputIntentExplicit
+                                        : m_bWriter2027OutputIntentExplicit;
+    if (bExplicit)
+    {
+        // transport value: 0 = Print Friendly, 1 = Digital Appearance
+        const sal_Int64 nChoice = getIntValue(
+            bIsPDFExport ? u"Writer2027PDFOutputIntent"_ustr : u"Writer2027OutputIntent"_ustr, 1);
+        return nChoice == 0;
+    }
+    return sw::writer2027view::DefaultOutputIntent( bIsPDFExport, m_bIsWriter2027DarkDocument )
+        == sw::writer2027view::WriterOutputIntent::PrintFriendly;
+}
+
 SwPrintUIOptions::~SwPrintUIOptions()
 {
 }
@@ -413,6 +479,22 @@ bool SwPrintUIOptions::IsPrintGraphics() const
 
 bool SwPrintUIOptions::processPropertiesAndCheckFormat( const uno::Sequence< beans::PropertyValue >& i_rNewProp )
 {
+    // track whether the current job carries an explicit output-intent choice.
+    // The print dialog always transports "Writer2027OutputIntent" (initialized
+    // per document type), while the PDF dialog transports
+    // "Writer2027PDFOutputIntent" only when the user touched the Appearance
+    // control — so a physical-print session can never change the PDF default
+    // and vice versa.
+    m_bWriter2027OutputIntentExplicit = false;
+    m_bWriter2027PDFOutputIntentExplicit = false;
+    for (const auto& rProp : i_rNewProp)
+    {
+        if (rProp.Name == "Writer2027OutputIntent")
+            m_bWriter2027OutputIntentExplicit = true;
+        else if (rProp.Name == "Writer2027PDFOutputIntent")
+            m_bWriter2027PDFOutputIntentExplicit = true;
+    }
+
     bool bChanged = processProperties( i_rNewProp );
 
     uno::Reference< awt::XDevice >  xRenderDevice;

@@ -28,6 +28,23 @@
 #include <unotools/lingucfg.hxx>
 #include <officecfg/Office/Common.hxx>
 #include <viewopt.hxx>
+#include <writer2027view.hxx>
+#include <writer2027typesystem.hxx>
+#include <writer2027blocks.hxx>
+#include <writer2027web.hxx>
+#include <writer2027publishdialog.hxx>
+#include <svx/writer2027typesystem.hxx>
+#include <svx/writer2027typesystempopup.hxx>
+#include <svx/writer2027blocks.hxx>
+#include <svx/writer2027blockgallerypopup.hxx>
+#include <svx/writer2027documentkitpopup.hxx>
+#include <svx/writer2027log.hxx>
+#include <svx/dialmgr.hxx>
+#include <svx/strings.hrc>
+#include <vcl/svapp.hxx>
+#include <vcl/weld/MessageDialog.hxx>
+#include <editeng/editids.hrc>
+#include <editeng/flstitem.hxx>
 #include <globals.h>
 #include <sfx2/infobar.hxx>
 #include <sfx2/lokhelper.hxx>
@@ -260,6 +277,12 @@ void SwView::StateViewOptions(SfxItemSet &rSet)
                 aBool.SetValue( bState );
             }
             break;
+            case FN_WRITER2027_STORY:
+                // Story mode is active while the continuous draft view is in
+                // effect and the rulers are hidden.
+                aBool.SetValue( sw::writer2027view::GetCurrentAuthoringMode(GetWrtShell())
+                                == sw::writer2027view::AuthoringMode::Story );
+                break;
             case FN_VIEW_BOUNDARIES:
                 aBool.SetValue( pOpt->IsShowBoundaries()); break;
             case FN_VIEW_BOUNDS:
@@ -421,6 +444,7 @@ void SwView::ExecViewOptions(SfxRequest &rReq)
     bool bBrowseModeChanged = false;
     bool bDraftViewChanged = false;
     bool bIsHideWhiteSpaceMode = false;
+    bool bApplyPageWidthZoom = false;
 
     const SfxItemSet *pArgs = rReq.GetArgs();
     sal_uInt16 nSlot = rReq.GetSlot();
@@ -513,6 +537,48 @@ void SwView::ExecViewOptions(SfxRequest &rReq)
         bDraftViewChanged = !pOpt->getDraftView();
         pOpt->setBrowseMode( true );
         pOpt->setDraftView( true );
+        break;
+
+case FN_WRITER2027_STORY:
+        // Story mode: continuous, chrome-reduced authoring view of the SAME
+        // document (draft layout + hidden rulers + page-width fit). View-only:
+        // no content mutation, no undo entries, no document persistence of
+        // its own (it rides on the existing view-option machinery).
+        bBrowseModeChanged = pOpt->getBrowseMode();
+        bDraftViewChanged = !pOpt->getDraftView();
+        pOpt->setBrowseMode( true );
+        pOpt->setDraftView( true );
+        pOpt->SetViewAnyRuler( false );
+        pOpt->SetViewLayoutColumns( 1 );
+        pOpt->SetViewLayoutBookMode( false );
+        bApplyPageWidthZoom = true;
+        break;
+
+    case FN_WRITER2027_TYPE_SYSTEM:
+        // Type System picker: a document-formatting operation (explicit user
+        // action only). The popup is pure UI; applying happens through the
+        // canonical Writer style APIs with a grouped undo action. This slot
+        // path has no toolbar button anchor; fall back to the window rect.
+        OpenWriter2027TypeSystemPopup(
+            tools::Rectangle(Point(0, 0), GetViewFrame().GetWindow().GetSizePixel()));
+        break;
+
+    case FN_WRITER2027_INSERT_BLOCK:
+        // Insert Block gallery: pure UI; insertion happens through the
+        // canonical Writer structural APIs with one grouped undo action.
+        OpenWriter2027BlockGalleryPopup();
+        break;
+
+    case FN_WRITER2027_DOCUMENT_KIT:
+        // Document Kit picker: pure UI; applying happens through the
+        // canonical Type System + block paths.
+        OpenWriter2027DocumentKitPopup();
+        break;
+
+    case FN_WRITER2027_PUBLISH_WEB:
+        // Publish as Web: read-only export to a responsive semantic web
+        // publication. Never mutates the document.
+        PublishWeb();
         break;
 
     case SID_TOGGLE_NOTES:
@@ -933,6 +999,10 @@ void SwView::ExecViewOptions(SfxRequest &rReq)
         CalcVisArea( GetEditWin().GetOutputSizePixel() );
     rSh.LockView( bLockedView );
 
+    // Story mode: fit the writing column to the window width (view-only).
+    if (bApplyPageWidthZoom)
+        SetZoom(SvxZoomType::PAGEWIDTH, 0);
+
     pOpt.reset();
     Invalidate(rReq.GetSlot());
     if(!pArgs)
@@ -995,6 +1065,296 @@ void SwView::ExecNavigatorWin(const SfxRequest& rReq)
             assert(false && "invalid slot!");
             break;
     }
+}
+
+void SwView::OpenWriter2027TypeSystemPopup(const tools::Rectangle& rAnchorRect)
+{
+    // Hard SEH access violations are not catchable (the build is /EHsc) and
+    // LO's own UAE filter swallows them without a WER dump; install a
+    // vectored crash capture so a fault inside the popup path still writes a
+    // backtrace to %TEMP%/writer2027_crash.log before the process dies.
+    svx::writer2027::Writer2027InstallCrashCapture();
+
+    try
+    {
+        SwDocShell* pDocShell = GetDocShell();
+        if (!pDocShell || pDocShell->IsReadOnly())
+        {
+            svx::writer2027::Writer2027LogMessage(
+                "OpenWriter2027TypeSystemPopup",
+                OUString::Concat(u"early return: pDocShell=")
+                    + OUString::number(reinterpret_cast<sal_IntPtr>(pDocShell))
+                    + (pDocShell ? (pDocShell->IsReadOnly() ? u" readonly"_ustr : u""_ustr)
+                                 : u" null"_ustr));
+            return;
+        }
+
+        const SvxFontListItem* pFontListItem = pDocShell->GetItem(SID_ATTR_CHAR_FONTLIST);
+        const FontList* pFontList = pFontListItem ? pFontListItem->GetFontList() : nullptr;
+
+        SwDoc* pDoc = pDocShell->GetDoc();
+        if (!pDoc)
+        {
+            svx::writer2027::Writer2027LogMessage("OpenWriter2027TypeSystemPopup",
+                                                  u"no SwDoc available"_ustr);
+            return;
+        }
+        const OUString aCurrentPresetId
+            = sw::writer2027typesystem::DetectCurrentTypeSystem(*pDoc, pFontList);
+
+        if (!m_xWriter2027TypeSystemPopup)
+        {
+            m_xWriter2027TypeSystemPopup.reset(new svx::writer2027::Writer2027TypeSystemPopup());
+            m_xWriter2027TypeSystemPopup->connect_select(
+                LINK(this, SwView, Writer2027TypeSystemSelectHdl));
+        }
+
+        vcl::Window* pAnchor = &GetViewFrame().GetWindow();
+        if (!pAnchor)
+            return;
+        m_xWriter2027TypeSystemPopup->Open(pFontList, aCurrentPresetId, *pAnchor, rAnchorRect);
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("OpenWriter2027TypeSystemPopup", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("OpenWriter2027TypeSystemPopup", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("OpenWriter2027TypeSystemPopup");
+    }
+}
+
+IMPL_LINK(SwView, Writer2027TypeSystemSelectHdl, const OUString&, rPresetId, void)
+{
+    try
+    {
+        SwDocShell* pDocShell = GetDocShell();
+        if (!pDocShell || pDocShell->IsReadOnly())
+            return;
+
+        const svx::writer2027::TypeSystemPreset* pPreset
+            = svx::writer2027::Writer2027TypeSystemCatalog::Get().FindPreset(rPresetId);
+        if (!pPreset)
+            return;
+
+        const SvxFontListItem* pFontListItem = pDocShell->GetItem(SID_ATTR_CHAR_FONTLIST);
+        const FontList* pFontList = pFontListItem ? pFontListItem->GetFontList() : nullptr;
+
+        SwDoc* pDoc = pDocShell->GetDoc();
+        if (!pDoc)
+        {
+            svx::writer2027::Writer2027LogMessage("Writer2027TypeSystemSelectHdl",
+                                                  u"no SwDoc available"_ustr);
+            return;
+        }
+
+        // One explicit user action -> one grouped undoable style change; the
+        // document is marked modified normally (see ApplyTypeSystem).
+        const svx::writer2027::ResolvedTypeSystem aResolved
+            = svx::writer2027::ResolveTypeSystem(*pPreset, pFontList);
+        sw::writer2027typesystem::ApplyTypeSystem(*pDoc, *pPreset, aResolved, pFontList);
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemSelectHdl", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemSelectHdl", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027TypeSystemSelectHdl");
+    }
+}
+
+void SwView::OpenWriter2027BlockGalleryPopup()
+{
+    try
+    {
+        SwDocShell* pDocShell = GetDocShell();
+        if (!pDocShell || pDocShell->IsReadOnly())
+            return;
+
+        if (!m_xWriter2027BlockGalleryPopup)
+        {
+            m_xWriter2027BlockGalleryPopup.reset(new svx::writer2027::Writer2027BlockGalleryPopup());
+            m_xWriter2027BlockGalleryPopup->connect_select(
+                LINK(this, SwView, Writer2027BlockSelectHdl));
+        }
+
+        vcl::Window* pAnchor = &GetViewFrame().GetWindow();
+        if (!pAnchor)
+            return;
+        m_xWriter2027BlockGalleryPopup->Open(m_aActiveKitId, *pAnchor);
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("OpenWriter2027BlockGalleryPopup", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("OpenWriter2027BlockGalleryPopup", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("OpenWriter2027BlockGalleryPopup");
+    }
+}
+
+IMPL_LINK(SwView, Writer2027BlockSelectHdl, const OUString&, rBlockId, void)
+{
+    try
+    {
+        SwDocShell* pDocShell = GetDocShell();
+        if (!pDocShell || pDocShell->IsReadOnly())
+            return;
+
+        const svx::writer2027::EditorialBlockDefinition* pBlock
+            = svx::writer2027::Writer2027EditorialBlockCatalog::Get().FindBlock(rBlockId);
+        if (!pBlock)
+            return;
+
+        // One explicit user action -> one grouped undoable block insertion; the
+        // caret lands in the block's primary editable field (see
+        // sw::writer2027blocks::InsertEditorialBlock).
+        sw::writer2027blocks::InsertEditorialBlock(GetWrtShell(), *pBlock, nullptr);
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027BlockSelectHdl", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027BlockSelectHdl", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027BlockSelectHdl");
+    }
+}
+
+void SwView::OpenWriter2027DocumentKitPopup()
+{
+    try
+    {
+        SwDocShell* pDocShell = GetDocShell();
+        if (!pDocShell || pDocShell->IsReadOnly())
+            return;
+
+        if (!m_xWriter2027DocumentKitPopup)
+        {
+            m_xWriter2027DocumentKitPopup.reset(new svx::writer2027::Writer2027DocumentKitPopup());
+            m_xWriter2027DocumentKitPopup->connect_select(LINK(this, SwView, Writer2027KitSelectHdl));
+        }
+
+        vcl::Window* pAnchor = &GetViewFrame().GetWindow();
+        if (!pAnchor)
+            return;
+        m_xWriter2027DocumentKitPopup->Open(*pAnchor);
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("OpenWriter2027DocumentKitPopup", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("OpenWriter2027DocumentKitPopup", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("OpenWriter2027DocumentKitPopup");
+    }
+}
+
+IMPL_LINK(SwView, Writer2027KitSelectHdl, const OUString&, rKitId, void)
+{
+    try
+    {
+        SwDocShell* pDocShell = GetDocShell();
+        if (!pDocShell || pDocShell->IsReadOnly())
+            return;
+
+        const svx::writer2027::DocumentKit* pKit
+            = svx::writer2027::Writer2027DocumentKitCatalog::Get().FindKit(rKitId);
+        if (!pKit)
+            return;
+
+        // The kit is a session-level insertion aid; the document remains the
+        // source of truth (§27). Remember it so the block gallery can order its
+        // Recommended group, and offer the kit's recommended Type System.
+        m_aActiveKitId = rKitId;
+
+        if (!pKit->maTypeSystemId.isEmpty())
+        {
+            const svx::writer2027::TypeSystemPreset* pPreset
+                = svx::writer2027::Writer2027TypeSystemCatalog::Get().FindPreset(
+                    pKit->maTypeSystemId);
+            if (pPreset)
+            {
+                const SvxFontListItem* pFontListItem = pDocShell->GetItem(SID_ATTR_CHAR_FONTLIST);
+                const FontList* pFontList = pFontListItem ? pFontListItem->GetFontList() : nullptr;
+                const OUString aCurrent
+                    = sw::writer2027typesystem::DetectCurrentTypeSystem(*pDocShell->GetDoc(),
+                                                                        pFontList);
+                if (aCurrent != pKit->maTypeSystemId && AskApplyRecommendedTypeSystem(*pKit))
+                {
+                    const svx::writer2027::ResolvedTypeSystem aResolved
+                        = svx::writer2027::ResolveTypeSystem(*pPreset, pFontList);
+                    sw::writer2027typesystem::ApplyTypeSystem(*pDocShell->GetDoc(), *pPreset,
+                                                              aResolved, pFontList);
+                }
+            }
+        }
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027KitSelectHdl", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027KitSelectHdl", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027KitSelectHdl");
+    }
+}
+
+bool SwView::AskApplyRecommendedTypeSystem(const svx::writer2027::DocumentKit& rKit)
+{
+    OUString aTypeSystemName;
+    if (const svx::writer2027::TypeSystemPreset* pTypeSystem
+        = svx::writer2027::Writer2027TypeSystemCatalog::Get().FindPreset(rKit.maTypeSystemId))
+        aTypeSystemName = SvxResId(pTypeSystem->maNameResId);
+
+    OUString aQuestion = SvxResId(STR_WRITER2027_KIT_APPLY_QUESTION);
+    aQuestion = aQuestion.replaceFirst(u"%1"_ustr, aTypeSystemName);
+
+    std::unique_ptr<weld::MessageDialog> xQuery(Application::CreateMessageDialog(
+        GetEditWin().GetFrameWeld(), VclMessageType::Question, VclButtonsType::NONE, aQuestion));
+    xQuery->set_title(SvxResId(STR_WRITER2027_KIT_APPLY_TITLE));
+    xQuery->set_default_response(1);
+    xQuery->add_button(SvxResId(STR_WRITER2027_KIT_APPLY_TYPOGRAPHY), 1);
+    xQuery->add_button(SvxResId(STR_WRITER2027_KIT_KEEP_TYPOGRAPHY), 0);
+    return xQuery->run() == 1;
+}
+
+void SwView::PublishWeb()
+{
+    SwDocShell* pDocShell = GetDocShell();
+    if (!pDocShell)
+        return;
+
+    // Publishing is read-only: no content/style mutation, no modified flag,
+    // no undo entry. The export consumes the current Writer document model.
+    sw::writer2027web::WebPublishOptions aOptions;
+    sw::writer2027publish::Writer2027PublishDialog aDialog;
+    aDialog.Run(*pDocShell->GetDoc(), aOptions);
 }
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

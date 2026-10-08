@@ -188,7 +188,9 @@ enum class SwUndoId
     COPY_HEADER_FOOTER = 155,
     SORT_CHAPTERS = 156,
     UNFLOAT_FRAME_CONTENT = 157,
-    RENAME_TABLE = 158
+    RENAME_TABLE = 158,
+    WRITER2027_TYPE_SYSTEM = 159, // Phase 6: applying a Type System preset
+    WRITER2027_BLOCK_INSERT = 160 // Phase 7: inserting one editorial block
 };
 
 OUString GetUndoComment(SwUndoId eId);

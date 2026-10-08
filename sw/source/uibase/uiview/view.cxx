@@ -120,6 +120,17 @@
 #include <svx/sdr/overlay/overlaymanager.hxx>
 #include <svx/sdrpaintwindow.hxx>
 #include <svx/svdview.hxx>
+#include <svx/writer2027typesystempopup.hxx>
+#include <svx/writer2027blockgallerypopup.hxx>
+#include <svx/writer2027documentkitpopup.hxx>
+#include <svx/writer2027fontpopup.hxx>
+#include <writer2027view.hxx>
+#include <writer2027.hxx>
+
+#include <IDocumentStylePoolAccess.hxx>
+#include <pagedesc.hxx>
+#include <poolfmt.hxx>
+#include <vcl/svapp.hxx>
 #include <node2lay.hxx>
 #include <cntfrm.hxx>
 #include <IDocumentRedlineAccess.hxx>
@@ -918,6 +929,32 @@ SwView::SwView(SfxViewFrame& _rFrame, SfxViewShell* pOldSh)
             aUsrPref.SetZoomType( SvxZoomType::WHOLEPAGE );
             aUsrPref.SetViewLayoutBookMode( false );
             aUsrPref.SetViewLayoutColumns( 1 );
+        }
+        // Writer 2027 adaptive authoring optics: on a new Writer 2027 document
+        // with no stored user zoom, derive the initial authoring zoom from
+        // page/stage geometry + display scale so body type reads substantially
+        // larger on 4K. This is view optics only (never touches document
+        // metrics) and is a default: the user's own zoom always wins.
+        else if (pUsrPref->IsDefaultZoom() && !aUsrPref.getBrowseMode()
+                 && sw::writer2027view::IsWriter2027CanvasActive(rDoc))
+        {
+            const SwPageDesc* pPageDesc = rDoc.getIDocumentStylePoolAccess()
+                                              .GetPageDescFromPool(SwPoolFormatId::PAGE_STANDARD);
+            const tools::Long nPageW
+                = pPageDesc ? pPageDesc->GetMaster().GetFrameSize().GetSize().Width() : 0;
+            // Stage width: the edit window at initial view (best available
+            // approximation of the document-stage width). GetOutputSizePixel()
+            // already returns logical (DPI-scaled) pixels, so convert directly
+            // with 1 logical px = 15 twips. Dividing by the DPI scale factor a
+            // second time halves the stage on high-DPI displays (4K@200%) and
+            // pins the golden-ratio zoom to the 100% floor - the exact "no
+            // visible changes" symptom on 4K.
+            const tools::Long nStagePx = GetEditWin().GetOutputSizePixel().Width();
+            const tools::Long nStageW = nStagePx * 15;
+            const sal_uInt16 nZoom
+                = sw::writer2027view::ComputeInitialAuthoringZoom(nPageW, nStageW);
+            aUsrPref.SetZoomType(SvxZoomType::PERCENT);
+            aUsrPref.SetZoom(nZoom);
         }
         else if (!pUsrPref->IsDefaultZoom())
         {

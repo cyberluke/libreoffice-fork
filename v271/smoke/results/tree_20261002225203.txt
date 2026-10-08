@@ -1,0 +1,5 @@
+== profile already initialized ==
+== launching soffice.exe (scenario: tree) ==
+launcher pid: 19792
+RESULT: ERROR
+DETAIL: main window never appeared (300s)

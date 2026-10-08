@@ -8,6 +8,80 @@
     <property name="orientation">vertical</property>
     <property name="spacing">6</property>
     <child>
+      <object class="GtkFrame" id="appearance">
+        <property name="visible">False</property>
+        <property name="can-focus">False</property>
+        <property name="label-xalign">0</property>
+        <property name="shadow-type">none</property>
+        <child>
+          <object class="GtkBox" id="appearancebox">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="margin-start">12</property>
+            <property name="margin-top">6</property>
+            <property name="orientation">vertical</property>
+            <property name="spacing">6</property>
+            <child>
+              <object class="GtkRadioButton" id="rbOutputPrintFriendly">
+                <property name="label" translatable="yes" context="printeroptions|rbOutputPrintFriendly">Print Friendly</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="receives-default">False</property>
+                <property name="use-underline">True</property>
+                <property name="draw-indicator">True</property>
+                <child internal-child="accessible">
+                  <object class="AtkObject" id="rbOutputPrintFriendly-atkobject">
+                    <property name="AtkObject::accessible-description" translatable="yes" context="printeroptions|extended_tip|rbOutputPrintFriendly">Print on white paper with dark, print-safe text and reduced ink usage. The document itself is not changed.</property>
+                  </object>
+                </child>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">0</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkRadioButton" id="rbOutputDigitalAppearance">
+                <property name="label" translatable="yes" context="printeroptions|rbOutputDigitalAppearance">Digital Appearance</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="receives-default">False</property>
+                <property name="use-underline">True</property>
+                <property name="draw-indicator">True</property>
+                <property name="group">rbOutputPrintFriendly</property>
+                <child internal-child="accessible">
+                  <object class="AtkObject" id="rbOutputDigitalAppearance-atkobject">
+                    <property name="AtkObject::accessible-description" translatable="yes" context="printeroptions|extended_tip|rbOutputDigitalAppearance">Preserve the document colors and page background in the printout.</property>
+                  </object>
+                </child>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">1</property>
+              </packing>
+            </child>
+          </object>
+        </child>
+        <child type="label">
+          <object class="GtkLabel" id="appearancelabel">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes" context="printeroptions|appearancelabel">Appearance</property>
+            <attributes>
+              <attribute name="weight" value="bold"/>
+            </attributes>
+          </object>
+        </child>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">0</property>
+      </packing>
+    </child>
+    <child>
       <object class="GtkFrame" id="contents">
         <property name="visible">True</property>
         <property name="can-focus">False</property>
@@ -180,7 +254,7 @@
       <packing>
         <property name="expand">False</property>
         <property name="fill">True</property>
-        <property name="position">0</property>
+        <property name="position">1</property>
       </packing>
     </child>
     <child>
@@ -220,7 +294,7 @@
       <packing>
         <property name="expand">False</property>
         <property name="fill">True</property>
-        <property name="position">1</property>
+        <property name="position">2</property>
       </packing>
     </child>
     <child>
@@ -260,7 +334,7 @@
       <packing>
         <property name="expand">False</property>
         <property name="fill">True</property>
-        <property name="position">2</property>
+        <property name="position">3</property>
       </packing>
     </child>
   </object>

@@ -108,6 +108,7 @@ bool PDFFilter::implExport( const Sequence< PropertyValue >& rDescriptor )
         aCfgItem.ReadBool(  u"ExportNotes"_ustr, false );
         aCfgItem.ReadBool(  u"ExportNotesInMargin"_ustr, false );
         aCfgItem.ReadBool( u"ExportPlaceholders"_ustr, false );
+        aCfgItem.ReadInt32( u"Writer2027PDFOutputIntent"_ustr, 1 );
         aCfgItem.ReadBool(  u"ExportNotesPages"_ustr, false );
         aCfgItem.ReadBool(  u"ExportOnlyNotesPages"_ustr, false );
         aCfgItem.ReadBool(  u"UseTransitionEffects"_ustr, true );

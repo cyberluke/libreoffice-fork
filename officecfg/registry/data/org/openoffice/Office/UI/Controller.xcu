@@ -1448,6 +1448,17 @@
           <value>lo.writer.PageOrientationToolBoxControl</value>
         </prop>
       </node>
+      <node oor:name="Writer2027TypeSystemToolBoxControl" oor:op="replace">
+        <prop oor:name="Command">
+          <value>.uno:Writer2027TypeSystem</value>
+        </prop>
+        <prop oor:name="Module">
+          <value/>
+        </prop>
+        <prop oor:name="Controller">
+          <value>lo.writer.Writer2027TypeSystemToolBoxControl</value>
+        </prop>
+      </node>
       <node oor:name="com.sun.star.svx.FindTextToolboxController" oor:op="replace">
         <prop oor:name="Command">
           <value>.uno:FindText</value>

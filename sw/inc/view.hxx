@@ -143,6 +143,14 @@ public:
     ~SwViewGlueDocShell();
 };
 
+namespace svx::writer2027
+{
+class Writer2027TypeSystemPopup;
+class Writer2027BlockGalleryPopup;
+class Writer2027DocumentKitPopup;
+struct DocumentKit;
+}
+
 // view of a document
 class SW_DLLPUBLIC SwView: public SfxViewShell
 {
@@ -195,6 +203,31 @@ class SW_DLLPUBLIC SwView: public SfxViewShell
     VclPtr<SwEditWin>    m_pEditWin;
     std::unique_ptr<SwWrtShell> m_pWrtShell;
     std::unique_ptr<SwViewGlueDocShell> m_xGlueDocShell;
+
+    // Writer 2027 Type System picker (Phase 6): reused across opens.
+    // Public: opened directly by the Writer 2027 toolbar controller, because
+    // the .uno:Writer2027TypeSystem command has no Sfx slot-pool entry (svidl
+    // omits these slots) and therefore never resolves via the normal dispatch.
+public:
+    std::unique_ptr<svx::writer2027::Writer2027TypeSystemPopup> m_xWriter2027TypeSystemPopup;
+    void OpenWriter2027TypeSystemPopup(const tools::Rectangle& rAnchorRect);
+    DECL_LINK(Writer2027TypeSystemSelectHdl, const OUString&, void);
+
+private:
+    // Writer 2027 Editorial Blocks (Phase 7): Insert Block gallery + Document
+    // Kit picker, both reused across opens. The active kit is a session-level
+    // insertion aid (the document remains authoritative, see §27).
+    std::unique_ptr<svx::writer2027::Writer2027BlockGalleryPopup> m_xWriter2027BlockGalleryPopup;
+    std::unique_ptr<svx::writer2027::Writer2027DocumentKitPopup> m_xWriter2027DocumentKitPopup;
+    OUString m_aActiveKitId;
+    void OpenWriter2027BlockGalleryPopup();
+    void OpenWriter2027DocumentKitPopup();
+    bool AskApplyRecommendedTypeSystem(const svx::writer2027::DocumentKit& rKit);
+    DECL_LINK(Writer2027BlockSelectHdl, const OUString&, void);
+    DECL_LINK(Writer2027KitSelectHdl, const OUString&, void);
+
+    // Writer 2027 Web Publication (Phase 8): Publish as Web dialog.
+    void PublishWeb();
 
     SfxShell            *m_pShell;        // current SubShell at the dispatcher
     FmFormShell         *m_pFormShell;    // DB-FormShell

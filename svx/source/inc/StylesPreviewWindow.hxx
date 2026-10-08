@@ -142,7 +142,7 @@ class StylesPreviewWindow_Impl final : public InterimItemWindow, public StylesPr
     tools::Long m_nMinWidth = 160;
     tools::Long m_nDesiredHeight = 58;
 
-    DECL_LINK(ParentResizeHdl, const VclWindowEvent&, void);
+    DECL_LINK(ParentResizeHdl, VclWindowEvent&, void);
     void FitToParent();
 
 public:

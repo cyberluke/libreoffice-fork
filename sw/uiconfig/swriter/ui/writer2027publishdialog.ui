@@ -1,0 +1,240 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generated with glade 3.38.2 -->
+<interface domain="sw">
+  <requires lib="gtk+" version="3.24"/>
+  <object class="GtkDialog" id="Writer2027PublishDialog">
+    <property name="can-focus">False</property>
+    <property name="default-width">400</property>
+    <property name="default-height">380</property>
+    <property name="title" translatable="yes" context="writer2027publishdialog|title">Publish as Web</property>
+    <property name="resizable">False</property>
+    <property name="modal">True</property>
+    <child internal-child="vbox">
+      <object class="GtkBox" id="Writer2027PublishDialogVbox">
+        <property name="can-focus">False</property>
+        <property name="orientation">vertical</property>
+        <property name="spacing">8</property>
+        <property name="margin-start">16</property>
+        <property name="margin-end">16</property>
+        <property name="margin-top">16</property>
+        <property name="margin-bottom">8</property>
+        <child internal-child="action_area">
+          <object class="GtkButtonBox" id="Writer2027PublishDialogActionArea">
+            <property name="can-focus">False</property>
+            <property name="layout-style">end</property>
+            <property name="spacing">8</property>
+            <child>
+              <object class="GtkButton" id="publish-open">
+                <property name="label" translatable="yes" context="writer2027publishdialog|publishopen">Publish and open in browser</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="receives-default">True</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">0</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="publish">
+                <property name="label" translatable="yes" context="writer2027publishdialog|publish">Publish</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="can-default">True</property>
+                <property name="receives-default">True</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkButton" id="cancel">
+                <property name="label" translatable="yes" context="writer2027publishdialog|cancel">Cancel</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="can-default">True</property>
+                <property name="receives-default">True</property>
+                <property name="response">-6</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">2</property>
+              </packing>
+            </child>
+          </object>
+          <packing>
+            <property name="expand">False</property>
+            <property name="fill">True</property>
+            <property name="position">2</property>
+          </packing>
+        </child>
+        <child>
+          <object class="GtkBox">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="orientation">vertical</property>
+            <property name="spacing">4</property>
+            <child>
+              <object class="GtkLabel" id="lblFormat">
+                <property name="visible">True</property>
+                <property name="can-focus">False</property>
+                <property name="halign">start</property>
+                <property name="label" translatable="yes" context="writer2027publishdialog|format">Format</property>
+                <attributes>
+                  <attribute name="weight" value="bold"/>
+                </attributes>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">0</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkRadioButton" id="web-package">
+                <property name="label" translatable="yes" context="writer2027publishdialog|webpackage">Web Package</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="active">True</property>
+                <property name="margin-start">12</property>
+                <property name="tooltip-text" translatable="yes" context="writer2027publishdialog|webpackagetip">index.html with separate styles/writer2027.css and assets/ (images, optional fonts)</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkRadioButton" id="single-html">
+                <property name="label" translatable="yes" context="writer2027publishdialog|singlehtml">Single HTML</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="margin-start">12</property>
+                <property name="tooltip-text" translatable="yes" context="writer2027publishdialog|singlehtmltip">One HTML file with inline CSS; small images embedded</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">2</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkLabel" id="lblOptions">
+                <property name="visible">True</property>
+                <property name="can-focus">False</property>
+                <property name="halign">start</property>
+                <property name="margin-top">10</property>
+                <property name="label" translatable="yes" context="writer2027publishdialog|options">Options</property>
+                <attributes>
+                  <attribute name="weight" value="bold"/>
+                </attributes>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">3</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkCheckButton" id="responsive">
+                <property name="label" translatable="yes" context="writer2027publishdialog|responsive">Responsive layout</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="active">True</property>
+                <property name="margin-start">12</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">4</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkCheckButton" id="metadata">
+                <property name="label" translatable="yes" context="writer2027publishdialog|metadata">Include document metadata</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="active">True</property>
+                <property name="margin-start">12</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">5</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkCheckButton" id="print-css">
+                <property name="label" translatable="yes" context="writer2027publishdialog|printcss">Include print stylesheet</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="active">True</property>
+                <property name="margin-start">12</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">6</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkCheckButton" id="generate-nav">
+                <property name="label" translatable="yes" context="writer2027publishdialog|generatenav">Generate navigation from headings</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="active">False</property>
+                <property name="margin-start">12</property>
+                <property name="tooltip-text" translatable="yes" context="writer2027publishdialog|generatenavtip">Create a table of contents from the document outline headings</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">7</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkCheckButton" id="optimize-images">
+                <property name="label" translatable="yes" context="writer2027publishdialog|optimizeimages">Optimize images for web</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="active">True</property>
+                <property name="margin-start">12</property>
+                <property name="tooltip-text" translatable="yes" context="writer2027publishdialog|optimizeimagestip">Preserve the source format and add responsive srcset variants (Web Package)</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">8</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkCheckButton" id="embed-fonts">
+                <property name="label" translatable="yes" context="writer2027publishdialog|embedfonts">Embed permitted local fonts</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="active">False</property>
+                <property name="margin-start">12</property>
+                <property name="tooltip-text" translatable="yes" context="writer2027publishdialog|embedfontstip">Include @font-face rules only for fonts whose license permits embedding</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">9</property>
+              </packing>
+            </child>
+          </object>
+          <packing>
+            <property name="expand">True</property>
+            <property name="fill">True</property>
+            <property name="position">1</property>
+          </packing>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>

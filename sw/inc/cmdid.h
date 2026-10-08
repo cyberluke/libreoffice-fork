@@ -791,6 +791,11 @@ class SwUINumRuleItem;
 #define FN_BOOKVIEW                 (FN_SELECTION + 100)   /*Show in Bookview*/
 
 #define FN_DRAFT_VIEW               (FN_SELECTION + 101)  /* Draft View */
+#define FN_WRITER2027_STORY          (FN_SELECTION + 102)  /* Writer 2027 Story Mode */
+#define FN_WRITER2027_TYPE_SYSTEM    (FN_SELECTION + 103)  /* Writer 2027 Type System */
+#define FN_WRITER2027_INSERT_BLOCK   (FN_SELECTION + 104)  /* Writer 2027 Insert Block */
+#define FN_WRITER2027_DOCUMENT_KIT   (FN_SELECTION + 105)  /* Writer 2027 Document Kit */
+#define FN_WRITER2027_PUBLISH_WEB    (FN_SELECTION + 106)  /* Writer 2027 Publish as Web */
 
 // QUERY-Block
 #define FN_TXTATR_INET              (FN_QUERY +29)      /* INet-Attribute */

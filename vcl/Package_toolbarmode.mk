@@ -19,6 +19,8 @@ $(eval $(call gb_Package_add_files_with_dir,toolbarmode_images,$(LIBO_SHARE_FOLD
     notebookbar_groupedbar_full.png \
     notebookbar_single.png \
     notebookbar_groups.png \
+    notebookbar_writer2027.png \
+    notebookbar_writer2027.svg \
 ))
 
 # vim: set noet sw=4 ts=4:

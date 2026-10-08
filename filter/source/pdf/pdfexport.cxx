@@ -453,6 +453,9 @@ bool PDFExport::Export( const OUString& rFile, const Sequence< PropertyValue >& 
             OUString sSignTSA;
             bool bExportPlaceholders = false;
             bool bUseReferenceXObject = false;
+            // Writer 2027 output intent (Phase 5): 0 = Print Friendly,
+            // 1 = Digital Appearance (the default for PDF export).
+            sal_Int32 nWriter2027PDFOutputIntent = 1;
 
             rtl::Reference<VCLXDevice>  xDevice(new VCLXDevice);
             OUString                    aPageRange;
@@ -712,6 +715,8 @@ bool PDFExport::Export( const OUString& rFile, const Sequence< PropertyValue >& 
                     rProp.Value >>= sSignTSA;
                 else if ( rProp.Name == "ExportPlaceholders" )
                     rProp.Value >>= bExportPlaceholders;
+                else if ( rProp.Name == "Writer2027PDFOutputIntent" )
+                    rProp.Value >>= nWriter2027PDFOutputIntent;
                 else if ( rProp.Name == "UseReferenceXObject" )
                     rProp.Value >>= bUseReferenceXObject;
                 // Redaction & bitmap related stuff
@@ -1076,6 +1081,7 @@ bool PDFExport::Export( const OUString& rFile, const Sequence< PropertyValue >& 
                     comphelper::makePropertyValue(u"IsSkipEmptyPages"_ustr, mbSkipEmptyPages),
                     comphelper::makePropertyValue(u"PageRange"_ustr, aPageRange),
                     comphelper::makePropertyValue(u"ExportPlaceholders"_ustr, bExportPlaceholders),
+                    comphelper::makePropertyValue(u"Writer2027PDFOutputIntent"_ustr, nWriter2027PDFOutputIntent),
                     comphelper::makePropertyValue(u"SinglePageSheets"_ustr, bSinglePageSheets),
                     comphelper::makePropertyValue(u"ExportNotesInMargin"_ustr, bExportNotesInMargin)
                 };

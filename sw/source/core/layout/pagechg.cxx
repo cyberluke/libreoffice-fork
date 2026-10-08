@@ -34,6 +34,7 @@
 #include <frmtool.hxx>
 #include <tgrditem.hxx>
 #include <viewopt.hxx>
+#include <writer2027view.hxx>
 #include <docsh.hxx>
 #include <wrtsh.hxx>
 #include <view.hxx>
@@ -2372,9 +2373,14 @@ void SwRootFrame::CheckViewLayout( const SwViewOption* pViewOpt, const SwRect* p
 
     const tools::Long nBorder = getFrameArea().Pos().getX();
     const tools::Long nVisWidth = mnViewWidth - 2 * nBorder;
-    const tools::Long nGapBetweenPages = pViewOpt ? pViewOpt->GetGapBetweenPages()
-                                           : (pSh ? pSh->GetViewOptions()->GetGapBetweenPages()
-                                                  : SwViewOption::defGapBetweenPages);
+    // Writer 2027 digital canvas: slightly larger page gaps on 4K-class
+    // windows so pages never touch; otherwise the classic gap.
+    const tools::Long nGapBetweenPages
+        = ( pSh && sw::writer2027view::IsWriter2027CanvasActive(*pSh->GetDoc()) )
+              ? sw::writer2027view::ComputeCanvasGap(mnViewWidth)
+              : (pViewOpt ? pViewOpt->GetGapBetweenPages()
+                          : (pSh ? pSh->GetViewOptions()->GetGapBetweenPages()
+                                 : SwViewOption::defGapBetweenPages));
 
     // check how many pages fit into the first page layout row:
     SwPageFrame* pPageFrame = static_cast<SwPageFrame*>(Lower());

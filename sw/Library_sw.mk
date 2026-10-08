@@ -30,6 +30,7 @@ $(eval $(call gb_Library_set_include,sw,\
     -I$(SRCDIR)/sw/source/filter/inc \
     -I$(SRCDIR)/sw/source/uibase/inc \
     -I$(SRCDIR)/sw/inc \
+    -I$(SRCDIR)/svx/inc \
     -I$(WORKDIR)/SdiTarget/sw/sdi \
     $$(INCLUDE) \
 ))
@@ -66,6 +67,7 @@ $(eval $(call gb_Library_set_include,sw,\
     -I$(SRCDIR)/sw/source/filter/inc \
     -I$(SRCDIR)/sw/source/uibase/inc \
     -I$(SRCDIR)/sw/inc \
+    -I$(SRCDIR)/svx/inc \
     -I$(SRCDIR)/officelabs/inc \
     -I$(CEF_DIR) \
     -I$(CEF_DIR)/include \
@@ -265,6 +267,7 @@ $(eval $(call gb_Library_add_exception_objects,sw,\
     sw/source/core/doc/DocumentLayoutManager \
     sw/source/core/doc/DocumentStylePoolManager \
     sw/source/core/doc/DocumentExternalDataManager \
+    sw/source/core/doc/writer2027typesystem \
     sw/source/core/doc/extinput \
     sw/source/core/doc/fmtcol \
     sw/source/core/doc/ftnidx \
@@ -563,6 +566,7 @@ $(eval $(call gb_Library_add_exception_objects,sw,\
     sw/source/core/view/viewsh \
     sw/source/core/view/vnew \
     sw/source/core/view/vprint \
+    sw/source/core/view/writer2027view \
     sw/source/filter/ascii/ascatr \
     sw/source/filter/ascii/parasc \
     sw/source/filter/ascii/wrtasc \
@@ -600,6 +604,8 @@ $(eval $(call gb_Library_add_exception_objects,sw,\
     sw/source/filter/html/svxcss1 \
     sw/source/filter/html/swhtml \
     sw/source/filter/html/wrthtml \
+    sw/source/filter/writer2027web/writer2027web \
+    sw/source/filter/writer2027preflight/writer2027preflight \
     sw/source/filter/md/mdcallbcks \
     sw/source/filter/md/mdnum \
     sw/source/filter/md/mdtab \
@@ -778,6 +784,7 @@ $(eval $(call gb_Library_add_exception_objects,sw,\
     sw/source/uibase/sidebar/WriterInspectorTextPanel \
     sw/source/uibase/sidebar/CommentsPanel \
     sw/source/uibase/sidebar/A11yCheckIssuesPanel \
+    sw/source/uibase/sidebar/PublicationInspectorPanel \
     sw/source/uibase/sidebar/QuickFindPanel \
     sw/source/uibase/table/chartins \
     sw/source/uibase/table/swtablerep \
@@ -825,6 +832,7 @@ $(eval $(call gb_Library_add_exception_objects,sw,\
     sw/source/uibase/utlui/gloslst \
     sw/source/uibase/utlui/initui \
     sw/source/uibase/utlui/navicfg \
+    sw/source/uibase/utlui/writer2027publishdialog \
     sw/source/uibase/utlui/navipi \
     sw/source/uibase/utlui/numfmtlb \
     sw/source/uibase/utlui/prcntfld \
@@ -853,6 +861,8 @@ $(eval $(call gb_Library_add_exception_objects,sw,\
     sw/source/uibase/wrtsh/wrtsh2 \
     sw/source/uibase/wrtsh/wrtsh3 \
     sw/source/uibase/wrtsh/wrtsh4 \
+    sw/source/uibase/wrtsh/writer2027blocks \
+    sw/source/uibase/uiview/writer2027toolboxctrl \
     sw/source/uibase/wrtsh/wrtundo \
 ))
 

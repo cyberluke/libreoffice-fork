@@ -21,6 +21,7 @@
 #include <com/sun/star/ui/XSidebar.hpp>
 
 #include "A11yCheckIssuesPanel.hxx"
+#include "PublicationInspectorPanel.hxx"
 #ifdef HAVE_FEATURE_CEF
 #include <officelabs/WebViewPanel.hxx>
 #endif
@@ -217,6 +218,12 @@ Reference<ui::XUIElement> SAL_CALL SwPanelFactory::createUIElement (
     else if (rsResourceURL.endsWith("/A11yCheckIssuesPanel"))
     {
         std::unique_ptr<PanelLayout> xPanel = sw::sidebar::A11yCheckIssuesPanel::Create(pParent, pBindings, xSidebar);
+        xElement = sfx2::sidebar::SidebarPanelBase::Create(
+                        rsResourceURL, xFrame, std::move(xPanel), ui::LayoutSize(-1,-1,-1));
+    }
+    else if (rsResourceURL.endsWith("/PublicationInspectorPanel"))
+    {
+        std::unique_ptr<PanelLayout> xPanel = sw::sidebar::PublicationInspectorPanel::Create(pParent, pBindings, xSidebar);
         xElement = sfx2::sidebar::SidebarPanelBase::Create(
                         rsResourceURL, xFrame, std::move(xPanel), ui::LayoutSize(-1,-1,-1));
     }

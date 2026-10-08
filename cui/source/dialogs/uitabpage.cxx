@@ -42,7 +42,8 @@ UITabPage::UITabPage(weld::Container* pPage, weld::DialogController* pController
                        (m_xBuilder->weld_radio_button(u"rbButton6"_ustr)),
                        (m_xBuilder->weld_radio_button(u"rbButton7"_ustr)),
                        (m_xBuilder->weld_radio_button(u"rbButton8"_ustr)),
-                       (m_xBuilder->weld_radio_button(u"rbButton9"_ustr)) }
+                       (m_xBuilder->weld_radio_button(u"rbButton9"_ustr)),
+                       (m_xBuilder->weld_radio_button(u"rbButton10"_ustr)) }
     , m_pInfoLabel(m_xBuilder->weld_label(u"lbInfo"_ustr))
 {
     static_assert(SAL_N_ELEMENTS(m_pRadioButtons) == std::size(UIMODES_ARRAY));

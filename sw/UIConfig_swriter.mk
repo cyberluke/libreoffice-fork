@@ -251,6 +251,7 @@ $(eval $(call gb_UIConfig_add_uifiles,modules/swriter,\
 	sw/uiconfig/swriter/ui/notebookbar_groups \
 	sw/uiconfig/swriter/ui/notebookbar_groupedbar_full \
 	sw/uiconfig/swriter/ui/notebookbar_groupedbar_compact \
+	sw/uiconfig/swriter/ui/notebookbar_writer2027 \
 	sw/uiconfig/swriter/ui/pagecolumncontrol \
 	sw/uiconfig/swriter/ui/pagemargincontrol \
 	sw/uiconfig/swriter/ui/pagenumberdlg \
@@ -290,6 +291,9 @@ $(eval $(call gb_UIConfig_add_uifiles,modules/swriter,\
 	sw/uiconfig/swriter/ui/commentwidget \
 	sw/uiconfig/swriter/ui/commentcontextmenu \
 	sw/uiconfig/swriter/ui/a11ycheckissuespanel \
+	sw/uiconfig/swriter/ui/publicationinspector \
+	sw/uiconfig/swriter/ui/publicationinspectorissue \
+	sw/uiconfig/swriter/ui/preflightgate \
 	sw/uiconfig/swriter/ui/poseditbox \
 	sw/uiconfig/swriter/ui/sidebarwrap \
 	sw/uiconfig/swriter/ui/sidebarstylepresets \
@@ -328,6 +332,7 @@ $(eval $(call gb_UIConfig_add_uifiles,modules/swriter,\
 	sw/uiconfig/swriter/ui/warnhiddensectiondialog \
 	sw/uiconfig/swriter/ui/watermarkdialog \
 	sw/uiconfig/swriter/ui/wordcount \
+	sw/uiconfig/swriter/ui/writer2027publishdialog \
 	sw/uiconfig/swriter/ui/wrapdialog \
 	sw/uiconfig/swriter/ui/wrappage \
 	sw/uiconfig/swriter/ui/zoombox \

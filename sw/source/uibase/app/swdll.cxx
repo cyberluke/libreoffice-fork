@@ -39,6 +39,7 @@
 #include <sal/log.hxx>
 #include <svx/fmobjfac.hxx>
 #include <svx/objfac3d.hxx>
+#include <svx/writer2027log.hxx>
 #include <editeng/acorrcfg.hxx>
 
 #include <swacorr.hxx>
@@ -79,6 +80,14 @@ namespace SwGlobals
 SwDLL::SwDLL()
     : m_pAutoCorrCfg(nullptr)
 {
+    // Arm the Writer 2027 OS-level crash capture as early as possible. The
+    // Type System popup faults (and the notebookbar button dispatch that leads
+    // to it) are SEH access violations that /EHsc cannot catch with catch(...),
+    // and LO excludes itself from WER, so without this vectored handler a crash
+    // produces no log at all. Installing it here (module load) makes it live
+    // before any UI dispatch.
+    svx::writer2027::Writer2027InstallCrashCapture();
+
     if ( SfxApplication::GetModule(SfxToolsModule::Writer) )    // Module already active
         return;
 

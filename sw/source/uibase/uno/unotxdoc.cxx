@@ -81,6 +81,7 @@
 #include <unocrsrhelper.hxx>
 #include <globdoc.hxx>
 #include <viewopt.hxx>
+#include <writer2027view.hxx>
 #include <unochart.hxx>
 #include <charatr.hxx>
 #include <svx/xmleohlp.hxx>
@@ -247,7 +248,12 @@ static std::unique_ptr<SwPrintUIOptions> lcl_GetPrintUIOptions(
             pPage = static_cast<const SwPageFrame*>(pPage->GetNext());
         }
     }
-    return std::make_unique<SwPrintUIOptions>( nCurrentPage, bWebDoc, bSwSrcView, bHasSelection, bHasPostIts, rPrintData );
+    // Writer 2027 output intent (Phase 5): the print dialog offers the
+    // Appearance control only for Writer 2027 dark documents, and its default
+    // (Print Friendly) is derived from the canonical document predicate.
+    const bool bIsWriter2027DarkDocument
+        = sw::writer2027view::IsWriter2027DarkDocument(*pDocShell->GetDoc());
+    return std::make_unique<SwPrintUIOptions>( nCurrentPage, bWebDoc, bSwSrcView, bHasSelection, bHasPostIts, rPrintData, bIsWriter2027DarkDocument );
 }
 
 static SwTextFormatColl *lcl_GetParaStyle(const UIName& rCollName, SwDoc& rDoc)

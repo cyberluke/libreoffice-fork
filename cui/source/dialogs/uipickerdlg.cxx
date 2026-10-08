@@ -12,6 +12,7 @@
 #include <toolbartabpage.hxx>
 
 #include <comphelper/dispatchcommand.hxx>
+#include <comphelper/types.hxx>
 #include <dialmgr.hxx>
 #include <officecfg/Office/UI/ToolbarMode.hxx>
 #include <sal/log.hxx>
@@ -92,12 +93,39 @@ IMPL_LINK(UIPickerDialog, OnApplyClick, weld::Button&, rButton, void)
     //apply to all except current module
     if (&rButton == m_xResetBtn.get()) // Apply to All
     {
+        // A mode may be supported by only a subset of applications (e.g. the
+        // Writer-only "Writer 2027" profile). "Apply to all" must apply the
+        // selected mode only to applications that actually expose it in their
+        // ToolbarMode Modes list; forcing a missing resource onto another
+        // module would leave it with a broken/unloadable notebookbar.
+        auto lcl_appSupportsMode = [&sCmd](const OUString& rApp) {
+            const auto& xContext = comphelper::getProcessComponentContext();
+            const utl::OConfigurationTreeRoot aAppNode(
+                xContext, u"org.openoffice.Office.UI.ToolbarMode/Applications/"_ustr + rApp
+                             + u"/Modes"_ustr,
+                false);
+            if (!aAppNode.isValid())
+                return false;
+            for (const OUString& rNode : aAppNode.getNodeNames())
+            {
+                const utl::OConfigurationNode aModeNode(aAppNode.openNode(rNode));
+                if (aModeNode.isValid()
+                    && comphelper::getString(aModeNode.getNodeValue(u"CommandArg"_ustr)) == sCmd)
+                    return true;
+            }
+            return false;
+        };
+
         std::shared_ptr<comphelper::ConfigurationChanges> aBatch(
             comphelper::ConfigurationChanges::create());
-        officecfg::Office::UI::ToolbarMode::ActiveWriter::set(sCmd, aBatch);
-        officecfg::Office::UI::ToolbarMode::ActiveCalc::set(sCmd, aBatch);
-        officecfg::Office::UI::ToolbarMode::ActiveImpress::set(sCmd, aBatch);
-        officecfg::Office::UI::ToolbarMode::ActiveDraw::set(sCmd, aBatch);
+        if (lcl_appSupportsMode(u"Writer"_ustr))
+            officecfg::Office::UI::ToolbarMode::ActiveWriter::set(sCmd, aBatch);
+        if (lcl_appSupportsMode(u"Calc"_ustr))
+            officecfg::Office::UI::ToolbarMode::ActiveCalc::set(sCmd, aBatch);
+        if (lcl_appSupportsMode(u"Impress"_ustr))
+            officecfg::Office::UI::ToolbarMode::ActiveImpress::set(sCmd, aBatch);
+        if (lcl_appSupportsMode(u"Draw"_ustr))
+            officecfg::Office::UI::ToolbarMode::ActiveDraw::set(sCmd, aBatch);
         aBatch->commit();
 
         const OUString sCurrentApp = UITabPage::GetCurrentApp();
@@ -106,13 +134,13 @@ IMPL_LINK(UIPickerDialog, OnApplyClick, weld::Button&, rButton, void)
             const auto& xContext = comphelper::getProcessComponentContext();
             const utl::OConfigurationTreeRoot aAppNode(
                 xContext, u"org.openoffice.Office.UI.ToolbarMode/Applications/"_ustr, true);
-            if (sCurrentApp != "Writer")
+            if (sCurrentApp != u"Writer"_ustr && lcl_appSupportsMode(u"Writer"_ustr))
                 aAppNode.setNodeValue(u"Writer/Active"_ustr, css::uno::Any(sCmd));
-            if (sCurrentApp != "Calc")
+            if (sCurrentApp != u"Calc"_ustr && lcl_appSupportsMode(u"Calc"_ustr))
                 aAppNode.setNodeValue(u"Calc/Active"_ustr, css::uno::Any(sCmd));
-            if (sCurrentApp != "Impress")
+            if (sCurrentApp != u"Impress"_ustr && lcl_appSupportsMode(u"Impress"_ustr))
                 aAppNode.setNodeValue(u"Impress/Active"_ustr, css::uno::Any(sCmd));
-            if (sCurrentApp != "Draw")
+            if (sCurrentApp != u"Draw"_ustr && lcl_appSupportsMode(u"Draw"_ustr))
                 aAppNode.setNodeValue(u"Draw/Active"_ustr, css::uno::Any(sCmd));
             aAppNode.commit();
         };

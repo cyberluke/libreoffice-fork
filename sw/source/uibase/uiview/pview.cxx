@@ -56,6 +56,7 @@
 #include <viewopt.hxx>
 #include <doc.hxx>
 #include <IDocumentDeviceAccess.hxx>
+#include <writer2027view.hxx>
 #include <pview.hxx>
 #include <view.hxx>
 #include <scroll.hxx>
@@ -1144,8 +1145,18 @@ void SwPagePreview::Init()
     GetViewShell()->ApplyAccessibilityOptions();
 #endif
 
-    // adjust view shell option to the same as for print
-    SwPrintData const aPrintOptions = *mod->GetPrtOptions(false);
+    // adjust view shell option to the same as for print:
+    // use the document print data (the same source the print dialog defaults
+    // from), so the preview matches the actual physical-print intent.
+    SwPrintData aPrintOptions = GetViewShell()->GetDoc()->getIDocumentDeviceAccess().getPrintData();
+    if (sw::writer2027view::IsWriter2027DarkDocument(*GetViewShell()->GetDoc()))
+    {
+        // Writer 2027 default for physical output: Print Friendly — the page
+        // preview shows the paper result (white page, dark text), matching
+        // the print dialog's default Appearance choice.
+        aPrintOptions.SetWriter2027PrintFriendly(true);
+        aPrintOptions.SetPrintPageBackground(false);
+    }
     GetViewShell()->AdjustOptionsForPagePreview( aPrintOptions );
 
     GetViewShell()->CalcLayout();

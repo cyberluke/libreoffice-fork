@@ -98,6 +98,10 @@ class SwViewShellImp
     bool m_bSmoothUpdate : 1; // For SmoothScroll
     bool m_bStopSmooth : 1;
 
+    /// true when this shell's document carries the Writer 2027 digital page
+    /// background (computed once; the document never changes for a shell).
+    bool m_bWriter2027DarkDocument : 1;
+
     sal_uInt16 m_nRestoreActions  ; // Count for the Action that need to be restored (UNO)
     SwRect m_aSmoothRect;
 

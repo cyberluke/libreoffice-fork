@@ -95,6 +95,7 @@
 #include <IDocumentOutlineNodes.hxx>
 #include <wrtsh.hxx>
 #include <viewopt.hxx>
+#include <writer2027view.hxx>
 #include <basesh.hxx>
 #include <swmodule.hxx>
 #include <uitool.hxx>
@@ -2064,7 +2065,15 @@ void SwView::StateStatusLine(SfxItemSet &rSet)
                         const Size aEditSize = GetEditWin().GetOutputSizePixel();
                         const Size aWindowSize( GetEditWin().PixelToLogic( aEditSize, aTmpMap ) );
 
-                        const tools::Long nOf = pVOpt->GetDocumentBorder() * 2;
+                        // Writer 2027 digital canvas: keep the slider snapping
+                        // points consistent with the breathing-room fit zoom.
+                        const bool bCanvas = sw::writer2027view::IsWriter2027CanvasActive(
+                            *m_pWrtShell->GetDoc());
+                        const SwTwips nCanvasBorder
+                            = bCanvas ? sw::writer2027view::ComputeCanvasBorder(aWindowSize.Width())
+                                      : SwTwips(pVOpt->GetDocumentBorder());
+
+                        const tools::Long nOf = nCanvasBorder * 2;
                         tools::Long nTmpWidth = bAutomaticViewLayout ? aPageSize.Width() : aRootSize.Width();
                         nTmpWidth += nOf;
                         aPageSize.AdjustHeight(nOf );
@@ -2080,7 +2089,10 @@ void SwView::StateStatusLine(SfxItemSet &rSet)
 
                         if ( bAutomaticViewLayout )
                         {
-                            nTmpWidth += aPageSize.Width() + pVOpt->GetGapBetweenPages();
+                            const SwTwips nGap
+                                = bCanvas ? sw::writer2027view::ComputeCanvasGap(aWindowSize.Width())
+                                          : SwTwips(pVOpt->GetGapBetweenPages());
+                            nTmpWidth += aPageSize.Width() + nGap;
                             nFac = aWindowSize.Width() * 100 / nTmpWidth;
                             nFac = std::min( nFac, nVisPercent );
                             if (nFac >= MINZOOM)

@@ -441,6 +441,11 @@ $(eval $(call gb_Library_add_exception_objects,svxcore,\
     svx/source/tbxctrls/tbxcolorupdate \
     svx/source/tbxctrls/writer2027typography \
     svx/source/tbxctrls/writer2027fontpopup \
+    svx/source/tbxctrls/writer2027typesystem \
+    svx/source/tbxctrls/writer2027typesystempopup \
+    svx/source/tbxctrls/writer2027blocks \
+    svx/source/tbxctrls/writer2027blockgallerypopup \
+    svx/source/tbxctrls/writer2027documentkitpopup \
     svx/source/tbxctrls/StylesPreviewToolBoxControl \
     svx/source/tbxctrls/StylesPreviewWindow \
     svx/source/toolbars/extrusionbar \

@@ -51,6 +51,7 @@
 #include <frmatr.hxx>
 #include <frmtool.hxx>
 #include <viewopt.hxx>
+#include <viewsh.hxx>
 #include <dview.hxx>
 #include <dcontact.hxx>
 #include <txtfrm.hxx>
@@ -136,6 +137,7 @@
 #include <vcl/rendercontext/DrawModeFlags.hxx>
 #include <vcl/rendercontext/GetDefaultFontFlags.hxx>
 #include <poolfmt.hxx>
+#include <writer2027view.hxx>
 
 using namespace ::editeng;
 using namespace ::com::sun::star;
@@ -882,7 +884,7 @@ void SwLineRects::PaintLines( OutputDevice *pOut, SwPaintProperties const &prope
     pOut->SetFillColor();
     pOut->SetLineColor();
     ConnectEdges( pOut, properties );
-    const Color *pLast = nullptr;
+    std::optional<Color> oLastColor;
 
     bool bPaint2nd = false;
     size_t nMinCount = m_aLineRects.size();
@@ -929,17 +931,32 @@ void SwLineRects::PaintLines( OutputDevice *pOut, SwPaintProperties const &prope
         }
         if ( bPaint )
         {
-            if ( !pLast || *pLast != rLRect.GetColor() )
+            // Writer 2027 Print Friendly (Phase 5): map default-palette border
+            // colors (e.g. dark-document hairlines) to paper-safe counterparts.
+            // Explicit user border colors never match the palette and stay.
+            const Color aLineColor( rLRect.GetColor() );
+            Color aMappedColor;
+            const Color* pColor = &aLineColor;
+            if (properties.pSGlobalShell->GetViewOptions()->IsWriter2027PrintFriendly())
             {
-                pLast = &rLRect.GetColor();
+                if (std::optional<Color> oMapped = sw::writer2027view::GetPrintFriendlyColor( aLineColor ))
+                {
+                    aMappedColor = *oMapped;
+                    pColor = &aMappedColor;
+                }
+            }
+
+            if ( !oLastColor || *oLastColor != *pColor )
+            {
+                oLastColor = *pColor;
 
                 DrawModeFlags nOldDrawMode = pOut->GetDrawMode();
                 if( properties.pSGlobalShell->GetWin() &&
                     Application::GetSettings().GetStyleSettings().GetHighContrastMode() )
                     pOut->SetDrawMode( DrawModeFlags::Default );
 
-                pOut->SetLineColor( *pLast );
-                pOut->SetFillColor( *pLast );
+                pOut->SetLineColor( *pColor );
+                pOut->SetFillColor( *pColor );
                 pOut->SetDrawMode( nOldDrawMode );
             }
 
@@ -964,9 +981,22 @@ void SwLineRects::PaintLines( OutputDevice *pOut, SwPaintProperties const &prope
                 continue;
             }
 
-            if ( !pLast || *pLast != rLRect.GetColor() )
+            // Writer 2027 Print Friendly border-color mapping (see first pass).
+            const Color aLineColor( rLRect.GetColor() );
+            Color aMappedColor;
+            const Color* pColor = &aLineColor;
+            if (properties.pSGlobalShell->GetViewOptions()->IsWriter2027PrintFriendly())
             {
-                pLast = &rLRect.GetColor();
+                if (std::optional<Color> oMapped = sw::writer2027view::GetPrintFriendlyColor( aLineColor ))
+                {
+                    aMappedColor = *oMapped;
+                    pColor = &aMappedColor;
+                }
+            }
+
+            if ( !oLastColor || *oLastColor != *pColor )
+            {
+                oLastColor = *pColor;
 
                 DrawModeFlags nOldDrawMode = pOut->GetDrawMode();
                 if( properties.pSGlobalShell->GetWin() &&
@@ -975,7 +1005,7 @@ void SwLineRects::PaintLines( OutputDevice *pOut, SwPaintProperties const &prope
                     pOut->SetDrawMode( DrawModeFlags::Default );
                 }
 
-                pOut->SetFillColor( *pLast );
+                pOut->SetFillColor( *pColor );
                 pOut->SetDrawMode( nOldDrawMode );
             }
             if( !rLRect.IsEmpty() )
@@ -1074,7 +1104,13 @@ void SwSubsRects::PaintSubsidiary( OutputDevice *pOut,
             const SwViewOption *pOpt = pShell->GetViewOptions();
             switch ( rLRect.GetSubColor() )
             {
-                case SubColFlags::Page: pCol = &pOpt->GetDocBoundariesColor(); break;
+                case SubColFlags::Page:
+                    // Writer 2027 digital canvas: restrained blue-gray page
+                    // boundary instead of the generic appearance color.
+                    pCol = ( pShell && sw::writer2027view::IsWriter2027CanvasActive(*pShell->GetDoc()) )
+                               ? &sw::writer2027view::PageBoundary
+                               : &pOpt->GetDocBoundariesColor();
+                    break;
                 case SubColFlags::Tab: pCol = &pOpt->GetTableBoundariesColor(); break;
                 case SubColFlags::Fly:
                 case SubColFlags::Sect: pCol = &pOpt->GetSectionBoundColor(); break;
@@ -6527,9 +6563,15 @@ static void lcl_paintBitmapExToRect(vcl::RenderContext *pOut, const Point& aPoin
     ::SwAlignRect( aAlignedPageRect, _pViewShell, _pViewShell->GetOut() );
     SwRect aPagePxRect(_pViewShell->GetOut()->LogicToPixel( aAlignedPageRect.SVRect() ));
 
-    if (aShadowColor != _pViewShell->GetViewOptions()->GetShadowColor())
+    // Writer 2027 digital canvas: minimal elevation — a near-black shadow
+    // instead of the classic soft paper glow on the dark workspace.
+    const Color aCanvasShadow
+        = sw::writer2027view::IsWriter2027CanvasActive(*_pViewShell->GetDoc())
+              ? sw::writer2027view::PageShadow
+              : _pViewShell->GetViewOptions()->GetShadowColor();
+    if (aShadowColor != aCanvasShadow)
     {
-        aShadowColor = _pViewShell->GetViewOptions()->GetShadowColor();
+        aShadowColor = aCanvasShadow;
 
         AlphaMask aMask( shadowMask.getBottomRight().CreateColorBitmap() );
         Bitmap aFilledSquare(aMask.GetSizePixel(), vcl::PixelFormat::N24_BPP);

@@ -99,6 +99,8 @@ class ImpPDFTabDialog final : public SfxTabDialogController
     bool mbUseTransitionEffects = false;
     bool mbIsSkipEmptyPages = true;
     bool mbIsExportPlaceholders = false;
+    // Writer 2027 output intent (Phase 5): 0 = Print Friendly, 1 = Digital Appearance.
+    sal_Int32 mnWriter2027PDFOutputIntent = 1;
     bool mbAddStream = false;
     sal_Int32 mnFormsType = 0;
     bool mbExportFormFields = false;
@@ -222,6 +224,10 @@ class ImpPDFTabGeneralPage : public SfxTabPage
     std::unique_ptr<weld::CheckButton> mxCbExportOnlyNotesPages;
     std::unique_ptr<weld::CheckButton> mxCbExportEmptyPages;
     std::unique_ptr<weld::CheckButton> mxCbExportPlaceholders;
+    // Writer 2027 output intent (Phase 5): Digital Appearance vs Print Friendly.
+    std::unique_ptr<weld::Widget> mxAppearanceFrame;
+    std::unique_ptr<weld::RadioButton> mxRbPDFDigitalAppearance;
+    std::unique_ptr<weld::RadioButton> mxRbPDFPrintFriendly;
     std::unique_ptr<weld::CheckButton> mxCbAddStream;
     std::unique_ptr<weld::CheckButton> mxCbWatermark;
     std::unique_ptr<weld::Label> mxFtWatermark;

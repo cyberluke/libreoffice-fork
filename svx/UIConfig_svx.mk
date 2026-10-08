@@ -148,6 +148,9 @@ $(eval $(call gb_UIConfig_add_uifiles,svx,\
 	svx/uiconfig/ui/themeselectorpanel \
 	svx/uiconfig/ui/toolbarpopover \
 	svx/uiconfig/ui/writer2027fontpopup \
+	svx/uiconfig/ui/writer2027typesystempopup \
+	svx/uiconfig/ui/writer2027blockgallerypopup \
+	svx/uiconfig/ui/writer2027documentkitpopup \
 	svx/uiconfig/ui/xmlsecstatmenu \
 	svx/uiconfig/ui/xformspage \
 	svx/uiconfig/ui/zoommenu \

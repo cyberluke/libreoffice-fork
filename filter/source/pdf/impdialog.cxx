@@ -157,6 +157,7 @@ ImpPDFTabDialog::ImpPDFTabDialog(weld::Window* pParent, const Sequence< Property
     mbUseTransitionEffects = maConfigItem.ReadBool( u"UseTransitionEffects"_ustr, true );
     mbIsSkipEmptyPages = maConfigItem.ReadBool( u"IsSkipEmptyPages"_ustr, false );
     mbIsExportPlaceholders = maConfigItem.ReadBool( u"ExportPlaceholders"_ustr, false );
+    mnWriter2027PDFOutputIntent = maConfigItem.ReadInt32( u"Writer2027PDFOutputIntent"_ustr, 1 );
     mbAddStream = maConfigItem.ReadBool( u"IsAddStream"_ustr, false );
 
     mbExportFormFields = maConfigItem.ReadBool( u"ExportFormFields"_ustr, false );
@@ -416,6 +417,7 @@ Sequence< PropertyValue > ImpPDFTabDialog::GetFilterData()
     maConfigItem.WriteBool( u"UseTransitionEffects"_ustr, mbUseTransitionEffects );
     maConfigItem.WriteBool( u"IsSkipEmptyPages"_ustr, mbIsSkipEmptyPages );
     maConfigItem.WriteBool( u"ExportPlaceholders"_ustr, mbIsExportPlaceholders );
+    maConfigItem.WriteInt32( u"Writer2027PDFOutputIntent"_ustr, mnWriter2027PDFOutputIntent );
     maConfigItem.WriteBool( u"IsAddStream"_ustr, mbAddStream );
 
     /*
@@ -517,6 +519,9 @@ ImpPDFTabGeneralPage::ImpPDFTabGeneralPage(weld::Container* pPage, weld::DialogC
     , mxCbExportOnlyNotesPages(m_xBuilder->weld_check_button(u"onlynotes"_ustr))
     , mxCbExportEmptyPages(m_xBuilder->weld_check_button(u"emptypages"_ustr))
     , mxCbExportPlaceholders(m_xBuilder->weld_check_button(u"exportplaceholders"_ustr))
+    , mxAppearanceFrame(m_xBuilder->weld_widget(u"appearance_frame"_ustr))
+    , mxRbPDFDigitalAppearance(m_xBuilder->weld_radio_button(u"rbPDFDigitalAppearance"_ustr))
+    , mxRbPDFPrintFriendly(m_xBuilder->weld_radio_button(u"rbPDFPrintFriendly"_ustr))
     , mxCbAddStream(m_xBuilder->weld_check_button(u"embed"_ustr))
     , mxCbWatermark(m_xBuilder->weld_check_button(u"watermark"_ustr))
     , mxFtWatermark(m_xBuilder->weld_label(u"watermarklabel"_ustr))
@@ -741,6 +746,16 @@ void ImpPDFTabGeneralPage::SetFilterConfigItem(ImpPDFTabDialog* pParent)
     mxCbExportPlaceholders->set_active(pParent->mbIsExportPlaceholders);
     mxCbExportPlaceholders->set_sensitive(
         mbIsWriter && !pParent->maConfigItem.IsReadOnly(u"ExportPlaceholders"_ustr));
+
+    // Writer 2027 output intent (Phase 5): Digital Appearance (default) vs
+    // Print Friendly, for Writer documents only. The choice is job config
+    // scoped to the PDF export dialog ("Writer2027PDFOutputIntent").
+    mxAppearanceFrame->set_visible(mbIsWriter);
+    mxRbPDFDigitalAppearance->set_active(pParent->mnWriter2027PDFOutputIntent != 0);
+    mxRbPDFPrintFriendly->set_active(pParent->mnWriter2027PDFOutputIntent == 0);
+    const bool bIntentRO = pParent->maConfigItem.IsReadOnly(u"Writer2027PDFOutputIntent"_ustr);
+    mxRbPDFDigitalAppearance->set_sensitive(mbIsWriter && !bIntentRO);
+    mxRbPDFPrintFriendly->set_sensitive(mbIsWriter && !bIntentRO);
 }
 
 void ImpPDFTabGeneralPage::GetFilterConfigItem( ImpPDFTabDialog* pParent )
@@ -772,6 +787,9 @@ void ImpPDFTabGeneralPage::GetFilterConfigItem( ImpPDFTabDialog* pParent )
 
     pParent->mbIsSkipEmptyPages = !mxCbExportEmptyPages->get_active();
     pParent->mbIsExportPlaceholders = mxCbExportPlaceholders->get_active();
+    // Writer 2027 output intent: 0 = Print Friendly, 1 = Digital Appearance
+    if (mbIsWriter)
+        pParent->mnWriter2027PDFOutputIntent = mxRbPDFPrintFriendly->get_active() ? 0 : 1;
     pParent->mbAddStream = mxCbAddStream->get_visible() && mxCbAddStream->get_active();
 
     pParent->mbIsPageRangeChecked = false;

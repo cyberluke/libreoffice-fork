@@ -176,9 +176,10 @@ enum class ViewOptCoreFlags2 {
     CursorInProt      = 0x0008,
     PdfExport         = 0x0010,
     Printing          = 0x0020,
+    Writer2027PrintFriendly = 0x0040,
 };
 namespace o3tl {
-    template<> struct typed_flags<ViewOptCoreFlags2> : is_typed_flags<ViewOptCoreFlags2, 0x003f> {};
+    template<> struct typed_flags<ViewOptCoreFlags2> : is_typed_flags<ViewOptCoreFlags2, 0x007f> {};
 };
 
 enum class ViewOptFlags2 {
@@ -648,6 +649,14 @@ public:
 
     void SetPDFExport(bool b)
         { SetCore2Option(b, ViewOptCoreFlags2::PdfExport); }
+
+    /// Writer 2027 Print Friendly output transform active (job-local rendering
+    /// state set by SwViewShell::PrepareForPrint; never stored in the document).
+    bool IsWriter2027PrintFriendly() const
+        {return bool(m_nCore2Options & ViewOptCoreFlags2::Writer2027PrintFriendly); }
+
+    void SetWriter2027PrintFriendly(bool b)
+        { SetCore2Option(b, ViewOptCoreFlags2::Writer2027PrintFriendly); }
 
     bool IsPrinting() const
         {return bool(m_nCore2Options & ViewOptCoreFlags2::Printing); }

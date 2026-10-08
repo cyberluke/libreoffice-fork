@@ -1,0 +1,411 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Writer 2027 Publication Inspector (Phase 10). -->
+<interface domain="sw">
+  <requires lib="gtk+" version="3.24"/>
+  <object class="GtkBox" id="PublicationInspectorPanel">
+    <property name="width-request">300</property>
+    <property name="visible">True</property>
+    <property name="can-focus">False</property>
+    <property name="hexpand">True</property>
+    <property name="vexpand">True</property>
+    <property name="orientation">vertical</property>
+    <property name="spacing">3</property>
+    <child>
+      <!-- n-columns=2 n-rows=2 -->
+      <object class="GtkGrid" id="gridControls">
+        <property name="visible">True</property>
+        <property name="can-focus">False</property>
+        <property name="margin-start">6</property>
+        <property name="margin-top">6</property>
+        <property name="margin-end">6</property>
+        <property name="column-spacing">6</property>
+        <property name="row-spacing">6</property>
+        <child>
+          <object class="GtkLabel" id="lbProfile">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="halign">start</property>
+            <property name="xalign">0</property>
+            <property name="label" translatable="yes" context="publicationinspector|lbProfile">Profile:</property>
+            <property name="mnemonic_widget">profile</property>
+          </object>
+          <packing>
+            <property name="left-attach">0</property>
+            <property name="top-attach">0</property>
+          </packing>
+        </child>
+        <child>
+          <object class="GtkComboBoxText" id="profile">
+            <property name="visible">True</property>
+            <property name="can-focus">True</property>
+            <items>
+              <item translatable="yes" context="publicationinspector|profileGeneral">General Document</item>
+              <item translatable="yes" context="publicationinspector|profilePdf">PDF — Digital Appearance</item>
+              <item translatable="yes" context="publicationinspector|profilePrintFriendly">Physical Print — Print Friendly</item>
+              <item translatable="yes" context="publicationinspector|profilePrintDigital">Physical Print — Digital Appearance</item>
+              <item translatable="yes" context="publicationinspector|profileWebPackage">Web Package</item>
+              <item translatable="yes" context="publicationinspector|profileSingleHtml">Single HTML</item>
+            </items>
+          </object>
+          <packing>
+            <property name="left-attach">1</property>
+            <property name="top-attach">0</property>
+            <property name="hexpand">True</property>
+          </packing>
+        </child>
+        <child>
+          <object class="GtkLabel" id="lbFilter">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="halign">start</property>
+            <property name="xalign">0</property>
+            <property name="label" translatable="yes" context="publicationinspector|lbFilter">Filter:</property>
+            <property name="mnemonic_widget">filter</property>
+          </object>
+          <packing>
+            <property name="left-attach">0</property>
+            <property name="top-attach">1</property>
+          </packing>
+        </child>
+        <child>
+          <object class="GtkComboBoxText" id="filter">
+            <property name="visible">True</property>
+            <property name="can-focus">True</property>
+            <items>
+              <item translatable="yes" context="publicationinspector|filterAll">All</item>
+              <item translatable="yes" context="publicationinspector|filterErrors">Errors</item>
+              <item translatable="yes" context="publicationinspector|filterWarnings">Warnings</item>
+              <item translatable="yes" context="publicationinspector|filterInfo">Info</item>
+            </items>
+          </object>
+          <packing>
+            <property name="left-attach">1</property>
+            <property name="top-attach">1</property>
+            <property name="hexpand">True</property>
+          </packing>
+        </child>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">0</property>
+      </packing>
+    </child>
+    <child>
+      <object class="GtkLabel" id="summary">
+        <property name="visible">True</property>
+        <property name="can-focus">False</property>
+        <property name="margin-start">6</property>
+        <property name="margin-end">6</property>
+        <property name="halign">start</property>
+        <property name="xalign">0</property>
+        <property name="wrap">True</property>
+        <property name="label" translatable="yes" context="publicationinspector|summary">Run a scan to inspect the document.</property>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">1</property>
+      </packing>
+    </child>
+    <child>
+      <object class="GtkBox" id="buttonBar">
+        <property name="visible">True</property>
+        <property name="can-focus">False</property>
+        <property name="margin-start">6</property>
+        <property name="margin-end">6</property>
+        <property name="spacing">6</property>
+        <child>
+          <object class="GtkButton" id="full-scan">
+            <property name="label" translatable="yes" context="publicationinspector|fullScan">Run Full Preflight</property>
+            <property name="visible">True</property>
+            <property name="can-focus">True</property>
+            <property name="receives-default">True</property>
+          </object>
+          <packing>
+            <property name="expand">True</property>
+            <property name="fill">True</property>
+            <property name="position">0</property>
+          </packing>
+        </child>
+        <child>
+          <object class="GtkButton" id="export-report">
+            <property name="label" translatable="yes" context="publicationinspector|exportReport">Export Report…</property>
+            <property name="visible">True</property>
+            <property name="can-focus">True</property>
+            <property name="receives-default">True</property>
+          </object>
+          <packing>
+            <property name="expand">True</property>
+            <property name="fill">True</property>
+            <property name="position">1</property>
+          </packing>
+        </child>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">2</property>
+      </packing>
+    </child>
+    <child>
+      <object class="GtkSeparator" id="sepTop">
+        <property name="visible">True</property>
+        <property name="can-focus">False</property>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">3</property>
+      </packing>
+    </child>
+    <child>
+      <object class="GtkExpander" id="expand-document">
+        <property name="visible">True</property>
+        <property name="can-focus">True</property>
+        <property name="expanded">True</property>
+        <child>
+          <object class="GtkBox" id="box-document">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="margin-start">6</property>
+            <property name="margin-top">6</property>
+            <property name="orientation">vertical</property>
+            <child>
+              <placeholder/>
+            </child>
+          </object>
+        </child>
+        <child type="label">
+          <object class="GtkLabel" id="expand-document-label">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes" context="publicationinspector|groupDocument">Document</property>
+          </object>
+        </child>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">4</property>
+      </packing>
+    </child>
+    <child>
+      <object class="GtkExpander" id="expand-accessibility">
+        <property name="visible">True</property>
+        <property name="can-focus">True</property>
+        <property name="expanded">True</property>
+        <child>
+          <object class="GtkBox" id="box-accessibility">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="margin-start">6</property>
+            <property name="margin-top">6</property>
+            <property name="orientation">vertical</property>
+            <child>
+              <placeholder/>
+            </child>
+          </object>
+        </child>
+        <child type="label">
+          <object class="GtkLabel" id="expand-accessibility-label">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes" context="publicationinspector|groupAccessibility">Accessibility</property>
+          </object>
+        </child>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">5</property>
+      </packing>
+    </child>
+    <child>
+      <object class="GtkExpander" id="expand-typography">
+        <property name="visible">True</property>
+        <property name="can-focus">True</property>
+        <property name="expanded">True</property>
+        <child>
+          <object class="GtkBox" id="box-typography">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="margin-start">6</property>
+            <property name="margin-top">6</property>
+            <property name="orientation">vertical</property>
+            <child>
+              <placeholder/>
+            </child>
+          </object>
+        </child>
+        <child type="label">
+          <object class="GtkLabel" id="expand-typography-label">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes" context="publicationinspector|groupTypography">Typography</property>
+          </object>
+        </child>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">6</property>
+      </packing>
+    </child>
+    <child>
+      <object class="GtkExpander" id="expand-media">
+        <property name="visible">True</property>
+        <property name="can-focus">True</property>
+        <property name="expanded">True</property>
+        <child>
+          <object class="GtkBox" id="box-media">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="margin-start">6</property>
+            <property name="margin-top">6</property>
+            <property name="orientation">vertical</property>
+            <child>
+              <placeholder/>
+            </child>
+          </object>
+        </child>
+        <child type="label">
+          <object class="GtkLabel" id="expand-media-label">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes" context="publicationinspector|groupMedia">Media</property>
+          </object>
+        </child>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">7</property>
+      </packing>
+    </child>
+    <child>
+      <object class="GtkExpander" id="expand-links">
+        <property name="visible">True</property>
+        <property name="can-focus">True</property>
+        <property name="expanded">True</property>
+        <child>
+          <object class="GtkBox" id="box-links">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="margin-start">6</property>
+            <property name="margin-top">6</property>
+            <property name="orientation">vertical</property>
+            <child>
+              <placeholder/>
+            </child>
+          </object>
+        </child>
+        <child type="label">
+          <object class="GtkLabel" id="expand-links-label">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes" context="publicationinspector|groupLinks">Links &amp; References</property>
+          </object>
+        </child>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">8</property>
+      </packing>
+    </child>
+    <child>
+      <object class="GtkExpander" id="expand-web">
+        <property name="visible">True</property>
+        <property name="can-focus">True</property>
+        <property name="expanded">True</property>
+        <child>
+          <object class="GtkBox" id="box-web">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="margin-start">6</property>
+            <property name="margin-top">6</property>
+            <property name="orientation">vertical</property>
+            <child>
+              <placeholder/>
+            </child>
+          </object>
+        </child>
+        <child type="label">
+          <object class="GtkLabel" id="expand-web-label">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes" context="publicationinspector|groupWeb">Web</property>
+          </object>
+        </child>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">9</property>
+      </packing>
+    </child>
+    <child>
+      <object class="GtkExpander" id="expand-pdf">
+        <property name="visible">True</property>
+        <property name="can-focus">True</property>
+        <property name="expanded">False</property>
+        <child>
+          <object class="GtkBox" id="box-pdf">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="margin-start">6</property>
+            <property name="margin-top">6</property>
+            <property name="orientation">vertical</property>
+            <child>
+              <placeholder/>
+            </child>
+          </object>
+        </child>
+        <child type="label">
+          <object class="GtkLabel" id="expand-pdf-label">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes" context="publicationinspector|groupPdf">PDF</property>
+          </object>
+        </child>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">10</property>
+      </packing>
+    </child>
+    <child>
+      <object class="GtkExpander" id="expand-print">
+        <property name="visible">True</property>
+        <property name="can-focus">True</property>
+        <property name="expanded">False</property>
+        <child>
+          <object class="GtkBox" id="box-print">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="margin-start">6</property>
+            <property name="margin-top">6</property>
+            <property name="orientation">vertical</property>
+            <child>
+              <placeholder/>
+            </child>
+          </object>
+        </child>
+        <child type="label">
+          <object class="GtkLabel" id="expand-print-label">
+            <property name="visible">True</property>
+            <property name="can-focus">False</property>
+            <property name="label" translatable="yes" context="publicationinspector|groupPrint">Print</property>
+          </object>
+        </child>
+      </object>
+      <packing>
+        <property name="expand">False</property>
+        <property name="fill">True</property>
+        <property name="position">11</property>
+      </packing>
+    </child>
+  </object>
+</interface>

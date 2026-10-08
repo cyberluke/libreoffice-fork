@@ -21,6 +21,8 @@
 
 #include <rootfrm.hxx>
 #include <pagefrm.hxx>
+#include <doc.hxx>
+#include <writer2027view.hxx>
 #include <viewimp.hxx>
 #include <viewopt.hxx>
 #include <flyfrm.hxx>
@@ -95,6 +97,8 @@ SwViewShellImp::SwViewShellImp( SwViewShell &rParent ) :
     m_bResetHdlHiddenPaint( false ),
     m_bSmoothUpdate( false ),
     m_bStopSmooth( false ),
+    // set from SwViewShell::Init() once the document is fully attached
+    m_bWriter2027DarkDocument( false ),
     m_nRestoreActions( 0 )
 {
 }
@@ -295,7 +299,17 @@ Color SwViewShellImp::GetRetoucheColor() const
     const SwViewShell &rSh = GetShell();
     if (rSh.GetWin() || rSh.isOutputToWindow())
     {
-        if ( rSh.GetViewOptions()->getBrowseMode() &&
+        if ( !rSh.GetViewOptions()->getBrowseMode() &&
+             !rSh.GetViewOptions()->IsPagePreview() &&
+             m_bWriter2027DarkDocument &&
+             sw::writer2027view::IsDarkThemeActive() )
+        {
+            // Writer 2027 digital canvas: deliberate dark workspace around the
+            // document stage (application presentation only, never written to
+            // the document; light and high-contrast themes keep their defaults).
+            aRet = sw::writer2027view::WorkspaceBackground;
+        }
+        else if ( rSh.GetViewOptions()->getBrowseMode() &&
              COL_TRANSPARENT != rSh.GetViewOptions()->GetRetoucheColor() )
             aRet = rSh.GetViewOptions()->GetRetoucheColor();
         else if(rSh.GetViewOptions()->IsPagePreview()  &&

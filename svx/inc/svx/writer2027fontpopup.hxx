@@ -13,15 +13,15 @@
 #include <svx/svxdllapi.h>
 
 #include <vcl/weld/Builder.hxx>
+#include <vcl/weld/Entry.hxx>
 #include <vcl/weld/Popover.hxx>
 #include <vcl/weld/TreeView.hxx>
+#include <svx/writer2027typography.hxx>
 
 #include <memory>
 
 class FontList;
 class vcl::Window;
-namespace weld { class Entry; }
-namespace svx::writer2027 { class FontPickerModel; }
 
 namespace svx::writer2027
 {
@@ -39,7 +39,7 @@ namespace svx::writer2027
     it works on Windows, GTK and Qt, anchors to the font control, flips above
     when there is no room below, and clamps to the active monitor's work area.
  */
-class SVX_DLLPUBLIC Writer2027FontPopup
+class SVXCORE_DLLPUBLIC Writer2027FontPopup
 {
 public:
     Writer2027FontPopup(FontPickerModel& rModel);
@@ -82,6 +82,7 @@ private:
     DECL_LINK(TreeKeyHdl, const KeyEvent&, bool);
     DECL_LINK(TreeSelectionHdl, weld::ItemView&, void);
     DECL_LINK(TreeMousePressHdl, const MouseEvent&, bool);
+    DECL_LINK(TreeMouseMoveHdl, const MouseEvent&, bool);
     DECL_LINK(RowGetSizeHdl, weld::TreeView::get_size_args, Size);
     DECL_LINK(RowRenderHdl, weld::TreeView::render_args, void);
     DECL_LINK(PopupClosedHdl, weld::Popover&, void);
@@ -97,6 +98,7 @@ private:
     void SelectRowIndex(int nIndex, bool bScroll);
     void HandleSearchEscape();
     void HandleTreeEscape();
+    void RowRender(vcl::RenderContext& rCtx, const tools::Rectangle& rRect, const OUString& rId);
 
     FontPickerModel& mrModel;
     std::unique_ptr<weld::Builder> m_xBuilder;
@@ -108,6 +110,7 @@ private:
     OUString maCurrentFamily;
     OUString maQuery;
     int mnLastSelectedIndex = -1;
+    int mnHoverIndex = -1; // row under the mouse (for the hover tint)
     bool mbInternalMove = false; // selection moves done by the popup itself
     bool mbOpen = false;         // popup currently shown
     Link<Writer2027FontPopup&, void> m_aCloseHdl;

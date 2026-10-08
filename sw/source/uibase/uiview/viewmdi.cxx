@@ -30,6 +30,7 @@
 #include <view.hxx>
 #include <wrtsh.hxx>
 #include <viewopt.hxx>
+#include <writer2027view.hxx>
 #include <frmatr.hxx>
 #include <edtwin.hxx>
 #include <pagedesc.hxx>
@@ -113,6 +114,16 @@ void SwView::SetZoom_( const Size &rEditSize, SvxZoomType eZoomType,
     const SwViewOption *pOpt = m_pWrtShell->GetViewOptions();
     tools::Long lLeftMargin = 0;
 
+    const MapMode aTmpMap( MapUnit::MapTwip );
+    const Size aWindowSize( GetEditWin().PixelToLogic( rEditSize, aTmpMap ) );
+
+    // Writer 2027 digital canvas: golden-ratio-inspired breathing room around
+    // the stage instead of maximum magnification ("fit page" keeps the page
+    // comfortably dominant while preserving deliberate gutters).
+    SwTwips nCanvasBorder = DOCUMENTBORDER;
+    if ( sw::writer2027view::IsWriter2027CanvasActive(*m_pWrtShell->GetDoc()) )
+        nCanvasBorder = sw::writer2027view::ComputeCanvasBorder(aWindowSize.Width());
+
     if( eZoomType != SvxZoomType::PERCENT )
     {
         const bool bAutomaticViewLayout = 0 == pOpt->GetViewLayoutColumns();
@@ -127,9 +138,6 @@ void SwView::SetZoom_( const Size &rEditSize, SvxZoomType eZoomType,
         if (pPostItMgr->HasNotes() && pPostItMgr->ShowNotes())
             aPageSize.AdjustWidth(pPostItMgr->GetSidebarWidth() + pPostItMgr->GetSidebarBorderWidth() );
 
-        const MapMode aTmpMap( MapUnit::MapTwip );
-        const Size aWindowSize( GetEditWin().PixelToLogic( rEditSize, aTmpMap ) );
-
         if( SvxZoomType::OPTIMAL == eZoomType )
         {
             // unclear if this is useful for OPTIMAL, or completely useless?
@@ -143,12 +151,12 @@ void SwView::SetZoom_( const Size &rEditSize, SvxZoomType eZoomType,
             if (!pPostItMgr->HasNotes() || !pPostItMgr->ShowNotes())
                 aPageSize.AdjustWidth(
                     -(rLRSpace.ResolveLeft() + rLRSpace.ResolveRight({}) + nLeftOfst * 2));
-            lLeftMargin = rLRSpace.ResolveLeft() + DOCUMENTBORDER + nLeftOfst;
+            lLeftMargin = rLRSpace.ResolveLeft() + nCanvasBorder + nLeftOfst;
             nFac = aWindowSize.Width() * 100 / aPageSize.Width();
         }
         else if(SvxZoomType::WHOLEPAGE == eZoomType || SvxZoomType::PAGEWIDTH == eZoomType )
         {
-            const tools::Long nOf = DOCUMENTBORDER * 2;
+            const tools::Long nOf = nCanvasBorder * 2;
             tools::Long nTmpWidth = bAutomaticViewLayout ? aPageSize.Width() : aRootSize.Width();
             nTmpWidth += nOf;
             aPageSize.AdjustHeight(nOf );
@@ -194,7 +202,7 @@ void SwView::SetZoom_( const Size &rEditSize, SvxZoomType eZoomType,
             Point aPos;
 
             if ( eZoomType == SvxZoomType::WHOLEPAGE )
-                aPos.setY( m_pWrtShell->GetAnyCurRect(CurRectType::Page).Top() - DOCUMENTBORDER );
+                aPos.setY( m_pWrtShell->GetAnyCurRect(CurRectType::Page).Top() - nCanvasBorder );
             else
             {
                 // Make sure that the cursor is in the visible range, so that

@@ -4348,6 +4348,73 @@
           <value>1</value>
         </prop>
       </node>
+      <node oor:name=".uno:Writer2027Story" oor:op="replace">
+        <prop oor:name="Label" oor:type="xs:string">
+          <value xml:lang="en-US">~Story</value>
+        </prop>
+        <prop oor:name="ContextLabel" oor:type="xs:string">
+          <value xml:lang="en-US">~Story</value>
+        </prop>
+        <prop oor:name="Properties" oor:type="xs:int">
+          <value>1</value>
+        </prop>
+      </node>
+<node oor:name=".uno:Writer2027TypeSystem" oor:op="replace">
+        <prop oor:name="Label" oor:type="xs:string">
+          <value xml:lang="en-US">Type System…</value>
+        </prop>
+        <prop oor:name="ContextLabel" oor:type="xs:string">
+          <value xml:lang="en-US">Type System…</value>
+        </prop>
+<prop oor:name="TooltipLabel" oor:type="xs:string">
+                <value xml:lang="en-US">Choose a Type System for the document</value>
+              </prop>
+        <prop oor:name="Properties" oor:type="xs:int">
+          <value>1</value>
+        </prop>
+      </node>
+      <node oor:name=".uno:Writer2027InsertBlock" oor:op="replace">
+        <prop oor:name="Label" oor:type="xs:string">
+          <value xml:lang="en-US">Insert Block…</value>
+        </prop>
+        <prop oor:name="ContextLabel" oor:type="xs:string">
+          <value xml:lang="en-US">Insert Block…</value>
+        </prop>
+<prop oor:name="TooltipLabel" oor:type="xs:string">
+                <value xml:lang="en-US">Insert a Writer 2027 editorial block</value>
+              </prop>
+        <prop oor:name="Properties" oor:type="xs:int">
+          <value>1</value>
+        </prop>
+      </node>
+      <node oor:name=".uno:Writer2027DocumentKit" oor:op="replace">
+        <prop oor:name="Label" oor:type="xs:string">
+          <value xml:lang="en-US">Document Kit…</value>
+        </prop>
+        <prop oor:name="ContextLabel" oor:type="xs:string">
+          <value xml:lang="en-US">Document Kit…</value>
+        </prop>
+<prop oor:name="TooltipLabel" oor:type="xs:string">
+                <value xml:lang="en-US">Choose a Writer 2027 Document Kit</value>
+              </prop>
+        <prop oor:name="Properties" oor:type="xs:int">
+          <value>1</value>
+        </prop>
+      </node>
+      <node oor:name=".uno:Writer2027PublishWeb" oor:op="replace">
+        <prop oor:name="Label" oor:type="xs:string">
+          <value xml:lang="en-US">Publish as Web…</value>
+        </prop>
+        <prop oor:name="ContextLabel" oor:type="xs:string">
+          <value xml:lang="en-US">Publish as Web…</value>
+        </prop>
+<prop oor:name="TooltipLabel" oor:type="xs:string">
+                <value xml:lang="en-US">Publish this document as a responsive web publication</value>
+              </prop>
+        <prop oor:name="Properties" oor:type="xs:int">
+          <value>1</value>
+        </prop>
+      </node>
       <node oor:name=".uno:TableCellBackgroundColor" oor:op="replace">
         <prop oor:name="Label" oor:type="xs:string">
           <value xml:lang="en-US">Table Cell Background Color</value>
@@ -4466,6 +4533,9 @@
       <node oor:name=".uno:MultiplePagesPerRow" oor:op="replace">
         <prop oor:name="Label" oor:type="xs:string">
           <value xml:lang="en-US">Multiple Pages per Row</value>
+        </prop>
+        <prop oor:name="ContextLabel" oor:type="xs:string">
+          <value xml:lang="en-US">~Multiple</value>
         </prop>
         <prop oor:name="Properties" oor:type="xs:int">
           <value>8</value>

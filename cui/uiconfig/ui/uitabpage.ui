@@ -186,6 +186,23 @@
                 <property name="position">9</property>
               </packing>
             </child>
+            <child>
+              <object class="GtkRadioButton" id="rbButton10">
+                <property name="label" translatable="yes" context="UITabPage|radiobutton10">Writer 2027</property>
+                <property name="visible">True</property>
+                <property name="can-focus">True</property>
+                <property name="receives-default">False</property>
+                <property name="halign">start</property>
+                <property name="valign">start</property>
+                <property name="draw-indicator">True</property>
+                <property name="group">rbButton1</property>
+              </object>
+              <packing>
+                <property name="expand">False</property>
+                <property name="fill">True</property>
+                <property name="position">10</property>
+              </packing>
+            </child>
           </object>
         </child>
         <child type="label">

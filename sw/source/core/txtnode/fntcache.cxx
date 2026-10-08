@@ -37,6 +37,7 @@
 #include <paintfrm.hxx>
 #include <viewsh.hxx>
 #include <viewopt.hxx>
+#include <writer2027view.hxx>
 #include <fntcache.hxx>
 #include <IDocumentSettingAccess.hxx>
 #include <swfont.hxx>
@@ -2363,6 +2364,45 @@ bool SwDrawTextInfo::ApplyAutoColor( vcl::Font* pFont )
 
     const SwViewShell *pVSh = GetShell();
     const bool bOutputToWindow(pVSh && (pVSh->GetWin() || pVSh->isOutputToWindow()));
+
+    // Writer 2027 Print Friendly (Phase 5): remap ONLY the default digital
+    // palette to paper-safe counterparts (light text -> dark, links -> dark
+    // blue/violet, hairlines -> dark neutral). Explicit user colors are
+    // deliberately left untouched, so intentionally designed content prints
+    // as authored. The page fill itself is suppressed by the print
+    // page-background seam, not here. Applies to print output and to the
+    // page preview (which renders to a window but must show the paper result).
+    const bool bWriter2027PrintFriendly = pVSh
+        && pVSh->GetViewOptions()->IsWriter2027PrintFriendly()
+        && (!bOutputToWindow || pVSh->IsPreview());
+    if (bWriter2027PrintFriendly)
+    {
+        bool bChanged = false;
+        const Color aFntColor( rFnt.GetColor() );
+        if (std::optional<Color> oMapped = sw::writer2027view::GetPrintFriendlyColor( aFntColor ))
+        {
+            if (pFont && *oMapped != pFont->GetColor())
+                pFont->SetColor( *oMapped );
+            else if (*oMapped != GetOut().GetFont().GetColor())
+            {
+                vcl::Font aFont( rFnt );
+                aFont.SetColor( *oMapped );
+                GetOut().SetFont( aFont );
+            }
+            bChanged = true;
+        }
+        const Color aLineColor( GetOut().GetLineColor() );
+        if (std::optional<Color> oMapped = sw::writer2027view::GetPrintFriendlyColor( aLineColor ))
+        {
+            if (*oMapped != GetOut().GetLineColor())
+                GetOut().SetLineColor( *oMapped );
+            if (*oMapped != GetOut().GetOverlineColor())
+                GetOut().SetOverlineColor( *oMapped );
+            bChanged = true;
+        }
+        if (bChanged)
+            return true;
+    }
 
     if (pVSh && !bOutputToWindow && pVSh->GetViewOptions()->IsBlackFont())
     {

@@ -1918,6 +1918,89 @@
  --------------------------------------------------------------------*/
 #define RID_SVXSTR_COPY_VALUES                      NC_("RID_SVXSTR_COPY_VALUES", "Copy values")
 
+/*--------------------------------------------------------------------
+    Description: Writer 2027 Type Systems (Phase 6).
+    Preset names are intentionally branded English product names; they are
+    still routed through the localization resources per product convention.
+ --------------------------------------------------------------------*/
+#define STR_WRITER2027_TYPESYSTEM_MODERN_PRODUCT   NC_("STR_WRITER2027_TYPESYSTEM_MODERN_PRODUCT", "Modern Product")
+#define STR_WRITER2027_TYPESYSTEM_EXECUTIVE        NC_("STR_WRITER2027_TYPESYSTEM_EXECUTIVE", "Executive")
+#define STR_WRITER2027_TYPESYSTEM_EDITORIAL        NC_("STR_WRITER2027_TYPESYSTEM_EDITORIAL", "Editorial")
+#define STR_WRITER2027_TYPESYSTEM_TECH             NC_("STR_WRITER2027_TYPESYSTEM_TECH", "Tech")
+#define STR_WRITER2027_TYPESYSTEM_RESEARCH         NC_("STR_WRITER2027_TYPESYSTEM_RESEARCH", "Research")
+#define STR_WRITER2027_TYPESYSTEM_ACCESSIBLE       NC_("STR_WRITER2027_TYPESYSTEM_ACCESSIBLE", "Accessible")
+#define STR_WRITER2027_TYPESYSTEM_CREATIVE_AGENCY  NC_("STR_WRITER2027_TYPESYSTEM_CREATIVE_AGENCY", "Creative Agency")
+#define STR_WRITER2027_TYPESYSTEM_CUSTOM           NC_("STR_WRITER2027_TYPESYSTEM_CUSTOM", "Custom")
+#define STR_WRITER2027_TYPESYSTEM_FONTS_MISSING    NC_("STR_WRITER2027_TYPESYSTEM_FONTS_MISSING", "%1 fonts missing")
+#define STR_WRITER2027_TYPESYSTEM_USING_FONTS      NC_("STR_WRITER2027_TYPESYSTEM_USING_FONTS", "Using: %1")
+#define STR_WRITER2027_TYPESYSTEM_UNAVAILABLE      NC_("STR_WRITER2027_TYPESYSTEM_UNAVAILABLE", "%1 unavailable")
+#define STR_WRITER2027_TYPESYSTEM_USING            NC_("STR_WRITER2027_TYPESYSTEM_USING", "Using %1")
+#define STR_WRITER2027_TYPESYSTEM_POPUP_TITLE      NC_("STR_WRITER2027_TYPESYSTEM_POPUP_TITLE", "Type System")
+
+/*--------------------------------------------------------------------
+    Description: Writer 2027 Document Kits (Phase 7).
+    Kit names are intentionally branded English product names; they are
+    still routed through the localization resources per product convention.
+ --------------------------------------------------------------------*/
+#define STR_WRITER2027_KIT_MODERN_PRODUCT            NC_("STR_WRITER2027_KIT_MODERN_PRODUCT", "Modern Product")
+#define STR_WRITER2027_KIT_MODERN_PRODUCT_DESC       NC_("STR_WRITER2027_KIT_MODERN_PRODUCT_DESC", "Clean product documents with wide breathing room and strong H1s.")
+#define STR_WRITER2027_KIT_MODERN_PRODUCT_USE        NC_("STR_WRITER2027_KIT_MODERN_PRODUCT_USE", "Product briefs, startup decks-as-documents, AI and software reports, technical proposals")
+#define STR_WRITER2027_KIT_EDITORIAL                 NC_("STR_WRITER2027_KIT_EDITORIAL", "Editorial")
+#define STR_WRITER2027_KIT_EDITORIAL_DESC            NC_("STR_WRITER2027_KIT_EDITORIAL_DESC", "Serif/sans contrast with strong section intros, pull quotes and captions.")
+#define STR_WRITER2027_KIT_EDITORIAL_USE             NC_("STR_WRITER2027_KIT_EDITORIAL_USE", "Essays, magazine-style PDFs, thought leadership, long-form articles, brand stories")
+#define STR_WRITER2027_KIT_EXECUTIVE                 NC_("STR_WRITER2027_KIT_EXECUTIVE", "Executive")
+#define STR_WRITER2027_KIT_EXECUTIVE_DESC            NC_("STR_WRITER2027_KIT_EXECUTIVE_DESC", "Restrained, high information density with clear sections and KPI blocks.")
+#define STR_WRITER2027_KIT_EXECUTIVE_USE             NC_("STR_WRITER2027_KIT_EXECUTIVE_USE", "Board memos, strategy reports, business proposals, consulting documents")
+#define STR_WRITER2027_KIT_RESEARCH                  NC_("STR_WRITER2027_KIT_RESEARCH", "Research")
+#define STR_WRITER2027_KIT_RESEARCH_DESC             NC_("STR_WRITER2027_KIT_RESEARCH_DESC", "Structured and citation-friendly with figures, captions and data notes.")
+#define STR_WRITER2027_KIT_RESEARCH_USE              NC_("STR_WRITER2027_KIT_RESEARCH_USE", "Technical reports, paper drafts, research notes, lab documents, scientific memos")
+#define STR_WRITER2027_KIT_CREATIVE_AGENCY           NC_("STR_WRITER2027_KIT_CREATIVE_AGENCY", "Creative Agency")
+#define STR_WRITER2027_KIT_CREATIVE_AGENCY_DESC      NC_("STR_WRITER2027_KIT_CREATIVE_AGENCY_DESC", "Large hero, display typography and image-led editorial rhythm.")
+#define STR_WRITER2027_KIT_CREATIVE_AGENCY_USE       NC_("STR_WRITER2027_KIT_CREATIVE_AGENCY_USE", "Brand proposals, campaign concepts, portfolio case studies, creative briefs")
+
+/*--------------------------------------------------------------------
+    Description: Writer 2027 Editorial Blocks (Phase 7).
+ --------------------------------------------------------------------*/
+#define STR_WRITER2027_BLOCK_HERO                    NC_("STR_WRITER2027_BLOCK_HERO", "Hero")
+#define STR_WRITER2027_BLOCK_HERO_DESC               NC_("STR_WRITER2027_BLOCK_HERO_DESC", "Cover opening: eyebrow, large title, subtitle and metadata.")
+#define STR_WRITER2027_BLOCK_SECTION_INTRO           NC_("STR_WRITER2027_BLOCK_SECTION_INTRO", "Section Intro")
+#define STR_WRITER2027_BLOCK_SECTION_INTRO_DESC      NC_("STR_WRITER2027_BLOCK_SECTION_INTRO_DESC", "Section number, large heading and a short intro paragraph.")
+#define STR_WRITER2027_BLOCK_PULL_QUOTE              NC_("STR_WRITER2027_BLOCK_PULL_QUOTE", "Pull Quote")
+#define STR_WRITER2027_BLOCK_PULL_QUOTE_DESC         NC_("STR_WRITER2027_BLOCK_PULL_QUOTE_DESC", "Oversized quote with attribution.")
+#define STR_WRITER2027_BLOCK_KEY_STAT                NC_("STR_WRITER2027_BLOCK_KEY_STAT", "Key Stat")
+#define STR_WRITER2027_BLOCK_KEY_STAT_DESC           NC_("STR_WRITER2027_BLOCK_KEY_STAT_DESC", "Large number, short label and an optional supporting line.")
+#define STR_WRITER2027_BLOCK_IMAGE_CAPTION           NC_("STR_WRITER2027_BLOCK_IMAGE_CAPTION", "Image + Caption")
+#define STR_WRITER2027_BLOCK_IMAGE_CAPTION_DESC      NC_("STR_WRITER2027_BLOCK_IMAGE_CAPTION_DESC", "Image placeholder with caption and source/credit.")
+#define STR_WRITER2027_BLOCK_TWO_COLUMN              NC_("STR_WRITER2027_BLOCK_TWO_COLUMN", "Two Column")
+#define STR_WRITER2027_BLOCK_TWO_COLUMN_DESC         NC_("STR_WRITER2027_BLOCK_TWO_COLUMN_DESC", "Bounded two-column editorial section.")
+#define STR_WRITER2027_BLOCK_CALLOUT                 NC_("STR_WRITER2027_BLOCK_CALLOUT", "Callout")
+#define STR_WRITER2027_BLOCK_CALLOUT_DESC            NC_("STR_WRITER2027_BLOCK_CALLOUT_DESC", "Short heading with an accented body.")
+#define STR_WRITER2027_BLOCK_RESEARCH_NOTE           NC_("STR_WRITER2027_BLOCK_RESEARCH_NOTE", "Research Note")
+#define STR_WRITER2027_BLOCK_RESEARCH_NOTE_DESC      NC_("STR_WRITER2027_BLOCK_RESEARCH_NOTE_DESC", "Label, title, body and a source/reference line.")
+#define STR_WRITER2027_BLOCK_CODE                    NC_("STR_WRITER2027_BLOCK_CODE", "Code")
+#define STR_WRITER2027_BLOCK_CODE_DESC               NC_("STR_WRITER2027_BLOCK_CODE_DESC", "Monospace technical block using the Type System mono role.")
+#define STR_WRITER2027_BLOCK_CLOSING                 NC_("STR_WRITER2027_BLOCK_CLOSING", "Closing Statement")
+#define STR_WRITER2027_BLOCK_CLOSING_DESC            NC_("STR_WRITER2027_BLOCK_CLOSING_DESC", "Large final statement with a small supporting line.")
+
+/*--------------------------------------------------------------------
+    Description: Writer 2027 block gallery + Document Kit picker UI.
+ --------------------------------------------------------------------*/
+#define STR_WRITER2027_GALLERY_TITLE                 NC_("STR_WRITER2027_GALLERY_TITLE", "Insert Block")
+#define STR_WRITER2027_GALLERY_SEARCH                NC_("STR_WRITER2027_GALLERY_SEARCH", "Search blocks…")
+#define STR_WRITER2027_GALLERY_CATEGORY_RECOMMENDED  NC_("STR_WRITER2027_GALLERY_CATEGORY_RECOMMENDED", "Recommended")
+#define STR_WRITER2027_GALLERY_CATEGORY_EDITORIAL    NC_("STR_WRITER2027_GALLERY_CATEGORY_EDITORIAL", "Editorial")
+#define STR_WRITER2027_GALLERY_CATEGORY_TECHNICAL    NC_("STR_WRITER2027_GALLERY_CATEGORY_TECHNICAL", "Technical")
+#define STR_WRITER2027_KIT_PICKER_TITLE              NC_("STR_WRITER2027_KIT_PICKER_TITLE", "Document Kit")
+#define STR_WRITER2027_KIT_TYPESYSTEM_LABEL          NC_("STR_WRITER2027_KIT_TYPESYSTEM_LABEL", "Type System: %1")
+#define STR_WRITER2027_KIT_APPLY_TITLE               NC_("STR_WRITER2027_KIT_APPLY_TITLE", "Apply Document Kit")
+#define STR_WRITER2027_KIT_APPLY_QUESTION            NC_("STR_WRITER2027_KIT_APPLY_QUESTION", "Apply the recommended typography (%1) for this kit?")
+#define STR_WRITER2027_KIT_APPLY_TYPOGRAPHY          NC_("STR_WRITER2027_KIT_APPLY_TYPOGRAPHY", "Apply recommended typography")
+#define STR_WRITER2027_KIT_KEEP_TYPOGRAPHY           NC_("STR_WRITER2027_KIT_KEEP_TYPOGRAPHY", "Keep current typography")
+#define STR_WRITER2027_BLOCK_HINT_AT_CURSOR          NC_("STR_WRITER2027_BLOCK_HINT_AT_CURSOR", "Inserts at the cursor")
+#define STR_WRITER2027_BLOCK_HINT_NEW_PARAGRAPH      NC_("STR_WRITER2027_BLOCK_HINT_NEW_PARAGRAPH", "Starts a new paragraph")
+#define STR_WRITER2027_BLOCK_HINT_NEW_SECTION        NC_("STR_WRITER2027_BLOCK_HINT_NEW_SECTION", "Creates a section")
+#define STR_WRITER2027_BLOCK_HINT_NEW_PAGE           NC_("STR_WRITER2027_BLOCK_HINT_NEW_PAGE", "Starts on a new page")
+
 #endif
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
