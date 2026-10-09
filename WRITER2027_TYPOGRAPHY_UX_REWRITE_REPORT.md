@@ -13,6 +13,9 @@ c1aec7254da8  Phase 2 — Writer2027TypographyList custom drawing surface
 a0483d043b99  Phase 3 — Type System product surface (Custom state, no scrollbar,
                         list + preview panel + Apply)
 7bdaa872b38d  Phase 4 — UITest coverage + registration
+0fe67bfc4bfc  Phase 5 — completion report
+ccef4937ffbc  Phase 6 — font picker popup crash fix (dangling weld::DrawingArea
+                        reference) + spec 36 exception-boundary hardening
 ```
 
 (Phase 1 and Phase 3 landed together in `a0483d043b99`.)
@@ -43,13 +46,35 @@ a0483d043b99  Phase 3 — Type System product surface (Custom state, no scrollba
    typography" is now the CURRENT header state, not a selectable row; the
    preset list is the 7 real presets only and `vscrollbar-policy=never` (they
    fit on a normal/4K work area).
+5. **Font picker dropdown crash on open (fail-fast `0xC0000409`).** Opening
+   the font popup aborted the process. Live cdb capture exposed the real fault
+   as an access violation in `Writer2027TypographyList::SetViewportSize+0x3e`
+   (`movsxd rcx,[rax+4]`, `rax=0x1100000001` garbage, `[rax+4]` unmapped).
+   `Writer2027TypographyList` holds a `weld::DrawingArea& m_xArea` to the
+   wrapper returned by `weld_drawing_area(u"rows")`, but the `unique_ptr` was a
+   **temporary destroyed at the end of the owning full expression**, freeing
+   the `SalInstanceDrawingArea`; the first later use of `m_xArea` dereferenced
+   freed memory, and LO's UAE filter converted the AV into the abort fail-fast
+   seen in WER (the earlier `.ui`/`GtkScrolledWindow` theory was a red herring).
+   Fixed in `ccef4937ffbc`: the popup now stores
+   `std::unique_ptr<weld::DrawingArea> m_xRowsArea;` (kept alive for the popup
+   lifetime) and constructs the list from `*m_xRowsArea` with a null guard,
+   mirroring the Type System popup's `m_xRows(...)` ownership pattern. The
+   `writer2027fontpopup.ui` "rows" widget is a plain `GtkDrawingArea` (no
+   `GtkScrolledWindow`), so `weld_drawing_area()` resolves it as `VclBuilder`
+   expects. Verified: the dropdown opens, the picker renders, and the process
+   stays alive (no AV, no LocalDumps `.dmp`).
 
 ## Font browser architecture
 
 ```
 Writer2027FontPopup (weld::Popover shell — LO owns shell/focus/anchoring)
     ├── search field
-    └── Writer2027TypographyList (custom weld::DrawingArea surface)
+    ├── m_xRowsArea (owning std::unique_ptr<weld::DrawingArea> — keeps the
+    │   drawing surface alive for the list below; prevents the dangling
+    │   reference that crashed SetViewportSize)
+    └── Writer2027TypographyList (custom weld::DrawingArea surface,
+            holds weld::DrawingArea& m_xArea = *m_xRowsArea)
             ├── TypographyRowLayout vector (row/specimen/title/meta, spec 12)
             ├── semantic DPI-scaled row heights (Header 36 / Font 84 /
             │   Category+Legacy+Back 44 / NoResults 48 logical px, spec 8)
@@ -98,6 +123,9 @@ open, explicit dispose on reopen, `typesystem.*` lifecycle logs (spec 38).
 | `make svx sw` (Phase 1–3, j8 MSVC) | 0 | PASS (compiles, links, installs) |
 | `make svx sw` (Phase 2, j8 MSVC) | 0 | PASS |
 | `make svx sw` (Phase 2 fixes) | 0 | PASS |
+| `make svx sw` (Phase 6 crash fix, j24 MSVC) | 0 | PASS (relinks svxcorelo.dll + swlo.dll) |
+| app launch `soffice.exe --writer` (post-fix) | — | PASS, window visible + responding |
+| font dropdown click (post-fix) | — | PASS — picker opens/renders, process stays alive, no AV, LocalDumps empty |
 | `make build` (full) | 2 | FAIL — external re-unpack corruption, see below |
 | `make CppunitTest_sw_uibase_uiview` | 2 | BLOCKED by liblangtag external build |
 | `make UITest_sw_writer2027` | 2 | BLOCKED by liblangtag external build |
@@ -170,8 +198,11 @@ open path + dispose-on-reopen) and covered by `typeSystemPopup.py`
 Phases 1–3 of the spec (correctness fixes, custom Typography Browser surface,
 Type System product redesign, canonical popup lifecycle) are **implemented,
 compiled, linked, installed and running** (app launches, window visible, all
-three `make svx sw` builds exit 0). Phase 4/5 execution (CppUnit, UITest,
-goldens, stress) is **NOT VERIFIED** on this machine due to the documented
-external-build corruption and the missing pinned visual runner. Per spec 52,
-the UI work is reported as implemented-with-build-evidence; the test gates are
-reported as NOT VERIFIED, not as passing.
+`make svx sw` builds exit 0). Phase 6 (font picker crash) is **fixed and
+verified live**: the dropdown opens and the process survives, with the true
+root cause (dangling `weld::DrawingArea` reference) captured under cdb and the
+ownership fix in `ccef4937ffbc`. Phase 4/5 execution (CppUnit, UITest, goldens,
+stress) is **NOT VERIFIED** on this machine due to the documented external-build
+corruption and the missing pinned visual runner. Per spec 52, the UI work is
+reported as implemented-with-build-evidence; the test gates are reported as NOT
+VERIFIED, not as passing.
