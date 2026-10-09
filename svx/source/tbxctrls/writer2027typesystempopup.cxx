@@ -269,14 +269,31 @@ void Writer2027TypeSystemPopup::GrabFocus()
 
 IMPL_LINK(Writer2027TypeSystemPopup, TreeSelectionHdl, weld::ItemView&, /*rView*/, void)
 {
-    // spec 19: changing highlight/keyboard selection only previews the detail
-    // panel; it never mutates the document and never applies.
-    if (!mbInternalMove)
-        UpdateDetailPanel();
+    try
+    {
+        // spec 19: changing highlight/keyboard selection only previews the detail
+        // panel; it never mutates the document and never applies.
+        if (!mbInternalMove)
+            UpdateDetailPanel();
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemPopup::TreeSelectionHdl", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemPopup::TreeSelectionHdl", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027TypeSystemPopup::TreeSelectionHdl");
+    }
 }
 
 IMPL_LINK(Writer2027TypeSystemPopup, TreeKeyHdl, const KeyEvent&, rKEvt, bool)
 {
+    try
+    {
     const vcl::KeyCode& rKeyCode = rKEvt.GetKeyCode();
     if (rKeyCode.GetCode() == KEY_RETURN && !rKeyCode.IsShift() && !rKeyCode.IsMod1()
         && !rKeyCode.IsMod2() && !rKeyCode.IsMod3())
@@ -287,13 +304,41 @@ IMPL_LINK(Writer2027TypeSystemPopup, TreeKeyHdl, const KeyEvent&, rKEvt, bool)
     }
     if (rKeyCode.GetCode() == KEY_ESCAPE)
         return true; // the popup framework closes on Escape (spec 5.4)
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemPopup::TreeKeyHdl", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemPopup::TreeKeyHdl", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027TypeSystemPopup::TreeKeyHdl");
+    }
     return false;
 }
 
 IMPL_LINK(Writer2027TypeSystemPopup, ApplyButtonHdl, weld::Button&, /*rButton*/, void)
 {
-    // spec 19: the Apply button applies the selected preset and closes.
-    ApplySelected();
+    try
+    {
+        // spec 19: the Apply button applies the selected preset and closes.
+        ApplySelected();
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemPopup::ApplyButtonHdl", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027TypeSystemPopup::ApplyButtonHdl", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027TypeSystemPopup::ApplyButtonHdl");
+    }
 }
 
 void Writer2027TypeSystemPopup::ApplySelected()

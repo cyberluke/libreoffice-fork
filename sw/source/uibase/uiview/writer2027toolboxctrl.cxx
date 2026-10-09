@@ -193,6 +193,12 @@ IMPL_LINK(Writer2027TypeSystemToolBoxControl, OnApply, const OUString&, rPresetI
 
 std::unique_ptr<WeldToolbarPopup> Writer2027TypeSystemToolBoxControl::weldPopupWindow()
 {
+    // spec 36: this factory is called from the framework's C boundary. Any
+    // exception escaping here terminates the process (fail-fast 0xC0000409),
+    // so the whole body is a hard exception boundary: log and return null
+    // instead of crashing.
+    try
+    {
     svx::writer2027::Writer2027LogMessage("typesystem.popup.created", u"weld popover"_ustr);
     auto xPopup = svx::writer2027::Writer2027TypeSystemPopup::Create(m_pToolbar);
     xPopup->connect_select(LINK(this, Writer2027TypeSystemToolBoxControl, OnApply));
@@ -229,26 +235,62 @@ std::unique_ptr<WeldToolbarPopup> Writer2027TypeSystemToolBoxControl::weldPopupW
         // Non-fatal: the list still shows, just without the highlight.
     }
     return xPopup;
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException(
+            "Writer2027TypeSystemToolBoxControl::weldPopupWindow", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException(
+            "Writer2027TypeSystemToolBoxControl::weldPopupWindow", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException(
+            "Writer2027TypeSystemToolBoxControl::weldPopupWindow");
+    }
+    return nullptr;
 }
 
 VclPtr<vcl::Window> Writer2027TypeSystemToolBoxControl::createVclPopupWindow(vcl::Window* pParent)
 {
-    svx::writer2027::Writer2027LogMessage("typesystem.controller.createVclPopupWindow",
-                                          u"fire"_ustr);
-    // spec 25: never keep a stale popup reference across opens. A previous
-    // open/close cycle may have left mxInterimPopover pointing at a disposed
-    // window; releasing it here guarantees the second (and every later) click
-    // creates a fresh popup instead of touching dead state.
-    if (mxInterimPopover)
-        mxInterimPopover.disposeAndClear();
+    // spec 36: called from the framework's C boundary; a thrown exception here
+    // terminates the process (fail-fast). Hard boundary: log and return null.
+    try
+    {
+        svx::writer2027::Writer2027LogMessage("typesystem.controller.createVclPopupWindow",
+                                              u"fire"_ustr);
+        // spec 25: never keep a stale popup reference across opens.
+        if (mxInterimPopover)
+            mxInterimPopover.disposeAndClear();
 
-    auto xPopup = svx::writer2027::Writer2027TypeSystemPopup::Create(pParent->GetFrameWeld());
-    xPopup->connect_select(LINK(this, Writer2027TypeSystemToolBoxControl, OnApply));
-    mxInterimPopover = VclPtr<InterimToolbarPopup>::Create(
-        getFrameInterface(), pParent, std::move(xPopup));
-    mxInterimPopover->Show();
-    svx::writer2027::Writer2027LogMessage("typesystem.popup.created", u"open"_ustr);
-    return mxInterimPopover;
+        auto xPopup
+            = svx::writer2027::Writer2027TypeSystemPopup::Create(pParent->GetFrameWeld());
+        xPopup->connect_select(LINK(this, Writer2027TypeSystemToolBoxControl, OnApply));
+        mxInterimPopover = VclPtr<InterimToolbarPopup>::Create(
+            getFrameInterface(), pParent, std::move(xPopup));
+        mxInterimPopover->Show();
+        svx::writer2027::Writer2027LogMessage("typesystem.popup.created", u"open"_ustr);
+        return mxInterimPopover;
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException(
+            "Writer2027TypeSystemToolBoxControl::createVclPopupWindow", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException(
+            "Writer2027TypeSystemToolBoxControl::createVclPopupWindow", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException(
+            "Writer2027TypeSystemToolBoxControl::createVclPopupWindow");
+    }
+    return nullptr;
 }
 
 void Writer2027TypeSystemToolBoxControl::ApplyPreset(const OUString& rPresetId)

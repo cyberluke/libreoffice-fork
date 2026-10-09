@@ -4,10 +4,12 @@
   <requires lib="gtk+" version="3.24"/>
   <!--
     Writer 2027 Typography Browser (remediation spec 6-13). The custom list is
-    drawn by Writer2027TypographyList on the GtkDrawingArea "rows"; scrolling,
-    hover, selection and hit-testing are owned by that class, so the scrolled
-    window shows no native scrollbar (the list paints its own thin indicator).
-    LibreOffice keeps the popup shell, focus and anchoring.
+    drawn by Writer2027TypographyList on the GtkDrawingArea "rows"; that class
+    owns layout, painting, hit-testing, hover/selection AND its own scroll
+    state + scrollbar indicator, so no GtkScrolledWindow is used (the list
+    paints the thin scroll indicator itself). The structure matches the
+    in-tree GtkDrawingArea pattern (e.g. chart2 dlg_DataLabel CT_DIAL): a
+    plain child with an explicit events mask and app-paintable.
   -->
   <object class="GtkPopover" id="Writer2027FontPopup">
     <property name="can-focus">False</property>
@@ -36,27 +38,19 @@
           </packing>
         </child>
         <child>
-          <object class="GtkScrolledWindow">
+          <object class="GtkDrawingArea" id="rows">
             <property name="visible">True</property>
             <property name="can-focus">True</property>
+            <property name="app-paintable">True</property>
             <property name="hexpand">True</property>
             <property name="vexpand">True</property>
-            <property name="hscrollbar-policy">never</property>
-            <property name="vscrollbar-policy">never</property>
-            <child>
-              <object class="GtkDrawingArea" id="rows">
-                <property name="visible">True</property>
-                <property name="can-focus">True</property>
-                <property name="vexpand">True</property>
-                <property name="hexpand">True</property>
-              </object>
-            </child>
-            <packing>
-              <property name="expand">True</property>
-              <property name="fill">True</property>
-              <property name="position">1</property>
-            </packing>
+            <property name="events">GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_KEY_PRESS_MASK | GDK_KEY_RELEASE_MASK | GDK_POINTER_MOTION_MASK | GDK_STRUCTURE_MASK</property>
           </object>
+          <packing>
+            <property name="expand">True</property>
+            <property name="fill">True</property>
+            <property name="position">1</property>
+          </packing>
         </child>
       </object>
     </child>

@@ -99,6 +99,13 @@ private:
     std::unique_ptr<weld::Builder> m_xBuilder;
     std::unique_ptr<weld::Popover> m_xPopup;
     std::unique_ptr<weld::Entry> m_xSearch;
+    // Owning handle for the DrawingArea the list draws on. Writer2027TypographyList
+    // holds a weld::DrawingArea& to it, so the unique_ptr MUST be kept alive for
+    // the popup's lifetime: binding the reference to a temporary
+    // weld_drawing_area() result freed the wrapper at the end of the full
+    // expression and crashed Writer2027TypographyList::SetViewportSize with an
+    // access violation on the dangling reference.
+    std::unique_ptr<weld::DrawingArea> m_xRowsArea;
     std::unique_ptr<Writer2027TypographyList> m_xList;
 
     const FontList* mpFontList = nullptr;

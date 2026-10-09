@@ -364,6 +364,10 @@ IMPL_LINK(Writer2027TypographyList, DrawHdl, weld::DrawingArea::draw_args, aPayl
     {
         vcl::RenderContext& rCtx = aPayload.first;
         const tools::Rectangle& rRect = aPayload.second;
+        svx::writer2027::Writer2027LogMessage(
+            "fontpopup.paint",
+            OUString::Concat(u"draw w=") + OUString::number(rRect.GetWidth())
+                + u" h=" + OUString::number(rRect.GetHeight()));
         Paint(rCtx, rRect);
     }
     catch (const css::uno::Exception& rEx)
@@ -619,6 +623,11 @@ void Writer2027TypographyList::PaintFontRow(vcl::RenderContext& rCtx,
 
 IMPL_LINK(Writer2027TypographyList, MousePressHdl, const MouseEvent&, rEvent, bool)
 {
+    svx::writer2027::Writer2027LogMessage("fontpopup.mousepress",
+                                          OUString::Concat(u"x=")
+                                              + OUString::number(rEvent.GetPosPixel().X())
+                                              + u" y="
+                                              + OUString::number(rEvent.GetPosPixel().Y()));
     if (!rEvent.IsLeft())
         return false;
 

@@ -184,13 +184,11 @@ namespace
     // 0x40010005). LO's UAE top-level filter swallows genuine faults with no
     // WER dump, so record the code + address + backtrace before dying; return
     // EXCEPTION_CONTINUE_SEARCH to preserve the original crash behaviour.
+    // Each fault is captured independently (no single-shot gate): a benign
+    // background exception must not exhaust the only capture slot.
     const DWORD nCode = pExceptionInfo->ExceptionRecord->ExceptionCode;
     if (nCode == 0x406D1388 /* DBG_PRINTEXCEPTION_C */ || nCode == 0x40010005 /* Control-C */)
         return EXCEPTION_CONTINUE_SEARCH;
-
-    if (g_bWriter2027CrashCaptured)
-        return EXCEPTION_CONTINUE_SEARCH;
-    g_bWriter2027CrashCaptured = true;
 
     if (g_hWriter2027CrashFile == INVALID_HANDLE_VALUE)
         return EXCEPTION_CONTINUE_SEARCH; // install-time open failed; nothing to write
@@ -198,6 +196,7 @@ namespace
     const sal_uIntPtr nFaultAddr
         = reinterpret_cast<sal_uIntPtr>(pExceptionInfo->ExceptionRecord->ExceptionAddress);
 
+    g_nWriter2027CrashUsed = 0; // reset per fault
     lcl_Writer2027CrashAppend("==== Writer2027 hard-fault capture ====\n");
     lcl_Writer2027CrashAppend("code: ");
     lcl_Writer2027CrashAppendHex(nCode);
@@ -220,8 +219,8 @@ namespace
     }
     lcl_Writer2027CrashAppend("==== end capture ====\n");
     lcl_Writer2027CrashFlush();
-    CloseHandle(g_hWriter2027CrashFile);
-    g_hWriter2027CrashFile = INVALID_HANDLE_VALUE;
+    // Keep the file handle open so subsequent faults append (the handle is
+    // closed at process exit via the OS).
 
     // Let the normal crash path (UAE filter) proceed unchanged.
     return EXCEPTION_CONTINUE_SEARCH;

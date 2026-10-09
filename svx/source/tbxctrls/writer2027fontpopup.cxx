@@ -76,11 +76,13 @@ void Writer2027FontPopup::Open(const FontList* pFontList, const OUString& rCurre
     {
         mpFontList = pFontList;
         maCurrentFamily = rCurrentFamily;
+        svx::writer2027::Writer2027LogMessage("fontpopup.open", u"begin"_ustr);
 
         // Build the popover once; reuse the instance across opens (no tear-down
         // churn, deterministic focus behaviour).
         if (!m_xBuilder)
         {
+            svx::writer2027::Writer2027LogMessage("fontpopup.open", u"building popover"_ustr);
             tools::Rectangle aInitRect(Point(0, 0), rAnchorWin.GetSizePixel());
             weld::Window* pInitParent = weld::GetPopupParent(rAnchorWin, aInitRect);
             m_xBuilder
@@ -88,8 +90,21 @@ void Writer2027FontPopup::Open(const FontList* pFontList, const OUString& rCurre
             m_xPopup = m_xBuilder->weld_popover(u"Writer2027FontPopup"_ustr);
             m_xSearch = m_xBuilder->weld_entry(u"search"_ustr);
             // The custom drawing list owns layout/paint/hit-test/scroll (spec 6).
-            m_xList = std::make_unique<Writer2027TypographyList>(
-                *m_xBuilder->weld_drawing_area(u"rows"_ustr));
+            // Keep the weld_drawing_area() result alive as a member: the list
+            // holds a weld::DrawingArea& to the wrapper, and a temporary would
+            // be freed at the end of this full expression, leaving a dangling
+            // reference that crashed SetViewportSize (access violation).
+            svx::writer2027::Writer2027LogMessage("fontpopup.open", u"creating list"_ustr);
+            m_xRowsArea = m_xBuilder->weld_drawing_area(u"rows"_ustr);
+            if (!m_xRowsArea)
+            {
+                svx::writer2027::Writer2027LogMessage("fontpopup.open",
+                                                      u"rows drawing area missing"_ustr);
+                mbOpen = false;
+                return;
+            }
+            m_xList = std::make_unique<Writer2027TypographyList>(*m_xRowsArea);
+            svx::writer2027::Writer2027LogMessage("fontpopup.open", u"list created"_ustr);
 
             m_xPopup->set_accessible_name(u"Font picker"_ustr);
             m_xPopup->connect_closed(LINK(this, Writer2027FontPopup, PopupClosedHdl));
@@ -157,15 +172,22 @@ void Writer2027FontPopup::Open(const FontList* pFontList, const OUString& rCurre
         // spacing). Single source of truth for the row width (device px).
         mnPopupContentWidthPx = nPopupWidth - 2 * ROW_MARGIN;
         const tools::Long nSearchH = 44 * fScale + 6 * fScale;
+        svx::writer2027::Writer2027LogMessage(
+            "fontpopup.open",
+            OUString::Concat(u"geometry w=") + OUString::number(nPopupWidth)
+                + u" h=" + OUString::number(nPopupH) + u" rows="
+                + OUString::number(static_cast<sal_Int64>(mrModel.GetRows().size())));
         m_xList->SetViewportSize(std::max<tools::Long>(mnPopupContentWidthPx, 1),
                                  std::max<tools::Long>(nPopupH - nSearchH, 1));
         RebuildList();
+        svx::writer2027::Writer2027LogMessage("fontpopup.open", u"showing popover"_ustr);
 
         tools::Rectangle aRect(Point(0, 0), rAnchorWin.GetSizePixel());
         weld::Window* pParent = weld::GetPopupParent(rAnchorWin, aRect);
         mbOpen = true;
         m_xPopup->popup_at_rect(pParent, aRect, weld::Placement::Under);
         m_xPopup->resize_to_request();
+        svx::writer2027::Writer2027LogMessage("fontpopup.open", u"shown"_ustr);
 
         // Focus the search field: typing filters immediately, Down moves into
         // the list, Enter applies the best match.
@@ -235,6 +257,8 @@ IMPL_LINK(Writer2027FontPopup, ApplyFamily, const OUString&, rFamily, void)
 
 IMPL_LINK(Writer2027FontPopup, ListActivateHdl, const FontPickerModel::Row&, rRow, bool)
 {
+    try
+    {
     switch (rRow.meKind)
     {
         case FontPickerModel::RowKind::Back:
@@ -257,6 +281,19 @@ IMPL_LINK(Writer2027FontPopup, ListActivateHdl, const FontPickerModel::Row&, rRo
         case FontPickerModel::RowKind::NoResults:
             break; // fonts handled by connect_select; Header/NoResults inert
     }
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027FontPopup::ListActivateHdl", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027FontPopup::ListActivateHdl", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027FontPopup::ListActivateHdl");
+    }
     return false;
 }
 
@@ -274,15 +311,32 @@ void Writer2027FontPopup::HandleSearchEscape()
 
 IMPL_LINK_NOARG(Writer2027FontPopup, SearchChangedHdl, weld::TextWidget&, void)
 {
-    maQuery = m_xSearch->get_text();
-    if (!IsOpen())
-        return;
-    RebuildModel();
-    RebuildList();
+    try
+    {
+        maQuery = m_xSearch->get_text();
+        if (!IsOpen())
+            return;
+        RebuildModel();
+        RebuildList();
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027FontPopup::SearchChangedHdl", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027FontPopup::SearchChangedHdl", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027FontPopup::SearchChangedHdl");
+    }
 }
 
 IMPL_LINK(Writer2027FontPopup, SearchKeyHdl, const KeyEvent&, rKEvt, bool)
 {
+    try
+    {
     if (lcl_IsPlainKey(rKEvt, KEY_DOWN))
     {
         // Move into the list and select the first selectable row.
@@ -318,12 +372,26 @@ IMPL_LINK(Writer2027FontPopup, SearchKeyHdl, const KeyEvent&, rKEvt, bool)
         m_xList->GrabFocus();
         return true;
     }
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027FontPopup::SearchKeyHdl", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027FontPopup::SearchKeyHdl", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027FontPopup::SearchKeyHdl");
+    }
     return false;
 }
 
 IMPL_LINK(Writer2027FontPopup, PopupClosedHdl, weld::Popover&, /*rPopover*/, void)
 {
     mbOpen = false;
+    svx::writer2027::Writer2027LogMessage("fontpopup.closed", u"close"_ustr);
     if (m_aCloseHdl.IsSet())
         m_aCloseHdl.Call(*this);
 }
