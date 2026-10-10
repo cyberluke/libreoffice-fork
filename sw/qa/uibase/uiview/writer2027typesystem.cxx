@@ -19,6 +19,7 @@
 #include <svx/writer2027typesystem.hxx>
 #include <writer2027typesystem.hxx>
 #include <writer2027typographymanager.hxx>
+#include <writer2027stylegallery.hxx>
 
 #include <IDocumentUndoRedo.hxx>
 #include <IDocumentStylePoolAccess.hxx>
@@ -462,6 +463,54 @@ CPPUNIT_TEST_FIXTURE(Writer2027TypeSystemTest, testMigrationIsOneUndoTurn)
     CPPUNIT_ASSERT_MESSAGE(std::string("one undo did not restore the direct override: ")
                                + std::string(aAfterUndo.toUtf8().getStr()),
                            aAfterUndo == u"Liberation Serif"_ustr);
+}
+
+// ---------------------------------------------------------------------------
+// Style Gallery re-render on TypeSystem change (user report / spec V4 37):
+// the gallery model is built from the live document style pool, so a Type
+// System apply must change the effective family the gallery shows. The
+// controller's update()/statusChanged() rebuild the gallery from this model;
+// here we verify the model itself tracks the preset so a re-render is real.
+// ---------------------------------------------------------------------------
+
+CPPUNIT_TEST_FIXTURE(Writer2027TypeSystemTest, testGalleryModelChasesTypeSystemChange)
+{
+    createSwDoc();
+    SwDoc* pDoc = getSwDoc();
+    CPPUNIT_ASSERT(pDoc);
+
+    auto bodyFamilyOf = [pDoc](const TypeSystemPreset* pPreset)
+    {
+        CPPUNIT_ASSERT(pPreset);
+        const ResolvedTypeSystem aResolved = ResolveTypeSystem(*pPreset, nullptr);
+        sw::writer2027typographymanager::EnsureSemanticStylesMaterialized(*pDoc);
+        sw::writer2027typesystem::ApplyTypeSystem(*pDoc, *pPreset, aResolved, nullptr);
+        // Rebuild the exact model RebuildGallery would hand to the gallery.
+        auto aItems = sw::writer2027stylegallery::BuildStyleGalleryModel(*pDoc, /*nCurrent*/ -1);
+        for (const auto& rItem : aItems)
+        {
+            if (rItem.maDisplayName == u"Text Body"_ustr)
+                return rItem.maEffectiveFamily;
+        }
+        return OUString();
+    };
+
+    const TypeSystemPreset* pTech = lcl_Catalog().FindPreset(u"tech"_ustr);
+    CPPUNIT_ASSERT(pTech);
+    const OUString aTechBody = bodyFamilyOf(pTech);
+    CPPUNIT_ASSERT_MESSAGE(std::string("tech did not give a body family: ")
+                               + std::string(aTechBody.toUtf8().getStr()),
+                           !aTechBody.isEmpty() && aTechBody != u"Liberation Serif"_ustr);
+
+    // Re-applying a different preset must change what the gallery shows.
+    const TypeSystemPreset* pEditorial = lcl_Catalog().FindPreset(u"editorial"_ustr);
+    CPPUNIT_ASSERT(pEditorial);
+    const OUString aEditorialBody = bodyFamilyOf(pEditorial);
+    CPPUNIT_ASSERT_MESSAGE(
+        std::string("gallery model did not re-render on TypeSystem change: ")
+            + std::string(aTechBody.toUtf8().getStr()) + " -> "
+            + std::string(aEditorialBody.toUtf8().getStr()),
+        aEditorialBody != aTechBody);
 }
 
 } // namespace sw::writer2027typesystemtests
