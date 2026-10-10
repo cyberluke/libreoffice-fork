@@ -5112,6 +5112,7 @@
                               <object class="GtkToolButton" id="btnInsertBlock">
                                 <property name="visible">True</property>
                                 <property name="action-name">.uno:Writer2027InsertBlock</property>
+                                <property name="label" translatable="yes" context="TabbedWriter">Blocks</property>
                               </object>
                               <packing>
                                 <property name="expand">False</property>
@@ -5137,6 +5138,7 @@
                               <object class="GtkToolButton" id="btnDocumentKit">
                                 <property name="visible">True</property>
                                 <property name="action-name">.uno:Writer2027DocumentKit</property>
+                                <property name="label" translatable="yes" context="TabbedWriter">Kit</property>
                               </object>
                               <packing>
                                 <property name="expand">False</property>
