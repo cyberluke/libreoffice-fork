@@ -8,6 +8,7 @@
  */
 
 #include <svx/writer2027typographylist.hxx>
+#include <svx/writer2027contrast.hxx>
 #include <svx/writer2027log.hxx>
 
 #include <svtools/ctrltool.hxx> // FontList
@@ -161,9 +162,55 @@ void Writer2027TypographyList::SetCurrentFamily(const OUString& rFamily)
     }
 }
 
+OUString Writer2027TypographyList::GetSelectedStableId() const
+{
+    // Stable key for a font row is its installed family name (maText).
+    if (mnSelectedIndex < 0 || !mpRows || mnSelectedIndex >= static_cast<int>(mpRows->size()))
+        return OUString();
+    const FontPickerModel::Row& rRow = (*mpRows)[mnSelectedIndex];
+    if (rRow.meKind == FontPickerModel::RowKind::Font)
+        return rRow.maText;
+    return OUString();
+}
+
+void Writer2027TypographyList::RestoreSelectionByStableId(const OUString& rStableId)
+{
+    if (rStableId.isEmpty() || !mpRows)
+        return;
+    // The selection index must map into the freshly rebuilt layout.
+    for (size_t i = 0; i < maLayout.size() && i < mpRows->size(); ++i)
+    {
+        if ((*mpRows)[i].meKind == FontPickerModel::RowKind::Font
+            && (*mpRows)[i].maText == rStableId)
+        {
+            mnSelectedIndex = static_cast<int>(i);
+            return;
+        }
+    }
+}
+
+void Writer2027TypographyList::SelectCurrentFamilyIfVisible()
+{
+    if (maCurrentFamily.isEmpty() || !mpRows)
+        return;
+    for (size_t i = 0; i < maLayout.size() && i < mpRows->size(); ++i)
+    {
+        if ((*mpRows)[i].meKind == FontPickerModel::RowKind::Font
+            && (*mpRows)[i].maText == maCurrentFamily)
+        {
+            mnSelectedIndex = static_cast<int>(i);
+            return;
+        }
+    }
+}
+
 void Writer2027TypographyList::RebuildLayout()
 {
     const double fScale = GetScale();
+    // Preserve the user's selection across model rebuilds by stable key
+    // (family name), never by integer index (spec 5 / 49.2). The integer
+    // index is not meaningful once the row vector is rebuilt.
+    const OUString aSelectedId = GetSelectedStableId();
     maLayout.clear();
     mnScrollOffsetPx = 0;
     mnHoverIndex = -1;
@@ -196,9 +243,14 @@ void Writer2027TypographyList::RebuildLayout()
             const tools::Long nInnerPad = lcl_Scale(SPECIMEN_PAD, fScale);
             const tools::Long nSpecimenH = nRowH - 2 * nPadV;
 
+            // All row sub-rectangles share the row's content-space Y (nY).
+            // Without nY the specimen box is pinned near the top of the whole
+            // content surface, so on row 1+ the hard row clip hides it (the
+            // "only the first row gets an Aa" regression). Paint subtracts
+            // mnScrollOffsetPx exactly once.
             aLayout.maSpecimenRect = tools::Rectangle(
-                nPadH + nInnerPad, nPadV + nInnerPad,
-                nPadH + nSpecimenW - nInnerPad, nPadV + nSpecimenH - nInnerPad);
+                nPadH + nInnerPad, nY + nPadV + nInnerPad, nPadH + nSpecimenW - nInnerPad,
+                nY + nPadV + nSpecimenH - nInnerPad);
             const tools::Long nTitleTop = nY + nPadV;
             const tools::Long nMetaTop = nTitleTop + lcl_Scale(TITLE_H, fScale)
                                          + lcl_Scale(LINE_GAP, fScale);
@@ -215,6 +267,12 @@ void Writer2027TypographyList::RebuildLayout()
     }
 
     mnContentHeightPx = nY;
+
+    // Restore state by stable key. If there was a prior selection, bring it
+    // back; otherwise highlight the current family when it is visible.
+    RestoreSelectionByStableId(aSelectedId);
+    if (mnSelectedIndex < 0)
+        SelectCurrentFamilyIfVisible();
     if (mnSelectedIndex >= 0 && mnSelectedIndex < static_cast<int>(maLayout.size()))
         EnsureSelectedVisible();
 }
@@ -423,35 +481,38 @@ void Writer2027TypographyList::PaintScrollBar(vcl::RenderContext& rCtx,
 {
     if (mnContentHeightPx <= mnViewportHeightPx)
         return;
+    // Low-visual-weight indicator (spec 49.5): no broad permanent gray bar;
+    // only a thin 4-6dp thumb, inset from the right edge, shown when scrollable.
     const StyleSettings& rStyle = Application::GetSettings().GetStyleSettings();
-    const Color aMuted = rStyle.GetWindowTextColor();
-    Color aTrack(aMuted);
-    aTrack.Merge(rStyle.GetWindowColor(), 200);
+    const Color aWindow = rStyle.GetWindowColor();
+    const tools::Long nScrollW = lcl_Scale(SCROLLBAR_W, GetScale());
 
-    const tools::Long nTrackX = rRect.Right() - lcl_Scale(SCROLLBAR_W, GetScale());
+    const tools::Long nTrackX = rRect.Right() - nScrollW;
     const tools::Long nTrackTop = rRect.Top();
     const tools::Long nTrackBottom = rRect.Bottom();
 
-    rCtx.Push(vcl::PushFlags::FILLCOLOR | vcl::PushFlags::LINECOLOR);
-    rCtx.SetLineColor(aTrack);
-    rCtx.SetFillColor(aTrack);
-    rCtx.DrawRect(tools::Rectangle(nTrackX, nTrackTop, rRect.Right(), nTrackBottom));
-
-    // Thumb.
+    // Thumb: proportional height, inset a little on both edges.
+    const tools::Long nInset = lcl_Scale(2, GetScale());
     const double fVisible = static_cast<double>(mnViewportHeightPx) / mnContentHeightPx;
     const tools::Long nThumbH
-        = std::max<tools::Long>(lcl_Scale(24, GetScale()),
-                                static_cast<tools::Long>(nTrackBottom - nTrackTop) * fVisible);
+        = std::max<tools::Long>(lcl_Scale(20, GetScale()),
+                                static_cast<tools::Long>((nTrackBottom - nTrackTop - 2 * nInset)
+                                                         * fVisible));
     const double fPos = static_cast<double>(mnScrollOffsetPx)
                         / std::max<tools::Long>(mnContentHeightPx - mnViewportHeightPx, 1);
     const tools::Long nThumbTop
-        = nTrackTop + static_cast<tools::Long>((nTrackBottom - nTrackTop - nThumbH) * fPos);
+        = nTrackTop + nInset
+          + static_cast<tools::Long>((nTrackBottom - nTrackTop - 2 * nInset - nThumbH) * fPos);
 
-    Color aThumb(aMuted);
-    aThumb.Merge(rStyle.GetWindowColor(), 120);
+    Color aThumb = rStyle.GetWindowTextColor();
+    aThumb.Merge(aWindow, 150);
+
+    rCtx.Push(vcl::PushFlags::FILLCOLOR | vcl::PushFlags::LINECOLOR);
     rCtx.SetLineColor(aThumb);
     rCtx.SetFillColor(aThumb);
-    rCtx.DrawRect(tools::Rectangle(nTrackX, nThumbTop, rRect.Right(), nThumbTop + nThumbH));
+    const tools::Long nThumbInset = std::max<tools::Long>(lcl_Scale(2, GetScale()), 1);
+    rCtx.DrawRect(tools::Rectangle(nTrackX + nThumbInset, nThumbTop, rRect.Right() - nThumbInset,
+                                   nThumbTop + nThumbH));
     rCtx.Pop();
 }
 
@@ -547,14 +608,35 @@ void Writer2027TypographyList::PaintRow(vcl::RenderContext& rCtx,
 
 void Writer2027TypographyList::PaintFontRow(vcl::RenderContext& rCtx,
                                             const TypographyRowLayout& rLayout,
-                                            const FontPickerModel::Row& rRow, bool /*bSelected*/,
-                                            bool /*bHover*/)
+                                            const FontPickerModel::Row& rRow, bool bSelected,
+                                            bool bHover)
 {
     const tools::Long nScroll = mnScrollOffsetPx;
     const StyleSettings& rStyle = Application::GetSettings().GetStyleSettings();
     const Color aTextColor = rStyle.GetWindowTextColor();
-    Color aMuted = aTextColor;
-    aMuted.Merge(rStyle.GetFieldColor(), 110);
+
+    // Effective row background. This must match what PaintRow drew for the
+    // selected/hover surface so the contrast computation uses the actual
+    // backdrop behind the metadata text (spec 6 / 49.3 / 70).
+    const Color aWindowColor = rStyle.GetWindowColor();
+    Color aRowBackground = aWindowColor;
+    if (bSelected)
+        aRowBackground.Merge(rStyle.GetHighlightColor(), 80);
+    else if (bHover)
+        aRowBackground.Merge(rStyle.GetHighlightColor(), 45);
+
+    // Foreground policy (WCAG contrast aware, >=4.5:1 for normal-size text):
+    //   title   -> WindowTextColor (contrast-checked against row background)
+    //   metadata-> muted secondary, forced to >= 4.5:1 on the row background.
+    // On a highlight surface the naive muted color is unreadable, so
+    // Writer2027EnsureTextContrast picks a readable one automatically.
+    const double kfMinContrast = 4.5;
+    const Color aTitleColor = Writer2027EnsureTextContrast(
+        aTextColor, aRowBackground, aWindowColor, kfMinContrast);
+    Color aMutedBase = aTextColor;
+    aMutedBase.Merge(rStyle.GetFieldColor(), 110);
+    const Color aMetaColor = Writer2027EnsureTextContrast(
+        aMutedBase, aRowBackground, aTitleColor, kfMinContrast);
 
     // Specimen: measured fit + hard clip (spec 10). Nested scope restores the
     // row clip before the text scope (the fix from remediation phase 1).
@@ -579,7 +661,7 @@ void Writer2027TypographyList::PaintFontRow(vcl::RenderContext& rCtx,
         {
             rCtx.Push(vcl::PushFlags::FONT | vcl::PushFlags::TEXTCOLOR);
             rCtx.SetFont(aPreviewFont);
-            rCtx.SetTextColor(aTextColor);
+            rCtx.SetTextColor(aTitleColor);
             const tools::Long nGlyphW = rCtx.GetTextWidth(u"Aa"_ustr);
             const tools::Long nGlyphH = rCtx.GetTextHeight();
             rCtx.DrawText(Point(aSpecimenView.Left()
@@ -600,7 +682,7 @@ void Writer2027TypographyList::PaintFontRow(vcl::RenderContext& rCtx,
     rCtx.Push(vcl::PushFlags::CLIPREGION);
     rCtx.IntersectClipRegion(aTitleView);
     rCtx.Push(vcl::PushFlags::TEXTCOLOR);
-    rCtx.SetTextColor(aTextColor);
+    rCtx.SetTextColor(aTitleColor);
     rCtx.DrawText(Point(aTitleView.Left(), aTitleView.Top()), rRow.maText);
     rCtx.Pop();
     rCtx.Pop(); // title clip
@@ -614,7 +696,7 @@ void Writer2027TypographyList::PaintFontRow(vcl::RenderContext& rCtx,
         rCtx.Push(vcl::PushFlags::CLIPREGION);
         rCtx.IntersectClipRegion(aMetaView);
         rCtx.Push(vcl::PushFlags::TEXTCOLOR);
-        rCtx.SetTextColor(aMuted);
+        rCtx.SetTextColor(aMetaColor);
         rCtx.DrawText(Point(aMetaView.Left(), aMetaView.Top()), rRow.maMeta);
         rCtx.Pop();
         rCtx.Pop(); // meta clip

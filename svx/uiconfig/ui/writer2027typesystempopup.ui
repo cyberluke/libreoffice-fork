@@ -2,29 +2,24 @@
 <!-- Generated with glade 3.38.2 -->
 <interface domain="svx">
   <requires lib="gtk+" version="3.24"/>
-  <object class="GtkTreeStore" id="liststore1">
-    <columns>
-      <!-- column-name text -->
-      <column type="gchararray"/>
-      <!-- column-name id -->
-      <column type="gchararray"/>
-    </columns>
-  </object>
   <!--
-    Writer 2027 Type System picker (remediation spec 16-21, 41-45).
+    Writer 2027 Type System picker (spec V3 10-16, 52-54).
 
     WeldToolbarPopup requires the popover's direct child container to carry the
     stable id "container" (svtools toolbarmenu.cxx: weld_container("container")).
 
     Design decisions:
-    - No hard-coded 240 px scrolled preset list: seven presets fit without a
-      scrollbar on a normal/4K work area (vscrollbar-policy=never).
     - "Custom typography" is CURRENT state, not a fake preset row.
-    - Left column = CURRENT + PRESETS (selectable systems only).
-    - Right column = one rich preview panel per selected preset, visually
-      separated (border + distinct background).
-    - Apply button applies the selected system and closes (spec 19).
-    - Target logical width 760 (min 680, max 880), clamped by the framework.
+    - Left column = CURRENT + PRESETS. The preset list is a custom
+      Writer2027TypeSystemPresetList drawing surface (id "preset_list") with
+      explicit rows, hover/selection, mouse hit-testing and a Current marker
+      (spec 12/13/14); not a backend TreeView.
+    - Right column = one rich font-rendered preview surface
+      (id "preview_surface", Writer2027TypeSystemPreview) that draws each sample
+      in its resolved role font (spec 10/52).
+    - Apply button applies the selected system and closes; click/Enter previews
+      only (spec 14/19).
+    - Target logical width 860 (spec 15), clamped by the framework.
   -->
   <object class="GtkPopover" id="Writer2027TypeSystemPopup">
     <property name="can-focus">False</property>
@@ -96,7 +91,7 @@
                 <property name="can-focus">False</property>
                 <property name="orientation">vertical</property>
                 <property name="spacing">3</property>
-                <property name="width-request">230</property>
+                <property name="width-request">250</property>
                 <child>
                   <object class="GtkLabel" id="typesystem_current_header">
                     <property name="visible">True</property>
@@ -152,43 +147,17 @@
                   </packing>
                 </child>
                 <child>
-                  <object class="GtkScrolledWindow">
+                  <object class="GtkDrawingArea" id="preset_list">
                     <property name="visible">True</property>
-                    <property name="can-focus">False</property>
-                    <property name="hscrollbar-policy">never</property>
-                    <property name="vscrollbar-policy">never</property>
-                    <property name="shadow-type">none</property>
-                    <child>
-                      <object class="GtkTreeView" id="preset_list">
-                        <property name="visible">True</property>
-                        <property name="can-focus">True</property>
-                        <property name="hexpand">True</property>
-                        <property name="vexpand">True</property>
-                        <property name="model">liststore1</property>
-                        <property name="headers-visible">False</property>
-                        <property name="headers-clickable">False</property>
-                        <property name="enable-search">False</property>
-                        <property name="show-expanders">False</property>
-                        <property name="activate-on-single-click">False</property>
-                        <accessibility>
-                          <relation type="labelled-by" target="typesystem_presets_header"/>
-                        </accessibility>
-                        <child internal-child="selection">
-                          <object class="GtkTreeSelection"/>
-                        </child>
-                        <child>
-                          <object class="GtkTreeViewColumn" id="treeviewcolumn1">
-                            <property name="expand">True</property>
-                            <child>
-                              <object class="GtkCellRendererText" id="cellrenderertext1"/>
-                              <attributes>
-                                <attribute name="text">0</attribute>
-                              </attributes>
-                            </child>
-                          </object>
-                        </child>
-                      </object>
-                    </child>
+                    <property name="can-focus">True</property>
+                    <property name="vexpand">True</property>
+                    <property name="hexpand">True</property>
+                    <property name="app-paintable">True</property>
+                    <property name="events">GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_KEY_PRESS_MASK | GDK_KEY_RELEASE_MASK | GDK_POINTER_MOTION_MASK | GDK_STRUCTURE_MASK</property>
+                    <accessibility>
+                      <role>ATK_ROLE_LIST</role>
+                      <relation type="labelled-by" target="typesystem_presets_header"/>
+                    </accessibility>
                   </object>
                   <packing>
                     <property name="expand">True</property>
@@ -209,155 +178,26 @@
                 <property name="can-focus">False</property>
                 <property name="orientation">vertical</property>
                 <property name="spacing">4</property>
-                <property name="width-request">380</property>
+                <property name="width-request">460</property>
                 <property name="margin-start">10</property>
                 <property name="margin-end">10</property>
                 <property name="margin-top">10</property>
                 <property name="margin-bottom">10</property>
                 <property name="border-width">1</property>
                 <child>
-                  <object class="GtkLabel" id="detail_name">
+                  <object class="GtkDrawingArea" id="preview_surface">
                     <property name="visible">True</property>
                     <property name="can-focus">False</property>
-                    <property name="xalign">0</property>
-                    <property name="label" translatable="yes" context="writer2027typesystempopup|detail_name">EDITORIAL</property>
-                    <attributes>
-                      <attribute name="weight" value="bold"/>
-                      <attribute name="scale" value="1.25"/>
-                    </attributes>
+                    <property name="vexpand">True</property>
+                    <property name="hexpand">True</property>
+                    <property name="app-paintable">True</property>
+                    <property name="events">GDK_STRUCTURE_MASK</property>
+                    <property name="tooltip-text" translatable="yes" context="writer2027typesystempopup|preview_surface">Type System preview</property>
                   </object>
                   <packing>
-                    <property name="expand">False</property>
+                    <property name="expand">True</property>
                     <property name="fill">True</property>
                     <property name="position">0</property>
-                  </packing>
-                </child>
-                <child>
-                  <object class="GtkLabel" id="role_heading">
-                    <property name="visible">True</property>
-                    <property name="can-focus">False</property>
-                    <property name="xalign">0</property>
-                    <property name="margin-top">6</property>
-                    <property name="label" translatable="yes" context="writer2027typesystempopup|role_heading">Heading · —</property>
-                    <attributes>
-                      <attribute name="weight" value="bold"/>
-                    </attributes>
-                  </object>
-                  <packing>
-                    <property name="expand">False</property>
-                    <property name="fill">True</property>
-                    <property name="position">1</property>
-                  </packing>
-                </child>
-                <child>
-                  <object class="GtkLabel" id="preview_heading">
-                    <property name="visible">True</property>
-                    <property name="can-focus">False</property>
-                    <property name="xalign">0</property>
-                    <property name="label" translatable="yes" context="writer2027typesystempopup|preview_heading">A Better Way to Write</property>
-                    <attributes>
-                      <attribute name="scale" value="1.3"/>
-                    </attributes>
-                  </object>
-                  <packing>
-                    <property name="expand">False</property>
-                    <property name="fill">True</property>
-                    <property name="position">2</property>
-                  </packing>
-                </child>
-                <child>
-                  <object class="GtkLabel" id="role_body">
-                    <property name="visible">True</property>
-                    <property name="can-focus">False</property>
-                    <property name="xalign">0</property>
-                    <property name="margin-top">6</property>
-                    <property name="label" translatable="yes" context="writer2027typesystempopup|role_body">Body · —</property>
-                    <attributes>
-                      <attribute name="weight" value="bold"/>
-                    </attributes>
-                  </object>
-                  <packing>
-                    <property name="expand">False</property>
-                    <property name="fill">True</property>
-                    <property name="position">3</property>
-                  </packing>
-                </child>
-                <child>
-                  <object class="GtkLabel" id="preview_body">
-                    <property name="visible">True</property>
-                    <property name="can-focus">False</property>
-                    <property name="wrap">True</property>
-                    <property name="xalign">0</property>
-                    <property name="label" translatable="yes" context="writer2027typesystempopup|preview_body">A clear, calm paragraph for long-form reading.</property>
-                  </object>
-                  <packing>
-                    <property name="expand">False</property>
-                    <property name="fill">True</property>
-                    <property name="position">4</property>
-                  </packing>
-                </child>
-                <child>
-                  <object class="GtkLabel" id="role_mono">
-                    <property name="visible">True</property>
-                    <property name="can-focus">False</property>
-                    <property name="xalign">0</property>
-                    <property name="margin-top">6</property>
-                    <property name="label" translatable="yes" context="writer2027typesystempopup|role_mono">Code · —</property>
-                    <attributes>
-                      <attribute name="weight" value="bold"/>
-                    </attributes>
-                  </object>
-                  <packing>
-                    <property name="expand">False</property>
-                    <property name="fill">True</property>
-                    <property name="position">5</property>
-                  </packing>
-                </child>
-                <child>
-                  <object class="GtkLabel" id="preview_mono">
-                    <property name="visible">True</property>
-                    <property name="can-focus">False</property>
-                    <property name="xalign">0</property>
-                    <property name="label" translatable="yes" context="writer2027typesystempopup|preview_mono">const mode = "editorial";</property>
-                    <attributes>
-                      <attribute name="family" value="monospace"/>
-                    </attributes>
-                  </object>
-                  <packing>
-                    <property name="expand">False</property>
-                    <property name="fill">True</property>
-                    <property name="position">6</property>
-                  </packing>
-                </child>
-                <child>
-                  <object class="GtkLabel" id="role_scale">
-                    <property name="visible">True</property>
-                    <property name="can-focus">False</property>
-                    <property name="xalign">0</property>
-                    <property name="margin-top">6</property>
-                    <property name="label" translatable="yes" context="writer2027typesystempopup|role_scale">Scale · —</property>
-                    <attributes>
-                      <attribute name="weight" value="bold"/>
-                    </attributes>
-                  </object>
-                  <packing>
-                    <property name="expand">False</property>
-                    <property name="fill">True</property>
-                    <property name="position">7</property>
-                  </packing>
-                </child>
-                <child>
-                  <object class="GtkLabel" id="fallback_status">
-                    <property name="visible">True</property>
-                    <property name="can-focus">False</property>
-                    <property name="wrap">True</property>
-                    <property name="xalign">0</property>
-                    <property name="label" translatable="yes" context="writer2027typesystempopup|fallback_status">Fallbacks: all preferred fonts installed</property>
-                  </object>
-                  <packing>
-                    <property name="expand">False</property>
-                    <property name="fill">True</property>
-                    <property name="position">8</property>
                   </packing>
                 </child>
               </object>

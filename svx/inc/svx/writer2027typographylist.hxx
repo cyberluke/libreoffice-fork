@@ -116,6 +116,12 @@ private:
     tools::Long MaxContentOffset() const;
     double GetScale() const;
 
+    // Selection is preserved by a stable key (family name) across model
+    // rebuilds, never by integer index (spec 5 / 49.2).
+    OUString GetSelectedStableId() const;
+    void RestoreSelectionByStableId(const OUString& rStableId);
+    void SelectCurrentFamilyIfVisible();
+
     weld::DrawingArea& m_xArea;
     const std::vector<FontPickerModel::Row>* mpRows = nullptr;
     const FontList* mpFontList = nullptr;

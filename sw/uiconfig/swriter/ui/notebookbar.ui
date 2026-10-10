@@ -3877,7 +3877,7 @@
                             <child>
                               <object class="GtkToolButton" id="btnHomeStylesPreview">
                                 <property name="visible">True</property>
-                                <property name="action-name">.uno:StylesPreview</property>
+                                <property name="action-name">.uno:Writer2027StyleGallery</property>
                               </object>
                               <packing>
                                 <property name="expand">True</property>

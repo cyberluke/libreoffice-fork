@@ -26,37 +26,45 @@ namespace
 // Resolved typographic scales. All sizes are twips (1/20 pt); the ratios
 // follow the Phase 6 spec and are rounded to clean point values.
 const TypeSystemScale aBalanced = {
-    /*mnBody*/ 220, /*mnH1*/ 420, /*mnH2*/ 340, /*mnH3*/ 280, /*mnTitle*/ 540,
+    /*mnBody*/ 220, /*mnH1*/ 420, /*mnH2*/ 340, /*mnH3*/ 280, /*mnH4*/ 250,
+    /*mnH5*/ 230, /*mnH6*/ 220, /*mnTitle*/ 540,
     /*mnSubtitle*/ 260, /*mnCaption*/ 190, /*mnQuote*/ 220, /*mnMono*/ 200,
     /*mnLineSpacingPercent*/ 115, /*mnSpaceAfter*/ 150,
     /*H1*/ 300, 150, /*H2*/ 260, 120, /*H3*/ 220, 100,
+    /*H4*/ 190, 80, /*H5*/ 160, 60, /*H6*/ 150, 50,
     /*Title*/ 200, 220, /*mnSubtitleAfter*/ 300,
     /*Quote*/ 240, 150, /*mnCaptionBefore*/ 180
 };
 
 const TypeSystemScale aEditorial = {
-    /*mnBody*/ 240, /*mnH1*/ 520, /*mnH2*/ 400, /*mnH3*/ 320, /*mnTitle*/ 720,
+    /*mnBody*/ 240, /*mnH1*/ 520, /*mnH2*/ 400, /*mnH3*/ 320, /*mnH4*/ 280,
+    /*mnH5*/ 250, /*mnH6*/ 240, /*mnTitle*/ 720,
     /*mnSubtitle*/ 280, /*mnCaption*/ 200, /*mnQuote*/ 240, /*mnMono*/ 210,
     /*mnLineSpacingPercent*/ 130, /*mnSpaceAfter*/ 190,
     /*H1*/ 380, 170, /*H2*/ 320, 140, /*H3*/ 260, 110,
+    /*H4*/ 220, 90, /*H5*/ 180, 70, /*H6*/ 170, 60,
     /*Title*/ 240, 240, /*mnSubtitleAfter*/ 340,
     /*Quote*/ 300, 190, /*mnCaptionBefore*/ 220
 };
 
 const TypeSystemScale aCompact = {
-    /*mnBody*/ 210, /*mnH1*/ 340, /*mnH2*/ 290, /*mnH3*/ 250, /*mnTitle*/ 420,
+    /*mnBody*/ 210, /*mnH1*/ 340, /*mnH2*/ 290, /*mnH3*/ 250, /*mnH4*/ 230,
+    /*mnH5*/ 210, /*mnH6*/ 210, /*mnTitle*/ 420,
     /*mnSubtitle*/ 240, /*mnCaption*/ 180, /*mnQuote*/ 210, /*mnMono*/ 190,
     /*mnLineSpacingPercent*/ 110, /*mnSpaceAfter*/ 120,
     /*H1*/ 240, 100, /*H2*/ 200, 80, /*H3*/ 170, 70,
+    /*H4*/ 150, 60, /*H5*/ 130, 50, /*H6*/ 120, 40,
     /*Title*/ 150, 150, /*mnSubtitleAfter*/ 240,
     /*Quote*/ 190, 110, /*mnCaptionBefore*/ 140
 };
 
 const TypeSystemScale aAccessible = {
-    /*mnBody*/ 250, /*mnH1*/ 480, /*mnH2*/ 400, /*mnH3*/ 320, /*mnTitle*/ 600,
+    /*mnBody*/ 250, /*mnH1*/ 480, /*mnH2*/ 400, /*mnH3*/ 320, /*mnH4*/ 290,
+    /*mnH5*/ 260, /*mnH6*/ 250, /*mnTitle*/ 600,
     /*mnSubtitle*/ 300, /*mnCaption*/ 220, /*mnQuote*/ 250, /*mnMono*/ 220,
     /*mnLineSpacingPercent*/ 135, /*mnSpaceAfter*/ 200,
     /*H1*/ 320, 170, /*H2*/ 280, 130, /*H3*/ 240, 110,
+    /*H4*/ 200, 90, /*H5*/ 170, 70, /*H6*/ 160, 60,
     /*Title*/ 220, 240, /*mnSubtitleAfter*/ 320,
     /*Quote*/ 260, 170, /*mnCaptionBefore*/ 200
 };

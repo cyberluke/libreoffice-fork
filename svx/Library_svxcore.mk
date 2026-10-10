@@ -444,6 +444,8 @@ $(eval $(call gb_Library_add_exception_objects,svxcore,\
     svx/source/tbxctrls/writer2027fontpopup \
     svx/source/tbxctrls/writer2027typesystem \
     svx/source/tbxctrls/writer2027typesystempopup \
+    svx/source/tbxctrls/writer2027typesystempresetlist \
+    svx/source/tbxctrls/writer2027typesystempreview \
     svx/source/tbxctrls/writer2027blocks \
     svx/source/tbxctrls/writer2027blockgallerypopup \
     svx/source/tbxctrls/writer2027documentkitpopup \

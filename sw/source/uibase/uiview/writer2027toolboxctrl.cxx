@@ -39,6 +39,7 @@
 
 #include <unotxdoc.hxx>
 #include <writer2027typesystem.hxx>
+#include <writer2027typographymanager.hxx>
 
 #include <exception>
 
@@ -203,31 +204,24 @@ std::unique_ptr<WeldToolbarPopup> Writer2027TypeSystemToolBoxControl::weldPopupW
     auto xPopup = svx::writer2027::Writer2027TypeSystemPopup::Create(m_pToolbar);
     xPopup->connect_select(LINK(this, Writer2027TypeSystemToolBoxControl, OnApply));
 
-    // Highlight the preset currently detected in THIS frame's document.
+    // Provide the real installed FontList FIRST (uses the same context, same
+    // resolved model as Apply) so the picker previews exactly what Apply will
+    // store (spec 8/30/31). Then highlight the detected preset.
+    const auto aContext
+        = sw::writer2027typographymanager::ResolveWriter2027TypographyContext(m_xFrame);
+    if (aContext.pFontList)
+        xPopup->SetFontList(aContext.pFontList);
+
+    // Highlight the preset currently detected in THIS frame's document using
+    // the REAL installed FontList from the owning doc shell (spec 8/30).
     try
     {
-        if (m_xFrame.is())
+        if (aContext.pDoc && aContext.pDocShell)
         {
-            css::uno::Reference<css::frame::XController> xController = m_xFrame->getController();
-            if (xController.is())
-            {
-                SwXTextDocument* pTextDoc
-                    = comphelper::getFromUnoTunnel<SwXTextDocument>(
-                        xController->getModel());
-                if (pTextDoc)
-                {
-                    const FontList* pFontList = nullptr;
-                    SwDoc* pDoc = pTextDoc->GetDocShell() ? pTextDoc->GetDocShell()->GetDoc()
-                                                          : nullptr;
-                    if (pDoc)
-                    {
-                        const OUString aPreset
-                            = sw::writer2027typesystem::DetectCurrentTypeSystem(*pDoc,
-                                                                                 pFontList);
-                        xPopup->SetCurrentPreset(aPreset);
-                    }
-                }
-            }
+            const OUString aPreset
+                = sw::writer2027typesystem::DetectCurrentTypeSystem(*aContext.pDoc,
+                                                                     aContext.pFontList);
+            xPopup->SetCurrentPreset(aPreset);
         }
     }
     catch (const css::uno::Exception&)
@@ -269,6 +263,17 @@ VclPtr<vcl::Window> Writer2027TypeSystemToolBoxControl::createVclPopupWindow(vcl
         auto xPopup
             = svx::writer2027::Writer2027TypeSystemPopup::Create(pParent->GetFrameWeld());
         xPopup->connect_select(LINK(this, Writer2027TypeSystemToolBoxControl, OnApply));
+        const auto aContext
+            = sw::writer2027typographymanager::ResolveWriter2027TypographyContext(m_xFrame);
+        if (aContext.pFontList)
+            xPopup->SetFontList(aContext.pFontList);
+        if (aContext.pDoc && aContext.pDocShell)
+        {
+            const OUString aPreset
+                = sw::writer2027typesystem::DetectCurrentTypeSystem(*aContext.pDoc,
+                                                                     aContext.pFontList);
+            xPopup->SetCurrentPreset(aPreset);
+        }
         mxInterimPopover = VclPtr<InterimToolbarPopup>::Create(
             getFrameInterface(), pParent, std::move(xPopup));
         mxInterimPopover->Show();
@@ -295,7 +300,10 @@ VclPtr<vcl::Window> Writer2027TypeSystemToolBoxControl::createVclPopupWindow(vcl
 
 void Writer2027TypeSystemToolBoxControl::ApplyPreset(const OUString& rPresetId)
 {
-    // Bind to the owning frame's document (never SwModule::GetFirstView).
+    // Bind to the owning frame's document (never SwModule::GetFirstView) and
+    // use the REAL installed FontList from the owning doc shell so preview and
+    // apply share one resolved model (spec 7/8/31). A null FontList must never
+    // silently mean "pretend every family exists": fail closed instead.
     if (!m_xFrame.is())
     {
         svx::writer2027::Writer2027LogMessage("Writer2027TypeSystemToolBoxControl::ApplyPreset",
@@ -303,16 +311,13 @@ void Writer2027TypeSystemToolBoxControl::ApplyPreset(const OUString& rPresetId)
         return;
     }
 
-    css::uno::Reference<css::frame::XController> xController = m_xFrame->getController();
-    if (!xController.is())
-        return;
-    SwXTextDocument* pTextDoc = comphelper::getFromUnoTunnel<SwXTextDocument>(
-        xController->getModel());
-    if (!pTextDoc || !pTextDoc->GetDocShell())
+    const auto aContext
+        = sw::writer2027typographymanager::ResolveWriter2027TypographyContext(m_xFrame);
+    if (!aContext.pDoc || !aContext.pDocShell || !aContext.pFontList)
     {
         svx::writer2027::Writer2027LogMessage("Writer2027TypeSystemToolBoxControl::ApplyPreset",
-                                              u"no writer doc on frame"_ustr);
-        return;
+                                              u"no font info; apply disabled"_ustr);
+        return; // spec 9: do not apply unverified family names
     }
 
     const svx::writer2027::Writer2027TypeSystemCatalog& rCatalog
@@ -320,13 +325,16 @@ void Writer2027TypeSystemToolBoxControl::ApplyPreset(const OUString& rPresetId)
     const svx::writer2027::TypeSystemPreset* pPreset = rCatalog.FindPreset(rPresetId);
     if (!pPreset)
         return;
+
     const svx::writer2027::ResolvedTypeSystem aResolved
-        = svx::writer2027::ResolveTypeSystem(*pPreset, nullptr);
-    SwDoc* pDoc = pTextDoc->GetDocShell()->GetDoc();
-    sw::writer2027typesystem::ApplyTypeSystem(*pDoc, *pPreset, aResolved, nullptr);
+        = svx::writer2027::ResolveTypeSystem(*pPreset, aContext.pFontList);
+    sw::writer2027typographymanager::EnsureSemanticStylesMaterialized(*aContext.pDoc);
+    const bool bOk = sw::writer2027typesystem::ApplyTypeSystem(*aContext.pDoc, *pPreset,
+                                                               aResolved, aContext.pFontList);
     svx::writer2027::Writer2027LogMessage(
         "Writer2027TypeSystemToolBoxControl::ApplyPreset",
-        OUString::Concat(u"applied preset id=") + rPresetId);
+        OUString::Concat(u"applied preset id=") + rPresetId
+            + u" ok=" + OUString::boolean(bOk));
 }
 
 } // namespace

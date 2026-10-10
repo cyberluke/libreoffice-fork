@@ -863,6 +863,9 @@ $(eval $(call gb_Library_add_exception_objects,sw,\
     sw/source/uibase/wrtsh/wrtsh4 \
     sw/source/uibase/wrtsh/writer2027blocks \
     sw/source/uibase/uiview/writer2027toolboxctrl \
+    sw/source/uibase/uiview/writer2027typographymanager \
+    sw/source/uibase/uiview/writer2027stylegallery \
+    sw/source/uibase/uiview/writer2027stylegalleryctrl \
     sw/source/uibase/wrtsh/wrtundo \
 ))
 

@@ -8,8 +8,10 @@
  */
 
 #include <writer2027typesystem.hxx>
+#include <writer2027typographymanager.hxx>
 
 #include <svx/writer2027typesystem.hxx>
+#include <svx/writer2027log.hxx>
 
 #include <svtools/ctrltool.hxx>
 #include <o3tl/safeint.hxx>
@@ -174,6 +176,107 @@ SwCharFormat* lcl_GetCharFormat(SwDoc& rDoc, SwPoolFormatId nId)
 
 } // namespace
 
+namespace
+{
+
+namespace TSMan = ::sw::writer2027typographymanager;
+using TSSlot = TSMan::TypeSystemScaleSlot;
+
+/** Resolve the scale slot of a semantic descriptor to a concrete size in
+    twips from the preset scale. Returns 0 for roles that do not carry a scale
+    size (e.g. Inline Code handled by the Mono slot, or slots not in the table). */
+sal_uInt16 lcl_SizeForSlot(const svx::writer2027::TypeSystemScale& rScale, TSSlot eSlot)
+{
+    switch (eSlot)
+    {
+        case TSSlot::Body:
+            return rScale.mnBody;
+        case TSSlot::Heading1:
+            return rScale.mnH1;
+        case TSSlot::Heading2:
+            return rScale.mnH2;
+        case TSSlot::Heading3:
+            return rScale.mnH3;
+        case TSSlot::Heading4:
+            return rScale.mnH4;
+        case TSSlot::Heading5:
+            return rScale.mnH5;
+        case TSSlot::Heading6:
+            return rScale.mnH6;
+        case TSSlot::Title:
+            return rScale.mnTitle;
+        case TSSlot::Subtitle:
+            return rScale.mnSubtitle;
+        case TSSlot::Quote:
+            return rScale.mnQuote;
+        case TSSlot::Caption:
+            return rScale.mnCaption;
+        case TSSlot::Mono:
+            return rScale.mnMono;
+        case TSSlot::None:
+        default:
+            return 0;
+    }
+}
+
+/** Upper/lower spacing (from/before + after) for a scale slot. Empty/zero in
+    positions the role keeps its existing spacing from inheritance. */
+void lcl_SpacingForSlot(const svx::writer2027::TypeSystemScale& rScale, TSSlot eSlot,
+                        tools::Long& rFrom, tools::Long& rAfter)
+{
+    const auto none = [&rScale]() { return tools::Long(0); };
+    switch (eSlot)
+    {
+        case TSSlot::Heading1:
+            rFrom = rScale.mnH1Before;
+            rAfter = rScale.mnH1After;
+            break;
+        case TSSlot::Heading2:
+            rFrom = rScale.mnH2Before;
+            rAfter = rScale.mnH2After;
+            break;
+        case TSSlot::Heading3:
+            rFrom = rScale.mnH3Before;
+            rAfter = rScale.mnH3After;
+            break;
+        case TSSlot::Heading4:
+            rFrom = rScale.mnH4Before;
+            rAfter = rScale.mnH4After;
+            break;
+        case TSSlot::Heading5:
+            rFrom = rScale.mnH5Before;
+            rAfter = rScale.mnH5After;
+            break;
+        case TSSlot::Heading6:
+            rFrom = rScale.mnH6Before;
+            rAfter = rScale.mnH6After;
+            break;
+        case TSSlot::Title:
+            rFrom = rScale.mnTitleBefore;
+            rAfter = rScale.mnTitleAfter;
+            break;
+        case TSSlot::Subtitle:
+            rFrom = none();
+            rAfter = rScale.mnSubtitleAfter;
+            break;
+        case TSSlot::Quote:
+            rFrom = rScale.mnQuoteBefore;
+            rAfter = rScale.mnQuoteAfter;
+            break;
+        case TSSlot::Caption:
+            rFrom = rScale.mnCaptionBefore;
+            rAfter = none();
+            break;
+        default:
+            rFrom = none();
+            rAfter = none();
+            break;
+    }
+    (void)none;
+}
+
+} // namespace
+
 bool ApplyTypeSystem(SwDoc& rDoc, const svx::writer2027::TypeSystemPreset& rPreset,
                      const svx::writer2027::ResolvedTypeSystem& rResolved,
                      const FontList* pFontList)
@@ -188,108 +291,91 @@ bool ApplyTypeSystem(SwDoc& rDoc, const svx::writer2027::TypeSystemPreset& rPres
 
     rDoc.GetIDocumentUndoRedo().StartUndo(SwUndoId::WRITER2027_TYPE_SYSTEM, nullptr);
 
-    // 1. Default Paragraph Style: body typography + rhythm. Every built-in
-    //    paragraph style derives from it, so this single root change covers
-    //    the whole document without flattening inheritance.
-    {
-        SfxItemSet aSet = lcl_MakeItemSet(rDoc);
-        lcl_PutFamily(aSet, rResolved.Get(svx::writer2027::TypeSystemFontRole::Body).maFamily,
-                      pFontList);
-        lcl_PutSize(aSet, rScale.mnBody);
-        lcl_PutLineSpacing(aSet, rScale.mnLineSpacingPercent);
-        lcl_PutUpperLower(aSet, 0, rScale.mnSpaceAfter);
-        lcl_ApplyFormat(rDoc, *lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_STANDARD), aSet);
-    }
+    // Canonical application order (spec 44):
+    //   1. resolve fonts
+    //   2. one undo group (already started)
+    //   3. materialize semantic styles
+    //   4..12 update each semantic style via the canonical map
+    // The map is the single source of truth for pool id + font role + scale
+    // slot, so apply and detect share one table (spec 19/44/46).
 
-    // 2. Heading base: heading family + weight for all heading levels.
-    {
-        SfxItemSet aSet = lcl_MakeItemSet(rDoc);
-        lcl_PutFamily(aSet, rResolved.Get(svx::writer2027::TypeSystemFontRole::Heading).maFamily,
-                      pFontList);
-        lcl_PutWeight(aSet, rPreset.mnHeadingWeight);
-        lcl_ApplyFormat(rDoc, *lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_HEADLINE_BASE), aSet);
-    }
+    // Font families per role (from the SAME resolved model as the preview):
+    const OUString aHeadingFam
+        = rResolved.Get(svx::writer2027::TypeSystemFontRole::Heading).maFamily;
+    const OUString aBodyFam = rResolved.Get(svx::writer2027::TypeSystemFontRole::Body).maFamily;
+    const OUString aMonoFam = rResolved.Get(svx::writer2027::TypeSystemFontRole::Mono).maFamily;
+    const OUString aDisplayFam
+        = rResolved.Get(svx::writer2027::TypeSystemFontRole::Display).maFamily;
 
-    // 3. Heading 1-3: level sizes + heading spacing.
+    for (const auto& rDesc : TSMan::GetWriter2027SemanticStyleDescriptors())
     {
+        const auto ePoolId = static_cast<SwPoolFormatId>(rDesc.mnPoolId);
         SfxItemSet aSet = lcl_MakeItemSet(rDoc);
-        lcl_PutSize(aSet, rScale.mnH1);
-        lcl_PutUpperLower(aSet, rScale.mnH1Before, rScale.mnH1After);
-        lcl_ApplyFormat(rDoc, *lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_HEADLINE1), aSet);
-    }
-    {
-        SfxItemSet aSet = lcl_MakeItemSet(rDoc);
-        lcl_PutSize(aSet, rScale.mnH2);
-        lcl_PutUpperLower(aSet, rScale.mnH2Before, rScale.mnH2After);
-        lcl_ApplyFormat(rDoc, *lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_HEADLINE2), aSet);
-    }
-    {
-        SfxItemSet aSet = lcl_MakeItemSet(rDoc);
-        lcl_PutSize(aSet, rScale.mnH3);
-        lcl_PutUpperLower(aSet, rScale.mnH3Before, rScale.mnH3After);
-        lcl_ApplyFormat(rDoc, *lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_HEADLINE3), aSet);
-    }
 
-    // 4. Title: display family + title size/weight/spacing.
-    {
-        SfxItemSet aSet = lcl_MakeItemSet(rDoc);
-        lcl_PutFamily(aSet, rResolved.Get(svx::writer2027::TypeSystemFontRole::Display).maFamily,
-                      pFontList);
-        lcl_PutSize(aSet, rScale.mnTitle);
-        lcl_PutWeight(aSet, rPreset.mnTitleWeight);
-        lcl_PutUpperLower(aSet, rScale.mnTitleBefore, rScale.mnTitleAfter);
-        lcl_ApplyFormat(rDoc, *lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_DOC_TITLE), aSet);
-    }
+        // Font family + size + weight by the descriptor's roles. Base spacing
+        // (body rhythm) is applied on Default Paragraph Style; per-level
+        // space-before/after on headings etc.
+        const OUString& rFam
+            = (rDesc.meFontRole == svx::writer2027::TypeSystemFontRole::Heading)
+                  ? aHeadingFam
+                  : (rDesc.meFontRole == svx::writer2027::TypeSystemFontRole::Mono)
+                        ? aMonoFam
+                        : (rDesc.meFontRole == svx::writer2027::TypeSystemFontRole::Display)
+                              ? aDisplayFam
+                              : aBodyFam;
+        lcl_PutFamily(aSet, rFam, pFontList);
 
-    // 5. Subtitle: smaller display tone; muted foreground on the digital page.
-    {
-        SfxItemSet aSet = lcl_MakeItemSet(rDoc);
-        lcl_PutSize(aSet, rScale.mnSubtitle);
-        lcl_PutUpperLower(aSet, 0, rScale.mnSubtitleAfter);
+        const sal_uInt16 nSize = lcl_SizeForSlot(rScale, rDesc.meScaleSlot);
+        lcl_PutSize(aSet, nSize);
+
+        if (rDesc.meScaleSlot == TSSlot::Body || rDesc.meScaleSlot == TSSlot::Quote)
+            lcl_PutLineSpacing(aSet, rScale.mnLineSpacingPercent);
+        if (rDesc.meScaleSlot == TSSlot::Body && rDesc.meRole
+                == TSMan::Writer2027SemanticStyle::DefaultBody)
+            lcl_PutUpperLower(aSet, 0, rScale.mnSpaceAfter);
+
+        tools::Long nFrom = 0, nAfter = 0;
+        lcl_SpacingForSlot(rScale, rDesc.meScaleSlot, nFrom, nAfter);
+        lcl_PutUpperLower(aSet, nFrom, nAfter);
+
+        // Heading weight on the heading base + per-level inherited; Title/
+        // Subtitle use the display weight.
+        if (rDesc.meFontRole == svx::writer2027::TypeSystemFontRole::Heading)
+            lcl_PutWeight(aSet, rPreset.mnHeadingWeight);
+        else if (rDesc.meRole == TSMan::Writer2027SemanticStyle::Title
+                 || rDesc.meRole == TSMan::Writer2027SemanticStyle::Subtitle)
+            lcl_PutWeight(aSet, rPreset.mnTitleWeight);
+
+        // Semantic color roles (digital-dark only).
         if (bDarkDocument)
-            lcl_PutColor(aSet, rPreset.maColors.maQuoteAccent); // TextSecondary tone
-        lcl_ApplyFormat(rDoc, *lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_DOC_SUBTITLE), aSet);
-    }
+        {
+            switch (rDesc.meRole)
+            {
+                case TSMan::Writer2027SemanticStyle::Subtitle:
+                case TSMan::Writer2027SemanticStyle::Quote:
+                    lcl_PutColor(aSet, rPreset.maColors.maQuoteAccent);
+                    break;
+                case TSMan::Writer2027SemanticStyle::Caption:
+                    lcl_PutColor(aSet, rPreset.maColors.maCaptionSecondary);
+                    break;
+                default:
+                    break;
+            }
+        }
 
-    // 6. Block Quotation: quote size + generous spacing + muted accent.
-    {
-        SfxItemSet aSet = lcl_MakeItemSet(rDoc);
-        lcl_PutSize(aSet, rScale.mnQuote);
-        lcl_PutLineSpacing(aSet, rScale.mnLineSpacingPercent);
-        lcl_PutUpperLower(aSet, rScale.mnQuoteBefore, rScale.mnQuoteAfter);
-        if (bDarkDocument)
-            lcl_PutColor(aSet, rPreset.maColors.maQuoteAccent);
-        lcl_ApplyFormat(rDoc, *lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_HTML_BLOCKQUOTE),
-                        aSet);
-    }
-
-    // 7. Caption: caption size + secondary foreground + modest spacing.
-    {
-        SfxItemSet aSet = lcl_MakeItemSet(rDoc);
-        lcl_PutSize(aSet, rScale.mnCaption);
-        lcl_PutUpperLower(aSet, rScale.mnCaptionBefore, 0);
-        if (bDarkDocument)
-            lcl_PutColor(aSet, rPreset.maColors.maCaptionSecondary);
-        lcl_ApplyFormat(rDoc, *lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_LABEL), aSet);
-    }
-
-    // 8. Preformatted Text: mono family + mono size.
-    {
-        SfxItemSet aSet = lcl_MakeItemSet(rDoc);
-        lcl_PutFamily(aSet, rResolved.Get(svx::writer2027::TypeSystemFontRole::Mono).maFamily,
-                      pFontList);
-        lcl_PutSize(aSet, rScale.mnMono);
-        lcl_PutLineSpacing(aSet, rScale.mnLineSpacingPercent);
-        lcl_ApplyFormat(rDoc, *lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_HTML_PRE), aSet);
-    }
-
-    // 9. Source Text character style: coherent mono typography for inline code.
-    {
-        SfxItemSet aSet = lcl_MakeItemSet(rDoc);
-        lcl_PutFamily(aSet, rResolved.Get(svx::writer2027::TypeSystemFontRole::Mono).maFamily,
-                      pFontList);
-        lcl_PutSize(aSet, rScale.mnMono);
-        lcl_ApplyFormat(rDoc, *lcl_GetCharFormat(rDoc, SwPoolFormatId::CHR_HTML_CODE), aSet);
+        SwFormat* pFormat = rDesc.mbCharacterStyle
+                                ? static_cast<SwFormat*>(
+                                      lcl_GetCharFormat(rDoc, ePoolId))
+                                : static_cast<SwFormat*>(lcl_GetTextColl(rDoc, ePoolId));
+        if (pFormat)
+            lcl_ApplyFormat(rDoc, *pFormat, aSet);
+        else
+        {
+            svx::writer2027::Writer2027LogMessage(
+                "writer2027typesystem.apply",
+                OUString::Concat(u"missing pool format id=")
+                    + OUString::number(rDesc.mnPoolId));
+        }
     }
 
     rDoc.GetIDocumentUndoRedo().EndUndo(SwUndoId::WRITER2027_TYPE_SYSTEM, nullptr);
@@ -329,39 +415,58 @@ bool lcl_FormatHasSpaceAfter(const SwFormat& rFormat, tools::Long nTwips)
            || rFormat.GetAttrSet().Get(RES_UL_SPACE).GetLower() == nTwips;
 }
 
+/** The family applied (by the semantic map) to a given font role of a preset. */
+OUString lcl_AppliedFamily(const svx::writer2027::ResolvedTypeSystem& rResolved,
+                           svx::writer2027::TypeSystemFontRole eRole)
+{
+    switch (eRole)
+    {
+        case svx::writer2027::TypeSystemFontRole::Heading:
+            return rResolved.Get(svx::writer2027::TypeSystemFontRole::Heading).maFamily;
+        case svx::writer2027::TypeSystemFontRole::Mono:
+            return rResolved.Get(svx::writer2027::TypeSystemFontRole::Mono).maFamily;
+        case svx::writer2027::TypeSystemFontRole::Display:
+            return rResolved.Get(svx::writer2027::TypeSystemFontRole::Display).maFamily;
+        case svx::writer2027::TypeSystemFontRole::Body:
+        default:
+            return rResolved.Get(svx::writer2027::TypeSystemFontRole::Body).maFamily;
+    }
+}
+
+/** Full-contract detection: every managed semantic style must match the
+    resolved preset's family (by font role) and scale size (by slot). This
+    shares the SAME canonical map as ApplyTypeSystem (spec 19/46). */
 bool lcl_PresetMatches(SwDoc& rDoc, const svx::writer2027::TypeSystemPreset& rPreset,
                        const svx::writer2027::ResolvedTypeSystem& rResolved)
 {
     const svx::writer2027::TypeSystemScale& rScale
         = svx::writer2027::Writer2027TypeSystemCatalog::Get().GetScale(rPreset.meScale);
 
-    SwTextFormatColl* pStandard = lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_STANDARD);
-    SwTextFormatColl* pHeadingBase = lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_HEADLINE_BASE);
-    SwTextFormatColl* pH1 = lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_HEADLINE1);
-    SwTextFormatColl* pH2 = lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_HEADLINE2);
-    SwTextFormatColl* pH3 = lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_HEADLINE3);
-    SwTextFormatColl* pTitle = lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_DOC_TITLE);
-    SwTextFormatColl* pPre = lcl_GetTextColl(rDoc, SwPoolFormatId::COLL_HTML_PRE);
-
-    // A missing pool style must never dereference: treat it as "does not
-    // match" rather than crashing the Type System picker.
-    if (!pStandard || !pHeadingBase || !pH1 || !pH2 || !pH3 || !pTitle || !pPre)
-        return false;
-
-    if (!lcl_FormatHasFamily(*pStandard,
-                             rResolved.Get(svx::writer2027::TypeSystemFontRole::Body).maFamily)
-        || !lcl_FormatHasSize(*pStandard, rScale.mnBody)
-        || !lcl_FormatHasLineSpacing(*pStandard, rScale.mnLineSpacingPercent)
-        || !lcl_FormatHasSpaceAfter(*pStandard, rScale.mnSpaceAfter)
-        || !lcl_FormatHasFamily(*pHeadingBase,
-                                rResolved.Get(svx::writer2027::TypeSystemFontRole::Heading)
-                                    .maFamily)
-        || !lcl_FormatHasSize(*pH1, rScale.mnH1) || !lcl_FormatHasSize(*pH2, rScale.mnH2)
-        || !lcl_FormatHasSize(*pH3, rScale.mnH3) || !lcl_FormatHasSize(*pTitle, rScale.mnTitle)
-        || !lcl_FormatHasFamily(
-            *pPre, rResolved.Get(svx::writer2027::TypeSystemFontRole::Mono).maFamily))
+    for (const auto& rDesc : TSMan::GetWriter2027SemanticStyleDescriptors())
     {
-        return false;
+        const auto ePoolId = static_cast<SwPoolFormatId>(rDesc.mnPoolId);
+        SwFormat* pFormat = rDesc.mbCharacterStyle
+                                ? static_cast<SwFormat*>(lcl_GetCharFormat(rDoc, ePoolId))
+                                : static_cast<SwFormat*>(lcl_GetTextColl(rDoc, ePoolId));
+        // A missing pool style must never dereference: treat as "does not match".
+        if (!pFormat)
+            return false;
+
+        if (!lcl_FormatHasFamily(*pFormat, lcl_AppliedFamily(rResolved, rDesc.meFontRole)))
+            return false;
+
+        const sal_uInt16 nSize = lcl_SizeForSlot(rScale, rDesc.meScaleSlot);
+        if (!lcl_FormatHasSize(*pFormat, nSize))
+            return false;
+
+        if (rDesc.meScaleSlot == TSSlot::Body && rDesc.meRole
+                == TSMan::Writer2027SemanticStyle::DefaultBody)
+        {
+            if (!lcl_FormatHasLineSpacing(*pFormat, rScale.mnLineSpacingPercent))
+                return false;
+            if (!lcl_FormatHasSpaceAfter(*pFormat, rScale.mnSpaceAfter))
+                return false;
+        }
     }
     return true;
 }

@@ -112,6 +112,9 @@ struct TypeSystemScale
     sal_uInt16 mnH1;        // Heading 1
     sal_uInt16 mnH2;        // Heading 2
     sal_uInt16 mnH3;        // Heading 3
+    sal_uInt16 mnH4;        // Heading 4
+    sal_uInt16 mnH5;        // Heading 5
+    sal_uInt16 mnH6;        // Heading 6
     sal_uInt16 mnTitle;     // Title
     sal_uInt16 mnSubtitle;  // Subtitle
     sal_uInt16 mnCaption;   // Caption
@@ -122,6 +125,9 @@ struct TypeSystemScale
     tools::Long mnH1Before, mnH1After;
     tools::Long mnH2Before, mnH2After;
     tools::Long mnH3Before, mnH3After;
+    tools::Long mnH4Before, mnH4After;
+    tools::Long mnH5Before, mnH5After;
+    tools::Long mnH6Before, mnH6After;
     tools::Long mnTitleBefore, mnTitleAfter;
     tools::Long mnSubtitleAfter;
     tools::Long mnQuoteBefore, mnQuoteAfter;
