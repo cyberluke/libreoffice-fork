@@ -118,6 +118,52 @@ ResolveWriter2027TypographyContext(const css::uno::Reference<css::frame::XFrame>
     success. */
 SW_DLLPUBLIC bool EnsureSemanticStylesMaterialized(SwDoc& rDoc);
 
+/** Count of managed typography direct overrides in a document (spec V4 15/55).
+    Family/size are character attributes; paragraphRhythm is line-spacing / UL
+    space on managed semantic paragraph styles. */
+struct ManagedTypographyOverrideStats
+{
+    sal_Int32 fontFamily = 0;
+    sal_Int32 fontSize = 0;
+    sal_Int32 paragraphRhythm = 0;
+
+    sal_Int32 Total() const { return fontFamily + fontSize + paragraphRhythm; }
+};
+
+/** Result of a Type System apply transaction (spec V4 55). */
+struct TypeSystemApplyResult
+{
+    bool success = false;
+    OUString presetId;
+    ManagedTypographyOverrideStats before;
+    ManagedTypographyOverrideStats after;
+    OUString detectedPresetAfter;
+};
+
+/** Scan the whole editable document for managed typography direct overrides
+    (spec V4 15). O(N) over text nodes. */
+SW_DLLPUBLIC ManagedTypographyOverrideStats
+ScanManagedTypographyOverrides(SwDoc& rDoc);
+
+/** Clear managed family/size and (on managed paragraph styles) rhythm direct
+    overrides across the whole editable document (spec V4 6/7/8). Runs inside
+    the caller's undo context. Returns the number of nodes processed. */
+SW_DLLPUBLIC sal_Int32 ClearManagedTypographyOverrides(SwDoc& rDoc);
+
+/** Clear managed family/size insertion attributes on the current view caret so
+    newly typed text resolves to the semantic style (spec V4 10). */
+SW_DLLPUBLIC void ClearManagedInsertionAttributes(SwDoc& rDoc);
+
+/** Invalidate/requery the owning frame's typography-related bindings
+    (font name, size, para style, gallery) after Apply (spec V4 12/37). */
+SW_DLLPUBLIC void RefreshTypographyBindings(const css::uno::Reference<css::frame::XFrame>& rFrame);
+
+/** Apply a resolved preset as a full typography migration:
+    semantic styles + managed direct override cleanup + insertion cleanup +
+    post-verification, all in one undo transaction (spec V4 3-13). */
+SW_DLLPUBLIC TypeSystemApplyResult ApplyPresetTransaction(
+    const css::uno::Reference<css::frame::XFrame>& rFrame, const OUString& rPresetId);
+
 } // namespace sw::writer2027typographymanager
 
 #endif // INCLUDED_SW_WRITER2027TYPOGRAPHYMANAGER_HXX

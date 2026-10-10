@@ -124,9 +124,25 @@ Writer2027StyleGalleryToolBoxControl::Writer2027StyleGalleryToolBoxControl(
 {
 }
 
+void SAL_CALL Writer2027StyleGalleryToolBoxControl::initialize(
+    const css::uno::Sequence<css::uno::Any>& rArguments)
+{
+    svt::ToolboxController::initialize(rArguments);
+    svx::writer2027::Writer2027LogMessage(
+        "writer2027.build",
+        u"schema=4 commandURL=.uno:Writer2027StyleGallery"_ustr);
+    svx::writer2027::Writer2027LogMessage(
+        "writer2027.gallery.controller.initialize",
+        u"implementation=lo.writer.Writer2027StyleGalleryToolBoxControl "
+        u"git=<see build stamp>"_ustr);
+}
+
 css::uno::Reference<css::awt::XWindow> Writer2027StyleGalleryToolBoxControl::createItemWindow(
     const css::uno::Reference<css::awt::XWindow>& rParent)
 {
+    svx::writer2027::Writer2027LogMessage(
+        "writer2027.gallery.controller.createItemWindow",
+        u"commandURL=.uno:Writer2027StyleGallery"_ustr);
     css::uno::Reference<css::awt::XWindow> xItemWindow;
     VclPtr<vcl::Window> pParent = VCLUnoHelper::GetWindow(rParent);
     if (!pParent)
@@ -143,17 +159,17 @@ css::uno::Reference<css::awt::XWindow> Writer2027StyleGalleryToolBoxControl::cre
     catch (const css::uno::Exception& rEx)
     {
         svx::writer2027::Writer2027LogException(
-            "Writer2027StyleGalleryToolBoxControl::createItemWindow", rEx);
+            "writer2027.gallery.controller.createItemWindow", rEx);
     }
     catch (const std::exception& rEx)
     {
         svx::writer2027::Writer2027LogException(
-            "Writer2027StyleGalleryToolBoxControl::createItemWindow", rEx);
+            "writer2027.gallery.controller.createItemWindow", rEx);
     }
     catch (...)
     {
         svx::writer2027::Writer2027LogUnknownException(
-            "Writer2027StyleGalleryToolBoxControl::createItemWindow");
+            "writer2027.gallery.controller.createItemWindow");
     }
     return xItemWindow;
 }
@@ -198,6 +214,18 @@ void Writer2027StyleGalleryToolBoxControl::RebuildGallery(
             = sw::writer2027stylegallery::BuildStyleGalleryModel(*aContext.pDoc, nCurrentPoolId);
         pGallery->SetFontList(aContext.pFontList);
         pGallery->SetItems(std::move(aItems));
+        // Runtime provenance (spec V4 18): itemCount must be >= 9 on a normal
+        // Writer document; fewer is logged as a failure, never silently shown.
+        const sal_Int32 nCount = static_cast<sal_Int32>(pGallery->GetItems().size());
+        svx::writer2027::Writer2027LogMessage(
+            "writer2027.gallery.model.rebuild",
+            OUString::Concat(u"itemCount=") + OUString::number(nCount)
+                + u" (expect>=9)");
+        if (nCount < 9)
+            svx::writer2027::Writer2027LogMessage(
+                "writer2027.gallery.model.rebuild",
+                OUString::Concat(u"FAIL: itemCount<9 value=")
+                    + OUString::number(nCount));
     }
     catch (const css::uno::Exception& rEx)
     {

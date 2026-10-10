@@ -158,8 +158,20 @@ void Writer2027TypeSystemPreview::Paint(vcl::RenderContext& rCtx,
     const tools::Long nRight = rRect.Right() - nPad;
     tools::Long nY = rRect.Top() + nPad;
 
-    // Preset name (UI font, bold-ish) - a section header.
-    if (!maModel.maDisplayName.isEmpty())
+    // "Previewing <Name>" header when the selected-for-preview differs from
+    // the applied preset (spec V4 34).
+    if (maModel.mbPreviewing)
+    {
+        rCtx.Push(vcl::PushFlags::FONT | vcl::PushFlags::TEXTCOLOR);
+        vcl::Font aPrevFont(rCtx.GetFont());
+        aPrevFont.SetFontSize(Size(0, ClampLogical(12)));
+        rCtx.SetFont(aPrevFont);
+        rCtx.SetTextColor(rStyle.GetWindowTextColor());
+        rCtx.DrawText(Point(nLeft, nY), u"Previewing "_ustr + maModel.maDisplayName);
+        rCtx.Pop();
+        nY += ClampLogical(24);
+    }
+    else if (!maModel.maDisplayName.isEmpty())
     {
         rCtx.Push(vcl::PushFlags::FONT | vcl::PushFlags::TEXTCOLOR);
         vcl::Font aNameFont(rCtx.GetFont());
@@ -172,7 +184,7 @@ void Writer2027TypeSystemPreview::Paint(vcl::RenderContext& rCtx,
         nY += ClampLogical(34);
     }
 
-    // Heading section.
+    // Heading section (single line, scale-to-fit down to a min size).
     tools::Rectangle aHeadingSection(nLeft, nY, nRight, nY + ClampLogical(64));
     PaintSection(rCtx, aHeadingSection,
                  u"Heading · "_ustr + (maModel.maHeadingFamily.isEmpty()
@@ -182,15 +194,15 @@ void Writer2027TypeSystemPreview::Paint(vcl::RenderContext& rCtx,
                  PREV_HEADING_LP);
     nY += ClampLogical(64) + nGap;
 
-    // Body section.
-    tools::Rectangle aBodySection(nLeft, nY, nRight, nY + ClampLogical(48));
-    PaintSection(rCtx, aBodySection,
-                 u"Body · "_ustr
-                     + (maModel.maBodyFamily.isEmpty() ? u"—"_ustr : maModel.maBodyFamily),
-                 maModel.maBodySample, maModel.maBodyFamily, 0, PREV_BODY_LP);
-    nY += ClampLogical(48) + nGap;
+    // Body section: two measured lines, wrapped within the section width.
+    tools::Rectangle aBodySection(nLeft, nY, nRight, nY + ClampLogical(52));
+    PaintBody(rCtx, aBodySection,
+              u"Body · "_ustr
+                  + (maModel.maBodyFamily.isEmpty() ? u"—"_ustr : maModel.maBodyFamily),
+              maModel.maBodySample, maModel.maBodyFamily);
+    nY += ClampLogical(52) + nGap;
 
-    // Code section.
+    // Code section: one line, ellipsized if it does not fit.
     tools::Rectangle aCodeSection(nLeft, nY, nRight, nY + ClampLogical(40));
     PaintSection(rCtx, aCodeSection,
                  u"Code · "_ustr
@@ -198,7 +210,7 @@ void Writer2027TypeSystemPreview::Paint(vcl::RenderContext& rCtx,
                  maModel.maMonoSample, maModel.maMonoFamily, 0, PREV_MONO_LP);
     nY += ClampLogical(40) + nGap;
 
-    // Scale line (UI font).
+    // Scale line.
     if (!maModel.maScaleLabelText.isEmpty())
     {
         rCtx.Push(vcl::PushFlags::FONT | vcl::PushFlags::TEXTCOLOR);
@@ -211,17 +223,95 @@ void Writer2027TypeSystemPreview::Paint(vcl::RenderContext& rCtx,
         nY += ClampLogical(24);
     }
 
-    // Fallback line (UI font).
-    if (!maModel.maFallbackText.isEmpty())
+    // Fallback rows: one role per row, wrapping vertically (spec V4 33).
+    if (!maModel.maFallbackRows.empty())
     {
         rCtx.Push(vcl::PushFlags::FONT | vcl::PushFlags::TEXTCOLOR);
         vcl::Font aFont(rCtx.GetFont());
         aFont.SetFontSize(Size(0, ClampLogical(PREV_LABEL_LP)));
         rCtx.SetFont(aFont);
         rCtx.SetTextColor(rStyle.GetWindowTextColor());
-        rCtx.DrawText(Point(nLeft, nY), u"Fallbacks · "_ustr + maModel.maFallbackText);
+        rCtx.DrawText(Point(nLeft, nY), u"FALLBACKS"_ustr);
         rCtx.Pop();
+        nY += ClampLogical(20);
+        for (const auto& rRow : maModel.maFallbackRows)
+        {
+            rCtx.Push(vcl::PushFlags::CLIPREGION | vcl::PushFlags::FONT
+                      | vcl::PushFlags::TEXTCOLOR);
+            tools::Rectangle aRow(nLeft, nY, nRight, nY + ClampLogical(16));
+            rCtx.IntersectClipRegion(aRow);
+            vcl::Font aRowFont(rCtx.GetFont());
+            aRowFont.SetFontSize(Size(0, ClampLogical(PREV_LABEL_LP)));
+            rCtx.SetFont(aRowFont);
+            rCtx.SetTextColor(rStyle.GetWindowTextColor());
+            rCtx.DrawText(Point(nLeft, nY), rRow.maRole + u"\n" + rRow.maDetail);
+            rCtx.Pop();
+            nY += ClampLogical(16);
+        }
     }
+}
+
+void Writer2027TypeSystemPreview::PaintBody(vcl::RenderContext& rCtx,
+                                            const tools::Rectangle& rSection,
+                                            const OUString& rLabel, const OUString& rText,
+                                            const OUString& rFamily)
+{
+    const StyleSettings& rStyle = Application::GetSettings().GetStyleSettings();
+    const Color aBg = rStyle.GetWindowColor();
+    const tools::Long nX = rSection.Left() + ClampLogical(4);
+
+    // Label (UI font).
+    rCtx.Push(vcl::PushFlags::CLIPREGION | vcl::PushFlags::FONT | vcl::PushFlags::TEXTCOLOR);
+    rCtx.IntersectClipRegion(rSection);
+    vcl::Font aLabelFont(rCtx.GetFont());
+    aLabelFont.SetFontSize(Size(0, ClampLogical(PREV_LABEL_LP)));
+    rCtx.SetFont(aLabelFont);
+    const Color aLabel = svx::writer2027::Writer2027EnsureTextContrast(
+        rStyle.GetWindowTextColor(), aBg, rStyle.GetWindowTextColor(), 4.5);
+    rCtx.SetTextColor(aLabel);
+    rCtx.DrawText(Point(nX, rSection.Top()), rLabel);
+    rCtx.Pop();
+
+    // Body sample: the role font, wrapped to up to two lines inside the
+    // section (spec V4 32). Each line is clipped to the section.
+    rCtx.Push(vcl::PushFlags::CLIPREGION | vcl::PushFlags::FONT | vcl::PushFlags::TEXTCOLOR);
+    rCtx.IntersectClipRegion(tools::Rectangle(rSection.Left(), rSection.Top() + ClampLogical(20),
+                                              rSection.Right(), rSection.Bottom()));
+    vcl::Font aBodyFont(rCtx.GetFont());
+    if (!rFamily.isEmpty() && mpFontList && mpFontList->IsAvailable(rFamily))
+        aBodyFont = mpFontList->Get(rFamily, WEIGHT_NORMAL, ITALIC_NONE);
+    aBodyFont.SetFontSize(Size(0, ClampLogical(PREV_BODY_LP)));
+    rCtx.SetFont(aBodyFont);
+    rCtx.SetTextColor(rStyle.GetWindowTextColor());
+
+    const tools::Long nMaxW = std::max<tools::Long>(rSection.GetWidth() - ClampLogical(8), 1);
+    // Simple whitespace word wrap.
+    const sal_Int32 nAll = rText.getLength();
+    sal_Int32 nStart = 0, nLine = 0;
+    tools::Long nLineTop = rSection.Top() + ClampLogical(20);
+    while (nStart < nAll && nLine < 2)
+    {
+        sal_Int32 nBreak = nStart;
+        sal_Int32 nPrevSpace = -1;
+        while (nBreak < nAll)
+        {
+            const OUString aWord = rText.copy(nStart, nBreak - nStart + 1);
+            if (rCtx.GetTextWidth(aWord) > nMaxW)
+                break;
+            if (rText[nBreak] == u' ')
+                nPrevSpace = nBreak;
+            ++nBreak;
+        }
+        sal_Int32 nEnd = (nPrevSpace >= nStart) ? nPrevSpace : (nBreak > nStart ? nBreak - 1 : nStart);
+        if (nEnd < nStart)
+            nEnd = nStart;
+        rCtx.DrawText(Point(nX, nLineTop), rText.copy(nStart, nEnd - nStart + 1));
+        if (nEnd >= nStart)
+            nStart = nEnd + 1;
+        ++nLine;
+        nLineTop += ClampLogical(20);
+    }
+    rCtx.Pop();
 }
 
 } // namespace svx::writer2027

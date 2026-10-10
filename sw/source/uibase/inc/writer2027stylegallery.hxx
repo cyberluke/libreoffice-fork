@@ -90,6 +90,7 @@ private:
     std::vector<StyleGalleryItem> maItems;
     int mnCurrentPoolId = -1;
     int mnHoverIndex = -1;
+    int mnFocusIndex = -1; // keyboard focus (distinct from hover/current, spec V4 31)
     tools::Long mnScrollOffsetPx = 0;
     Link<const OUString&, void> m_aActivateHdl;
 };

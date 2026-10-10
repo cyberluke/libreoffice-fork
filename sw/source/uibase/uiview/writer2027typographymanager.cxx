@@ -14,13 +14,31 @@
 #include <svx/writer2027log.hxx>
 
 #include <editeng/flstitem.hxx>
+#include <editeng/fontitem.hxx>
+#include <editeng/fhgtitem.hxx>
+#include <editeng/lspcitem.hxx>
+#include <editeng/ulspitem.hxx>
 #include <svl/itemset.hxx>
+#include <svl/whichranges.hxx>
 
 #include <IDocumentStylePoolAccess.hxx>
+#include <IDocumentUndoRedo.hxx>
+#include <IDocumentLayoutAccess.hxx>
 #include <doc.hxx>
 #include <docsh.hxx>
 #include <poolfmt.hxx>
 #include <format.hxx>
+#include <ndtxt.hxx>
+#include <ndarr.hxx>
+#include <node.hxx>
+#include <ndindex.hxx>
+#include <editsh.hxx>
+#include <view.hxx>
+#include <viewsh.hxx>
+#include <swundo.hxx>
+#include <swmodule.hxx>
+
+#include <o3tl/sorted_vector.hxx>
 
 #include <comphelper/servicehelper.hxx>
 #include <unotxdoc.hxx>
@@ -28,8 +46,13 @@
 #include <com/sun/star/frame/Frame.hpp>
 #include <com/sun/star/frame/XController.hpp>
 
-#include <svl/itemset.hxx>
-#include <svl/whichranges.hxx>
+#include <sfx2/viewsh.hxx>
+#include <sfx2/bindings.hxx>
+#include <sfx2/sfxsids.hrc>
+
+#include <algorithm>
+#include <iterator>
+#include <vector>
 
 namespace sw::writer2027typographymanager
 {
@@ -146,6 +169,223 @@ bool EnsureSemanticStylesMaterialized(SwDoc& rDoc)
         }
     }
     return true;
+}
+
+namespace
+{
+// Managed character attribute which-ids (family + size), spec V4 4.
+const sal_uInt16 aManagedCharWhich[] = { RES_CHRATR_FONT, RES_CHRATR_CJK_FONT,
+                                         RES_CHRATR_CTL_FONT, RES_CHRATR_FONTSIZE,
+                                         RES_CHRATR_CJK_FONTSIZE, RES_CHRATR_CTL_FONTSIZE };
+const sal_uInt16 aManagedRhythmWhich[] = { RES_PARATR_LINESPACING, RES_UL_SPACE };
+
+/** True when the paragraph's style is one of the Writer 2027 managed semantic
+    styles (spec V4 8: built-in semantic = Type-System-owned; custom = user). */
+bool lcl_IsManagedParaStyle(const SwTextNode& rNode)
+{
+    const SwTextFormatColl* pColl = rNode.GetTextColl();
+    if (!pColl)
+        return false;
+    const SwPoolFormatId nCollId = static_cast<SwPoolFormatId>(pColl->GetPoolFormatId());
+    for (const auto& rDesc : lcl_Descriptors())
+        if (!rDesc.mbCharacterStyle
+            && static_cast<int>(nCollId) == rDesc.mnPoolId)
+            return true;
+    return false;
+}
+
+/** Attribute-set override stats for one node (direct char/para attrs). */
+void lcl_CountNodeAttrs(const SwAttrSet& rSet, ManagedTypographyOverrideStats& rStats)
+{
+    auto has = [&rSet](sal_uInt16 nWhich) { return rSet.GetItemState(nWhich, false) != SfxItemState::UNKNOWN; };
+    if (has(RES_CHRATR_FONT) || has(RES_CHRATR_CJK_FONT) || has(RES_CHRATR_CTL_FONT))
+        ++rStats.fontFamily;
+    if (has(RES_CHRATR_FONTSIZE) || has(RES_CHRATR_CJK_FONTSIZE)
+        || has(RES_CHRATR_CTL_FONTSIZE))
+        ++rStats.fontSize;
+    if (has(RES_PARATR_LINESPACING) || has(RES_UL_SPACE))
+        ++rStats.paragraphRhythm;
+}
+} // namespace
+
+ManagedTypographyOverrideStats ScanManagedTypographyOverrides(SwDoc& rDoc)
+{
+    ManagedTypographyOverrideStats aStats;
+    const SwNodeOffset nCount = rDoc.GetNodes().Count();
+    for (SwNodeOffset n = SwNodeOffset(0); n < nCount; ++n)
+    {
+        SwNode* pNode = rDoc.GetNodes()[n];
+        SwTextNode* pText = pNode ? pNode->GetTextNode() : nullptr;
+        if (!pText)
+            continue;
+        // Direct char/para attributes on the node.
+        if (const SwAttrSet* pSet = pText->GetpSwAttrSet())
+        {
+            ManagedTypographyOverrideStats aNodeStats;
+            lcl_CountNodeAttrs(*pSet, aNodeStats);
+            aStats.fontFamily += aNodeStats.fontFamily;
+            aStats.fontSize += aNodeStats.fontSize;
+            if (lcl_IsManagedParaStyle(*pText))
+                aStats.paragraphRhythm += aNodeStats.paragraphRhythm;
+        }
+    }
+    return aStats;
+}
+
+sal_Int32 ClearManagedTypographyOverrides(SwDoc& rDoc)
+{
+    sal_Int32 nProcessed = 0;
+    const SwNodeOffset nCount = rDoc.GetNodes().Count();
+    for (SwNodeOffset n = SwNodeOffset(0); n < nCount; ++n)
+    {
+        SwNode* pNode = rDoc.GetNodes()[n];
+        SwTextNode* pText = pNode ? pNode->GetTextNode() : nullptr;
+        if (!pText)
+            continue;
+        ++nProcessed;
+        // Clear managed family/size on the whole node (undo-aware).
+        for (const sal_uInt16 nWhich : aManagedCharWhich)
+            pText->ResetAttr(nWhich);
+        // Clear managed rhythm only on managed semantic paragraph styles.
+        if (lcl_IsManagedParaStyle(*pText))
+            for (const sal_uInt16 nWhich : aManagedRhythmWhich)
+                pText->ResetAttr(nWhich);
+    }
+    return nProcessed;
+}
+
+void ClearManagedInsertionAttributes(SwDoc& rDoc)
+{
+    // The caret/insertion attributes live on the active edit shell. Resetting
+    // the managed char which-ids clears them so new text resolves to the
+    // semantic style (spec V4 10).
+    SwViewShell* pSh = rDoc.getIDocumentLayoutAccess().GetCurrentViewShell();
+    if (!pSh)
+        return;
+    SfxViewShell* pSfxSh = pSh->GetSfxViewShell();
+    if (!pSfxSh)
+        return;
+    SwView* pView = dynamic_cast<SwView*>(pSfxSh);
+    SwWrtShell* pWrt = pView ? pView->GetWrtShellPtr() : nullptr;
+    if (pWrt)
+    {
+        o3tl::sorted_vector<sal_uInt16> aSorted;
+        for (const sal_uInt16 nWhich : aManagedCharWhich)
+            aSorted.insert(nWhich);
+        pWrt->ResetAttr(aSorted);
+    }
+}
+
+void RefreshTypographyBindings(const css::uno::Reference<css::frame::XFrame>& rFrame)
+{
+    if (!rFrame.is())
+        return;
+    css::uno::Reference<css::frame::XController> xController = rFrame->getController();
+    if (!xController.is())
+        return;
+    SwXTextDocument* pTextDoc
+        = comphelper::getFromUnoTunnel<SwXTextDocument>(xController->getModel());
+    if (!pTextDoc || !pTextDoc->GetDocShell())
+        return;
+    SwDoc* pDoc = pTextDoc->GetDocShell()->GetDoc();
+    if (!pDoc)
+        return;
+    SwViewShell* pSh = pDoc->getIDocumentLayoutAccess().GetCurrentViewShell();
+    if (!pSh)
+        return;
+    SfxViewShell* pSfxSh = pSh->GetSfxViewShell();
+    if (!pSfxSh)
+        return;
+    // Invalidate the typography-related slots so the toolbar re-queries on the
+    // same event loop (spec V4 12/37). Real branch slot ids are used.
+    SfxBindings& rBindings = pSfxSh->GetViewFrame().GetBindings();
+    rBindings.Invalidate(SID_ATTR_CHAR_FONT);
+    rBindings.Invalidate(SID_ATTR_CHAR_FONTHEIGHT);
+    rBindings.Invalidate(SID_STYLE_FAMILY2);
+    rBindings.Invalidate(SID_ATTR_CHAR_POSTURE);
+    rBindings.Invalidate(SID_ATTR_CHAR_WEIGHT);
+    // Re-query synchronously so no document click is needed.
+    rBindings.Update();
+}
+
+TypeSystemApplyResult
+ApplyPresetTransaction(const css::uno::Reference<css::frame::XFrame>& rFrame,
+                       const OUString& rPresetId)
+{
+    TypeSystemApplyResult aResult;
+    aResult.presetId = rPresetId;
+    try
+    {
+        const auto aContext = sw::writer2027typographymanager::ResolveWriter2027TypographyContext(
+            rFrame);
+        if (!aContext.pDoc || !aContext.pDocShell || !aContext.pFontList)
+        {
+            svx::writer2027::Writer2027LogMessage(
+                "writer2027typesystem.apply",
+                OUString::Concat(u"preset=") + rPresetId + u" failed: no font/doc context"_ustr);
+            return aResult;
+        }
+        const auto& rCatalog = svx::writer2027::Writer2027TypeSystemCatalog::Get();
+        const svx::writer2027::TypeSystemPreset* pPreset = rCatalog.FindPreset(rPresetId);
+        if (!pPreset)
+            return aResult;
+
+        const svx::writer2027::ResolvedTypeSystem aResolved
+            = svx::writer2027::ResolveTypeSystem(*pPreset, aContext.pFontList);
+
+        // A. scan before (spec V4 15).
+        aResult.before = ScanManagedTypographyOverrides(*aContext.pDoc);
+
+        // C. one undo transaction (spec V4 13/44).
+        SwDoc* pDoc = aContext.pDoc;
+        pDoc->GetIDocumentUndoRedo().StartUndo(SwUndoId::WRITER2027_TYPE_SYSTEM, nullptr);
+        const bool bStyles = [&]()
+        {
+            EnsureSemanticStylesMaterialized(*pDoc);
+            return sw::writer2027typesystem::ApplyTypeSystem(*pDoc, *pPreset, aResolved,
+                                                             aContext.pFontList);
+        }();
+
+        // E/F. clear managed overrides (spec V4 6/7/8).
+        ClearManagedTypographyOverrides(*pDoc);
+        // G. clear caret/insertion managed attrs (spec V4 10).
+        ClearManagedInsertionAttributes(*pDoc);
+
+        pDoc->GetIDocumentUndoRedo().EndUndo(SwUndoId::WRITER2027_TYPE_SYSTEM, nullptr);
+        pDoc->getIDocumentState().SetModified();
+
+        // I. post-verification: re-scan + detect (spec V4 36).
+        aResult.after = ScanManagedTypographyOverrides(*pDoc);
+        aResult.detectedPresetAfter
+            = sw::writer2027typesystem::DetectCurrentTypeSystem(*pDoc, aContext.pFontList);
+
+        aResult.success = bStyles && aResult.detectedPresetAfter == rPresetId
+                          && aResult.after.Total() == 0;
+
+        // K. invalidate/requery bindings (spec V4 12).
+        RefreshTypographyBindings(rFrame);
+
+        svx::writer2027::Writer2027LogMessage(
+            aResult.success ? "writer2027typesystem.apply.ok" : "writer2027typesystem.apply.verify_failed",
+            OUString::Concat(u"preset=") + rPresetId
+                + u" before=" + OUString::number(aResult.before.Total())
+                + u" after=" + OUString::number(aResult.after.Total())
+                + u" detected=" + aResult.detectedPresetAfter);
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("writer2027typesystem.apply.error", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("writer2027typesystem.apply.error", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("writer2027typesystem.apply.error");
+    }
+    aResult.success = false; // never report clean preset on failure (spec 58)
+    return aResult;
 }
 
 } // namespace sw::writer2027typographymanager

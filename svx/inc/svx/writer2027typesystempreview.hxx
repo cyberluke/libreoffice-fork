@@ -48,12 +48,21 @@ struct TypeSystemPreviewModel
     sal_uInt16 mnTitleWeight = 0;
 
     OUString maScaleLabelText;   // e.g. "Editorial · 12 / 15 / 18 / 24 / 28"
-    OUString maFallbackText;     // e.g. "Canela -> Instrument Serif" (empty = none)
+
+    // Structured fallback rows (spec V4 33): one row per role, shown as
+    // "Role\nRequested -> Resolved", never one long comma-separated line.
+    struct FallbackRow
+    {
+        OUString maRole;     // Heading / Body / Code / Display
+        OUString maDetail;   // "Neue Montreal -> Inter" or "SAP 72 installed as 72"
+    };
+    std::vector<FallbackRow> maFallbackRows;
 
     // Fixed UI sample strings (spec 53).
     OUString maHeadingSample = u"A Better Way to Write"_ustr;
     OUString maBodySample = u"A clear, calm paragraph for long-form reading."_ustr;
     OUString maMonoSample = u"const mode = \"editorial\";"_ustr;
+    bool mbPreviewing = false; // when the selected-for-preview differs from current
 };
 
 /** Custom font-rendered Type System preview surface (spec 10/11/52).
@@ -84,6 +93,8 @@ private:
     void PaintSection(vcl::RenderContext& rCtx, const tools::Rectangle& rSection,
                       const OUString& rLabel, const OUString& rText, const OUString& rFamily,
                       sal_uInt16 nWeight, double fSizeLp);
+    void PaintBody(vcl::RenderContext& rCtx, const tools::Rectangle& rSection,
+                   const OUString& rLabel, const OUString& rText, const OUString& rFamily);
 
     tools::Long ClampLogical(tools::Long nLp) const;
     double Scale() const;

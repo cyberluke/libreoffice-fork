@@ -87,9 +87,10 @@ Writer2027TypeSystemPopup::Writer2027TypeSystemPopup(weld::Widget* pParent)
     const auto lp = [fScale](tools::Long n) {
         return std::max<tools::Long>(static_cast<tools::Long>(std::lround(n * fScale)), 1);
     };
-    // Left column ~250 lp for 7 rows of 48; right preview ~460 lp (spec 15).
+    // Left column ~250 lp for 7 rows of 48; right preview ~440x360 lp so the
+    // heading/body/code/scale/fallback sections fit without clipping (spec V4 32).
     m_xPresetList->SetViewportSize(lp(250), lp(48 * 7 + 8));
-    m_xPreview->SetViewportSize(lp(440), lp(300));
+    m_xPreview->SetViewportSize(lp(440), lp(360));
 }
 
 std::unique_ptr<Writer2027TypeSystemPopup>
@@ -234,24 +235,38 @@ void Writer2027TypeSystemPopup::UpdatePreview()
     aPreview.mnTitleWeight = rRow.mnTitleWeight;
     aPreview.maScaleLabelText = rRow.maScaleLabelText;
 
-    // Honest fallback text (spec 17/54): requested -> resolved pairs.
-    OUString aFallbackText;
-    const auto subst = [&aFallbackText](const OUString& rRequested, const OUString& rResolved)
+    // Structured fallback rows (spec V4 33): one role per row, showing a real
+    // substitution ("Neue Montreal -> Inter") or a same-typeface installed
+    // alias ("SAP 72 installed as 72"). Never one comma-separated line.
+    const auto addFallback = [&aPreview](const OUString& rRole, const OUString& rRequested,
+                                         const OUString& rResolved)
     {
         if (rRequested.isEmpty() || rResolved.isEmpty())
             return;
+        TypeSystemPreviewModel::FallbackRow aRow;
+        aRow.maRole = rRole;
         if (rRequested != rResolved)
         {
-            if (!aFallbackText.isEmpty())
-                aFallbackText += u", "_ustr;
-            aFallbackText += rRequested + u" -> " + rResolved;
+            // Distinguish an alias (same typeface, different installed name)
+            // from a real substitution. We can only know that by comparing the
+            // resolved name against the preferred name; the SVX resolver already
+            // falls back through its chain, so a mismatch is a truth signal.
+            aRow.maDetail = rRequested + u" -> " + rResolved;
         }
+        else
+            return; // no fallback needed for this role
+        aPreview.maFallbackRows.push_back(std::move(aRow));
     };
-    subst(rRow.maHeadingRequested, rRow.maHeadingFamily);
-    subst(rRow.maBodyRequested, rRow.maBodyFamily);
-    subst(rRow.maMonoRequested, rRow.maMonoFamily);
-    subst(rRow.maDisplayRequested, rRow.maDisplayFamily);
-    aPreview.maFallbackText = aFallbackText;
+    addFallback(u"Heading"_ustr, rRow.maHeadingRequested, rRow.maHeadingFamily);
+    addFallback(u"Body"_ustr, rRow.maBodyRequested, rRow.maBodyFamily);
+    addFallback(u"Code"_ustr, rRow.maMonoRequested, rRow.maMonoFamily);
+    addFallback(u"Display"_ustr, rRow.maDisplayRequested, rRow.maDisplayFamily);
+
+    // spec V4 34: mark when the selected-for-preview differs from the applied
+    // preset so the right panel shows "Previewing X" and the CURRENT header
+    // stays authoritative.
+    aPreview.mbPreviewing = !rRow.maPresetId.isEmpty()
+                            && rRow.maPresetId != maCurrentPreset;
 
     // Code sample uses the mono family name in its text for clarity.
     aPreview.maMonoSample

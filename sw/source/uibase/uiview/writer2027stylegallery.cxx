@@ -127,15 +127,17 @@ int Writer2027StyleGallery::IndexAtInternal(const Point& rPoint) const
         = std::max<tools::Long>(static_cast<tools::Long>(std::lround(PAD_LP * Scale())), 1);
     const tools::Long nGap
         = std::max<tools::Long>(static_cast<tools::Long>(std::lround(CARD_GAP_LP * Scale())), 1);
-    const tools::Long nX = rPoint.X() + mnScrollOffsetPx - nPad;
-    if (nX < 0)
-        return -1;
-    const size_t nItem = nX / (CardWidthPx() + nGap);
+    // ONE coordinate convention (spec V4 24, Option A): card start positions
+    // include the padding; the pointer is in content space by adding scroll.
+    const tools::Long nContentX = rPoint.X() + mnScrollOffsetPx;
+    const size_t nItem = nContentX / (CardWidthPx() + nGap);
     if (nItem >= maItems.size())
         return -1;
     const tools::Long nCardStart = nPad + static_cast<tools::Long>(nItem) * (CardWidthPx() + nGap);
-    if (nX >= nCardStart + CardWidthPx() + 1)
-        return -1;
+    if (nContentX < nCardStart)
+        return -1; // before the first card's left edge or in a gap
+    if (nContentX >= nCardStart + CardWidthPx())
+        return -1; // in the trailing gap
     return static_cast<int>(nItem);
 }
 
@@ -174,6 +176,7 @@ void Writer2027StyleGallery::Paint(vcl::RenderContext& rOut, const tools::Rectan
 
         const tools::Rectangle aCard(nLeft, nTop, nLeft + CardWidthPx() - 1, nBottom);
         const bool bHover = (static_cast<int>(i) == mnHoverIndex);
+        const bool bFocus = (static_cast<int>(i) == mnFocusIndex);
         const bool bCurrent = maItems[i].mbCurrent;
 
         Color aBg = aWindowColor;
@@ -186,7 +189,16 @@ void Writer2027StyleGallery::Paint(vcl::RenderContext& rOut, const tools::Rectan
                   | vcl::PushFlags::LINECOLOR);
         rOut.IntersectClipRegion(aCard);
         rOut.SetFillColor(aBg);
-        rOut.SetLineColor(aBg);
+        // Keyboard focus: a distinct ring/darker rail, separate from hover and
+        // current (spec V4 31).
+        if (bFocus && !bHover && !bCurrent)
+        {
+            Color aFocusLine = rStyle.GetHighlightColor();
+            aFocusLine.Merge(aBg, 70);
+            rOut.SetLineColor(aFocusLine);
+        }
+        else
+            rOut.SetLineColor(aBg);
         rOut.DrawRect(aCard);
 
         // Label in the actual document style font/family/size (spec 35/56).
@@ -235,8 +247,17 @@ void Writer2027StyleGallery::MouseButtonDown(const MouseEvent& rEvent)
         if (rEvent.IsLeft())
             ActivateAt(IndexAtInternal(rEvent.GetPosPixel()));
     }
-    catch (const std::exception&)
+    catch (const css::uno::Exception& rEx)
     {
+        svx::writer2027::Writer2027LogException("Writer2027StyleGallery::MouseButtonDown", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027StyleGallery::MouseButtonDown", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027StyleGallery::MouseButtonDown");
     }
     Window::MouseButtonDown(rEvent);
 }
@@ -252,8 +273,17 @@ void Writer2027StyleGallery::MouseMove(const MouseEvent& rEvent)
             Invalidate();
         }
     }
-    catch (const std::exception&)
+    catch (const css::uno::Exception& rEx)
     {
+        svx::writer2027::Writer2027LogException("Writer2027StyleGallery::MouseMove", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027StyleGallery::MouseMove", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027StyleGallery::MouseMove");
     }
     Window::MouseMove(rEvent);
 }
@@ -269,16 +299,16 @@ void Writer2027StyleGallery::KeyInput(const KeyEvent& rEvent)
             const int nDelta = (rKeyCode.GetCode() == KEY_RIGHT) ? 1 : -1;
             if (!maItems.empty())
             {
-                mnHoverIndex = (mnHoverIndex < 0)
+                mnFocusIndex = (mnFocusIndex < 0)
                                    ? 0
-                                   : std::clamp(mnHoverIndex + nDelta, 0,
+                                   : std::clamp(mnFocusIndex + nDelta, 0,
                                                 static_cast<int>(maItems.size()) - 1);
                 const tools::Long nPad = std::max<tools::Long>(
                     static_cast<tools::Long>(std::lround(PAD_LP * Scale())), 1);
                 const tools::Long nGap = std::max<tools::Long>(
                     static_cast<tools::Long>(std::lround(CARD_GAP_LP * Scale())), 1);
                 const tools::Long nCardLeft
-                    = nPad + static_cast<tools::Long>(mnHoverIndex) * (CardWidthPx() + nGap);
+                    = nPad + static_cast<tools::Long>(mnFocusIndex) * (CardWidthPx() + nGap);
                 if (nCardLeft < mnScrollOffsetPx + nPad)
                     ScrollBy(nCardLeft - (mnScrollOffsetPx + nPad));
                 else if (nCardLeft + CardWidthPx()
@@ -293,7 +323,7 @@ void Writer2027StyleGallery::KeyInput(const KeyEvent& rEvent)
         {
             if (!maItems.empty())
             {
-                mnHoverIndex = (rKeyCode.GetCode() == KEY_HOME)
+                mnFocusIndex = (rKeyCode.GetCode() == KEY_HOME)
                                    ? 0
                                    : static_cast<int>(maItems.size()) - 1;
                 ScrollBy(rKeyCode.GetCode() == KEY_HOME ? -GetMaxScrollOffset()
@@ -303,14 +333,23 @@ void Writer2027StyleGallery::KeyInput(const KeyEvent& rEvent)
         }
         if (bPlain && rKeyCode.GetCode() == KEY_RETURN)
         {
-            ActivateAt(mnHoverIndex);
+            ActivateAt(mnFocusIndex);
             return;
         }
         if (bPlain && rKeyCode.GetCode() == KEY_ESCAPE)
             return;
     }
-    catch (const std::exception&)
+    catch (const css::uno::Exception& rEx)
     {
+        svx::writer2027::Writer2027LogException("Writer2027StyleGallery::KeyInput", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027StyleGallery::KeyInput", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027StyleGallery::KeyInput");
     }
     Window::KeyInput(rEvent);
 }
@@ -332,8 +371,17 @@ void Writer2027StyleGallery::Command(const CommandEvent& rEvent)
             }
         }
     }
-    catch (const std::exception&)
+    catch (const css::uno::Exception& rEx)
     {
+        svx::writer2027::Writer2027LogException("Writer2027StyleGallery::Command", rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027StyleGallery::Command", rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027StyleGallery::Command");
     }
     Window::Command(rEvent);
 }

@@ -311,30 +311,17 @@ void Writer2027TypeSystemToolBoxControl::ApplyPreset(const OUString& rPresetId)
         return;
     }
 
-    const auto aContext
-        = sw::writer2027typographymanager::ResolveWriter2027TypographyContext(m_xFrame);
-    if (!aContext.pDoc || !aContext.pDocShell || !aContext.pFontList)
-    {
-        svx::writer2027::Writer2027LogMessage("Writer2027TypeSystemToolBoxControl::ApplyPreset",
-                                              u"no font info; apply disabled"_ustr);
-        return; // spec 9: do not apply unverified family names
-    }
-
-    const svx::writer2027::Writer2027TypeSystemCatalog& rCatalog
-        = svx::writer2027::Writer2027TypeSystemCatalog::Get();
-    const svx::writer2027::TypeSystemPreset* pPreset = rCatalog.FindPreset(rPresetId);
-    if (!pPreset)
-        return;
-
-    const svx::writer2027::ResolvedTypeSystem aResolved
-        = svx::writer2027::ResolveTypeSystem(*pPreset, aContext.pFontList);
-    sw::writer2027typographymanager::EnsureSemanticStylesMaterialized(*aContext.pDoc);
-    const bool bOk = sw::writer2027typesystem::ApplyTypeSystem(*aContext.pDoc, *pPreset,
-                                                               aResolved, aContext.pFontList);
+    // Full V4 migration transaction: semantic styles + managed direct override
+    // cleanup + caret/insertion cleanup + post-verification + binding refresh,
+    // all in one undo group (spec V4 3-13). Never leaves StartUndo unbalanced.
+    const auto aResult
+        = sw::writer2027typographymanager::ApplyPresetTransaction(m_xFrame, rPresetId);
     svx::writer2027::Writer2027LogMessage(
-        "Writer2027TypeSystemToolBoxControl::ApplyPreset",
-        OUString::Concat(u"applied preset id=") + rPresetId
-            + u" ok=" + OUString::boolean(bOk));
+        aResult.success ? "writer2027typesystem.apply.ok" : "writer2027typesystem.apply.verify_failed",
+        OUString::Concat(u"preset=") + rPresetId
+            + u" before=" + OUString::number(aResult.before.Total())
+            + u" after=" + OUString::number(aResult.after.Total())
+            + u" detected=" + aResult.detectedPresetAfter);
 }
 
 } // namespace

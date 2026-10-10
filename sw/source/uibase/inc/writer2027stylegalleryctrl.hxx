@@ -50,6 +50,9 @@ public:
     // XComponent
     virtual void SAL_CALL disposing(std::unique_lock<std::mutex>& rGuard) override;
 
+    // XInitialization
+    virtual void SAL_CALL initialize(const css::uno::Sequence<css::uno::Any>& rArguments) override;
+
     // XServiceInfo
     virtual OUString SAL_CALL getImplementationName() override;
     virtual sal_Bool SAL_CALL supportsService(const OUString& rServiceName) override;
