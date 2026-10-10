@@ -30,20 +30,20 @@
 #include <com/sun/star/frame/XDispatchProvider.hpp>
 #include <com/sun/star/frame/DispatchResultEvent.hpp>
 #include <com/sun/star/awt/XWindow.hpp>
-#include <com/sun/star/util/URL.hpp>
+
+#include <comphelper/processfactory.hxx>
 
 #include <sfx2/dispatch.hxx>
-#include <sfx2/tbxctrl.hxx>
 #include <sfx2/viewsh.hxx>
 #include <sfx2/app.hxx>
 #include <sfx2/objsh.hxx>
 #include <sfx2/bindings.hxx>
 #include <sfx2/sfxsids.hrc>
 #include <svl/itemset.hxx>
-#include <svl/style.hxx>
 
 #include <swmodule.hxx>
 #include <wrtsh.hxx>
+#include <editsh.hxx>
 #include <docsh.hxx>
 #include <edtwin.hxx>
 #include <view.hxx>
@@ -58,30 +58,73 @@ using sw::writer2027stylegallery::Writer2027StyleGallery;
 
 namespace
 {
-// Internal dispatch helper for .uno:StyleApply. Cards always apply a paragraph
-// style, so Family=Para and Template carries the programmatic style name.
-void lcl_PostStyleApply(const css::uno::Reference<css::frame::XFrame>& rFrame,
-                        const OUString& rStyleName)
+// Apply a Writer 2027 semantic paragraph style directly on the current
+// selection. Cards always apply a paragraph style, so we resolve the owning
+// frame's SwWrtShell (frame-bound, never a document-global shortcut) and set
+// the text format collection by its pool id. This avoids any dependency on the
+// .uno:StyleApply dispatcher being resolvable through the frame and is the same
+// mutation the standard Styles panel performs.
+bool lcl_ApplyParaStyleByPoolId(const css::uno::Reference<css::frame::XFrame>& rFrame,
+                                int nPoolId, SwTextFormatColl* pFallbackColl)
+{
+    if (!rFrame.is() || nPoolId < 0)
+        return false;
+    try
+    {
+        css::uno::Reference<css::frame::XController> xController = rFrame->getController();
+        if (!xController.is())
+            return false;
+        SwXTextDocument* pTextDoc
+            = comphelper::getFromUnoTunnel<SwXTextDocument>(xController->getModel());
+        if (!pTextDoc || !pTextDoc->GetDocShell())
+            return false;
+        SwView* pView = pTextDoc->GetDocShell()->GetView();
+        if (!pView)
+            return false;
+        SwWrtShell* pWrt = pView->GetWrtShellPtr();
+        if (!pWrt)
+            return false;
+        SwTextFormatColl* pColl = pWrt->GetTextCollFromPool(static_cast<SwPoolFormatId>(nPoolId));
+        if (!pColl)
+            pColl = pFallbackColl;
+        if (!pColl)
+            return false;
+        pWrt->SetTextFormatColl(pColl, true);
+        return true;
+    }
+    catch (const css::uno::Exception&)
+    {
+    }
+    catch (const std::exception&)
+    {
+    }
+    return false;
+}
+
+// Resolve the current SwTextFormatColl (the paragraph style under the caret),
+// used both for the current-style highlight and as a fallback apply target.
+SwView* lcl_FrameSwView(const css::uno::Reference<css::frame::XFrame>& rFrame)
 {
     if (!rFrame.is())
-        return;
-    css::uno::Reference<css::frame::XDispatchProvider> xProv(rFrame, css::uno::UNO_QUERY);
-    if (!xProv.is())
-        return;
-
-    // The canonical StyleApply argument set: Family must be a sal_Int16
-    // (SfxStyleFamily) exactly as the standard Styles panel dispatches it, and
-    // the URL must be parsed through an XURLTransformer before dispatch (an
-    // unparsed .uno: URL is not resolvable by the Sfx dispatch provider).
-    css::uno::Sequence<css::beans::PropertyValue> aArgs(2);
-    aArgs.getArray()[0].Name = u"Template"_ustr;
-    aArgs.getArray()[0].Value <<= rStyleName;
-    aArgs.getArray()[1].Name = u"Family"_ustr;
-    aArgs.getArray()[1].Value <<= sal_Int16(SfxStyleFamily::Para);
-    SfxToolBoxControl::Dispatch(xProv, u".uno:StyleApply"_ustr, aArgs);
-    svx::writer2027::Writer2027LogMessage(
-        "stylegallery.apply.dispatched",
-        OUString::Concat(u"style=") + rStyleName);
+        return nullptr;
+    try
+    {
+        css::uno::Reference<css::frame::XController> xController = rFrame->getController();
+        if (!xController.is())
+            return nullptr;
+        SwXTextDocument* pTextDoc
+            = comphelper::getFromUnoTunnel<SwXTextDocument>(xController->getModel());
+        if (!pTextDoc || !pTextDoc->GetDocShell())
+            return nullptr;
+        return pTextDoc->GetDocShell()->GetView();
+    }
+    catch (const css::uno::Exception&)
+    {
+    }
+    catch (const std::exception&)
+    {
+    }
+    return nullptr;
 }
 
 int lcl_CurrentParaStylePoolId(const css::uno::Reference<css::frame::XFrame>& rFrame)
@@ -270,20 +313,23 @@ void Writer2027StyleGalleryToolBoxControl::RebuildGallery(
     }
 }
 
-void Writer2027StyleGalleryToolBoxControl::ApplyStyle(const OUString& rStyleName)
+void Writer2027StyleGalleryToolBoxControl::ApplyStyle(int nPoolId)
 {
-    if (!rStyleName.isEmpty())
-    {
-        lcl_PostStyleApply(m_xFrame, rStyleName);
-        svx::writer2027::Writer2027LogMessage(
-            "stylegallery.apply",
-            OUString::Concat(u"style=") + rStyleName);
-    }
+    SwTextFormatColl* pFallback = nullptr;
+    if (SwView* pView = lcl_FrameSwView(m_xFrame))
+        if (SwWrtShell* pWrt = pView->GetWrtShellPtr())
+            pFallback = pWrt->GetCurTextFormatColl();
+    const bool bApplied
+        = lcl_ApplyParaStyleByPoolId(m_xFrame, nPoolId, pFallback);
+    svx::writer2027::Writer2027LogMessage(
+        "stylegallery.apply",
+        OUString::Concat(u"pool=") + OUString::number(nPoolId)
+            + u" applied=" + OUString::boolean(bApplied));
 }
 
-IMPL_LINK(Writer2027StyleGalleryToolBoxControl, OnStyleActivate, const OUString&, rStyleName, void)
+IMPL_LINK(Writer2027StyleGalleryToolBoxControl, OnStyleActivate, int, nPoolId, void)
 {
-    ApplyStyle(rStyleName);
+    ApplyStyle(nPoolId);
 }
 
 OUString Writer2027StyleGalleryToolBoxControl::getImplementationName()

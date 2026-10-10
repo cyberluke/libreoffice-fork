@@ -294,9 +294,9 @@ void Writer2027StyleGallery::ActivateAt(int nIndex)
 {
     if (nIndex < 0 || nIndex >= static_cast<int>(maItems.size()))
         return;
-    const OUString aName = maItems[nIndex].maInternalName;
-    if (!aName.isEmpty() && m_aActivateHdl.IsSet())
-        m_aActivateHdl.Call(aName);
+    const int nPoolId = maItems[nIndex].mnPoolId;
+    if (nPoolId >= 0 && m_aActivateHdl.IsSet())
+        m_aActivateHdl.Call(nPoolId);
 }
 
 void Writer2027StyleGallery::MouseButtonDown(const MouseEvent& rEvent)

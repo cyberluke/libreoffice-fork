@@ -29,8 +29,9 @@ using Writer2027StyleGalleryToolBoxControl_Base
     Frame-bound: all document lookup and dispatch use this controller's frame
     (never document-global Current()). The gallery model is rebuilt from the
     actual document style pool so it reflects real styles and Type System
-    changes. Card activation applies the style via the canonical
-    .uno:StyleApply dispatch (spec 38).
+    changes. Card activation applies the paragraph style directly on the owning
+    frame's SwWrtShell (spec 38), so it does not depend on the UNO dispatch
+    framework resolving .uno:StyleApply.
  */
 class Writer2027StyleGalleryToolBoxControl final : public Writer2027StyleGalleryToolBoxControl_Base
 {
@@ -60,8 +61,8 @@ public:
 
 private:
     void RebuildGallery(VclPtr<sw::writer2027stylegallery::Writer2027StyleGallery> const& pGallery);
-    void ApplyStyle(const OUString& rStyleName);
-    DECL_LINK(OnStyleActivate, const OUString&, void);
+    void ApplyStyle(int nPoolId);
+    DECL_LINK(OnStyleActivate, int, void);
 };
 
 #endif // INCLUDED_SW_WRITER2027STYLEGALLERYCTRL_HXX

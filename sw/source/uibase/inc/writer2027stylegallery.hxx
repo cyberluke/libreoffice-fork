@@ -64,8 +64,9 @@ public:
     void SetFontList(const FontList* pFontList);
     void InternalPaint() { Invalidate(); }
 
-    /** Called when a card is activated (click / Enter on a hovered card). */
-    void connect_activate(const Link<const OUString&, void>& rLink) { m_aActivateHdl = rLink; }
+    /** Called when a card is activated (click / Enter on a hovered card).
+        The link carries the pool id (SwPoolFormatId) of the style to apply. */
+    void connect_activate(const Link<int, void>& rLink) { m_aActivateHdl = rLink; }
 
     // Testable geometry.
     tools::Long GetCardWidthPx() const;
@@ -100,7 +101,7 @@ private:
     int mnHoverIndex = -1;
     int mnFocusIndex = -1; // keyboard focus (distinct from hover/current, spec V4 31)
     tools::Long mnScrollOffsetPx = 0;
-    Link<const OUString&, void> m_aActivateHdl;
+    Link<int, void> m_aActivateHdl;
     bool mbTrackingParent = false;
 };
 
