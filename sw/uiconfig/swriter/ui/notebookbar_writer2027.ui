@@ -3490,11 +3490,16 @@
                             <property name="visible">True</property>
                             <property name="can-focus">False</property>
                             <property name="valign">center</property>
+                            <property name="margin-start">6</property>
+                            <property name="margin-end">6</property>
+                            <property name="icon_size">3</property>
                             <property name="toolbar-style">icons</property>
                             <property name="show-arrow">False</property>
                             <child>
                               <object class="GtkMenuToolButton" id="btnHomeColor">
                                 <property name="visible">True</property>
+                                <property name="margin-start">3</property>
+                                <property name="margin-end">3</property>
                                 <property name="action-name">.uno:Color</property>
                               </object>
                               <packing>
@@ -3505,6 +3510,8 @@
                             <child>
                               <object class="GtkMenuToolButton" id="btnHomeBackColor">
                                 <property name="visible">True</property>
+                                <property name="margin-start">3</property>
+                                <property name="margin-end">3</property>
                                 <property name="action-name">.uno:CharBackColor</property>
                               </object>
                               <packing>
@@ -3515,6 +3522,8 @@
                             <child>
                               <object class="GtkMenuToolButton" id="btnHomeSpacing">
                                 <property name="visible">True</property>
+                                <property name="margin-start">3</property>
+                                <property name="margin-end">3</property>
                                 <property name="action-name">.uno:Spacing</property>
                               </object>
                               <packing>
@@ -3534,6 +3543,9 @@
                             <property name="visible">True</property>
                             <property name="can-focus">False</property>
                             <property name="valign">center</property>
+                            <property name="margin-start">6</property>
+                            <property name="margin-end">6</property>
+                            <property name="icon_size">3</property>
                             <property name="toolbar-style">icons</property>
                             <property name="show-arrow">False</property>
                             <child>
@@ -3690,7 +3702,9 @@
                             <property name="visible">True</property>
                             <property name="can-focus">False</property>
                             <property name="valign">center</property>
+                            <property name="margin-start">6</property>
                             <property name="margin-end">6</property>
+                            <property name="icon_size">3</property>
                             <property name="toolbar-style">icons</property>
                             <property name="show-arrow">False</property>
                             <child>
@@ -3698,6 +3712,8 @@
                                 <property name="visible">True</property>
                                 <property name="halign">center</property>
                                 <property name="hexpand">True</property>
+                                <property name="margin-start">2</property>
+                                <property name="margin-end">2</property>
                                 <property name="action-name">.uno:StartPara</property>
                               </object>
                               <packing>
@@ -3710,6 +3726,8 @@
                                 <property name="visible">True</property>
                                 <property name="halign">center</property>
                                 <property name="hexpand">True</property>
+                                <property name="margin-start">2</property>
+                                <property name="margin-end">2</property>
                                 <property name="action-name">.uno:CenterPara</property>
                               </object>
                               <packing>
@@ -3722,6 +3740,8 @@
                                 <property name="visible">True</property>
                                 <property name="halign">center</property>
                                 <property name="hexpand">True</property>
+                                <property name="margin-start">2</property>
+                                <property name="margin-end">2</property>
                                 <property name="action-name">.uno:EndPara</property>
                               </object>
                               <packing>
@@ -3734,6 +3754,8 @@
                                 <property name="visible">True</property>
                                 <property name="halign">center</property>
                                 <property name="hexpand">True</property>
+                                <property name="margin-start">2</property>
+                                <property name="margin-end">2</property>
                                 <property name="action-name">.uno:JustifyPara</property>
                               </object>
                               <packing>

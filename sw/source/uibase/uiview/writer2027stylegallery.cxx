@@ -41,10 +41,10 @@ namespace sw::writer2027stylegallery
 
 namespace
 {
-constexpr tools::Long CARD_W_LP = 124; // spec 36: 116-132 logical px
-constexpr tools::Long CARD_H_LP = 56;  // spec 36: 54-62
+constexpr tools::Long CARD_W_LP = 116; // spec 36: 116-132 logical px
+constexpr tools::Long CARD_H_LP = 42;  // compact card: keeps the Styles strip short
 constexpr tools::Long CARD_GAP_LP = 6;
-constexpr tools::Long PAD_LP = 4;
+constexpr tools::Long PAD_LP = 3;
 constexpr tools::Long SCROLL_STEP_LP = 48;
 } // namespace
 
