@@ -7,11 +7,11 @@ Previous reviewed head: `00d42dfa932f99a875040fda4255db450a53aa9f`
 
 ## Commit
 
-Full V3 changeset (will be one commit on top of `00d42dfa932f`).
+`29b707788252` (Writer 2027: complete typography workflow V3).
 
 ## Branch head
 
-TBD after commit + push.
+`29b707788252` on `cyberluke/lukas_dev`.
 
 ## Font Browser root causes (Phase A)
 
