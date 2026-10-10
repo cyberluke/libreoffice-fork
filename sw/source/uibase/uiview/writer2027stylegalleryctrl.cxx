@@ -208,7 +208,20 @@ void Writer2027StyleGalleryToolBoxControl::RebuildGallery(
         const auto aContext
             = sw::writer2027typographymanager::ResolveWriter2027TypographyContext(m_xFrame);
         if (!aContext.pDoc)
+        {
+            // The frame has no document attached yet (e.g. toolbar built while
+            // the view is still initialising). Keep the gallery blank and let a
+            // later update()/statusChanged() fill it once the doc is present.
+            svx::writer2027::Writer2027LogMessage(
+                "writer2027.gallery.model.rebuild",
+                u"RESET: no document yet (will retry on next update)"_ustr);
             return;
+        }
+        // The gallery is the Type-System-semantic style picker: materialize the
+        // canonical semantic paragraph styles so a fresh/blank document shows
+        // the real cards (they do not exist in a pool until a Type System or a
+        // prior apply created them). Idempotent. (spec V3 55/56, V4 20)
+        sw::writer2027typographymanager::EnsureSemanticStylesMaterialized(*aContext.pDoc);
         const int nCurrentPoolId = lcl_CurrentParaStylePoolId(m_xFrame);
         auto aItems
             = sw::writer2027stylegallery::BuildStyleGalleryModel(*aContext.pDoc, nCurrentPoolId);
