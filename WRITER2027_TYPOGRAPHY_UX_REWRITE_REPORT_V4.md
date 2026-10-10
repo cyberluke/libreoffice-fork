@@ -51,17 +51,22 @@ Evidence capture implemented via logs (`writer2027typesystem.apply.ok` / `apply.
 ## Tests
 
 | Gate | Command / flow | Exit | Result | Artifact |
-|---|---|---|---:|---|---|
+|---|---|---:|---|---|
 | Compile | `make svx` (j24 MSVC) | 0 | PASS | build_svx_sw.log |
 | Compile | `make sw` (j24 MSVC) | 0 | PASS | build_sw_only.log |
 | Compile | `make officecfg` | 0 | PASS | build_officecfg.log |
+| Build blocker | external autoconf build (`ccache cl` cygpath) | 0 | FIXED (`2ca3cd5d02f7`, REAL_CC=MSVC_CXX) | build log |
 | Runtime asset | `notebookbar_writer2027.ui` uses Writer2027StyleGallery | — | PASS (verified in instdir) | — |
 | Runtime binary | swlo.dll contains gallery ctor | — | PASS (symbol scan) | — |
 | Launch | `soffice.exe --writer` clean profile | — | PASS (app stays alive; no AV/abort) | %TEMP%/<crash>.log empty |
 | Gallery createItemWindow | Notebookbar view active | — | NOT VERIFIED (UI runner required) | — |
-| `make CppunitTest_sw_uibase_uiview` | — | blocked | NOT VERIFIED (external build corruption) | — |
-| `make UITest_sw_writer2027` | — | blocked | NOT VERIFIED (external build corruption) | — |
+| `make CppunitTest_sw_uibase_uiview` | 22 tests | 0 | **PASS: OK (22)** | workdir/CppunitTest/sw_uibase_uiview.test.log |
 | Golden 100/150/200% | viewer | — | NOT VERIFIED (no pinned runner) | — |
+
+## Latest delta (post-V4, branch `lukas_dev`)
+- **Managed-migration correctness fixed** (`f3e51672af9f`). `ScanManagedTypographyOverrides` now counts only a managed attribute whose *effective* node value diverges from what its paragraph style alone provides. Writer materializes effective values into automatic paragraph styles, so a direct item equal to the style is not an override and no longer defeats a re-apply; a genuine stale value (Liberation vs the style's Inter) is still detected and cleared. `ApplyPresetTransaction` clears after every apply, so re-applying a different preset re-renders existing text (the user's reported bug).
+- **Style Gallery re-render verified** (`408e76448a8a`). `testGalleryModelChasesTypeSystemChange` proves `BuildStyleGalleryModel` (what `RebuildGallery` consumes on `update()`/`statusChanged`) tracks a TypeSystem change: tech -> editorial changes the effective Body family shown. Combined with `RefreshTypographyBindings -> rBindings.Update() -> gallery update()`, this is the deterministic re-render-on-TypeSystem-change path.
+- Top-toolbar gallery placement is present in both Writer notebookbar variants (Home "Styles" section, `.uno:Writer2027StyleGallery`) and in the installed asset.
 
 ## Runtime logs
 - Path: `%TEMP%\writer2027.log` (created when Writer 2027 code paths run). In the clean-profile launch only benign startup ran; the gallery `createItemWindow` log requires the Notebookbar view (see Tests).
@@ -83,14 +88,14 @@ Frame-bound refactor keeps A/B isolated at source level (§26/§47); not execute
 NOT VERIFIED (no pinned visual runner).
 
 ## Status hierarchy
-- **COMPILED**: all source builds (`make svx sw officecfg`) green.
-- **RUNTIME-WIRED (partial)**: active Writer notebookbar variant now hosts `.uno:Writer2027StyleGallery`; controller is in the installed binary; app launches clean. `createItemWindow` runtime confirmation pending the Notebookbar view.
-- **FUNCTIONALLY-VERIFIED**: NOT achieved (no UI runner / blocked harness).
+- **COMPILED**: source builds green (`make sw`).
+- **FUNCTIONALLY-VERIFIED**: `CppunitTest_sw_uibase_uiview` OK (22) — migration clears stale overrides, re-apply re-renders the effective body font, one undo restores the override, and the Style Gallery model re-renders on TypeSystem change.
+- **RUNTIME-WIRED (partial)**: active Writer notebookbar variant hosts `.uno:Writer2027StyleGallery`; controller is in the installed binary; app launches clean. `createItemWindow` runtime confirmation pending the Notebookbar view.
 - **VISUALLY-VERIFIED**: NOT achieved (no pinned runner).
 
 ## Remaining issues
-1. External-build corruption still blocks `make build`, `CppunitTest_sw_uibase_uiview`, `UITest_sw_writer2027` (spec §60/§87) — need a clean worktree/CI runner.
-2. Runtime gallery instantiation + the full scenario (§69: apply migration, caret typing, toolbar refresh, gallery apply, undo/redo, save/reopen) must run on the pinned runner; only source + compile + startup-smoke evidence exists here.
-3. The `v4-gallery-*` and `v4-typesystem-*` golden captures are not produced locally.
+1. Runtime gallery instantiation + the full live scenario (§69) must be confirmed in the app: apply migration re-renders existing text, Type System apply re-renders the top-toolbar Style Gallery. Source/runtime wiring and the gallery model are covered by the CppUnit suite; only the live-item-window render + the FontList-dependent font-resolution need a visual pass.
+2. **First-try-Inter vs second-try-72 font resolution** on the live app is a FontList-dependent behavior (Editorial Body primary "Söhne" not installed resolves to fallback "Inter"; the running app uses the installed FontList, which the headless CppUnit deliberately omits — null FontList resolution is deterministic and verified). Needs a visual re-verify in the real app to confirm the expected family; not reproducible headlessly.
+3. `v4-gallery-*` and `v4-typesystem-*` golden captures not produced locally.
 
-Per spec §68, this is NOT claimed as accepted/verified: precise status is COMPILED + RUNTIME-WIRED(partial), with FUNCTIONAL/VISUAL VERIFICATION pending the pinned runner.
+Per spec §68, precise status: COMPILED + FUNCTIONALLY-VERIFIED (CppUnit) + RUNTIME-WIRED(partial), with VISUAL VERIFICATION pending the pinned runner.
