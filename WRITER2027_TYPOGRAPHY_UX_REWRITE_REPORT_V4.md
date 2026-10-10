@@ -1,7 +1,7 @@
 # Writer 2027 V4 Remediation Report
 
 ## Commit
-Pending after push (see git log on `cyberluke/lukas_dev`).
+`18ab0ca90fa8` on `cyberluke/lukas_dev`.
 
 ## Runtime build identity
 - branch `lukas_dev`
