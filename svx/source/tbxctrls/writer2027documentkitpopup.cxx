@@ -178,27 +178,33 @@ void Writer2027DocumentKitPopup::Open(vcl::Window& rAnchorWin)
         RebuildRows();
 
     // Geometry: shared AdaptivePopoverGeometry policy (single source of truth).
+    // All width/content heights are LOGICAL px; set_size_request consumes
+    // DEVICE px, so the logical result is scaled by fScale. This matches the
+    // policy contract (clampWidth/clampHeightPhysical take logical inputs) and
+    // avoids the old device-vs-logical mixing that blew the popup size up on
+    // HiDPI and let the custom-rendered rows clip / fonts collide.
     const double fScale = Application::GetDefaultDevice()
                               ? Application::GetDefaultDevice()->GetDPIScaleFactor()
                               : 1.0;
     const AbsoluteScreenPixelRectangle aScreenRect = rAnchorWin.GetDesktopRectPixel();
-    const tools::Long nWorkW = aScreenRect.GetWidth();
-    const tools::Long nWorkH = aScreenRect.GetHeight();
+    const tools::Long nWorkW = aScreenRect.GetWidth();  // physical px
+    const tools::Long nWorkH = aScreenRect.GetHeight(); // physical px
     const tools::Long nLogW = static_cast<tools::Long>(nWorkW / fScale);
 
     // Row heights derive from the tree's own text metrics (same basis as the
-    // custom-measure callback), so the popup request stays consistent with the
-    // rows the tree actually lays out at any DPI.
-    const tools::Long nTextH = std::max<tools::Long>(m_xRows->get_text_height(), 12);
-    tools::Long nContentH = nTextH * 9 * maRowIds.size();
-    const tools::Long nMinPopupH = nTextH * 9;
-    // set_size_request consumes the tree's DEVICE pixels (same space as the
-    // measure callback / get_height_rows); the width band is logical, so scale
-    // the result by fScale. Content and cap are device px (nWorkH).
-    const int nPopupWidth
-        = static_cast<int>(POPUP_GEOMETRY.clampWidth(nTextH * 45, nLogW) * fScale);
-    const tools::Long nPopupH = POPUP_GEOMETRY.clampHeight(nContentH, nMinPopupH, nWorkH);
-    m_xRows->set_size_request(nPopupWidth, static_cast<int>(nPopupH));
+    // custom-measure callback), kept in LOGICAL px for the policy, converted
+    // to device px at set_size_request so the popup request is consistent with
+    // the rows the tree actually lays out at any DPI.
+    const tools::Long nTextHDev = std::max<tools::Long>(m_xRows->get_text_height(), 12);
+    const tools::Long nRowHLp = std::max<tools::Long>(nTextHDev / fScale, 12);
+    const tools::Long nContentHLp = nRowHLp * 9 * maRowIds.size();
+    const tools::Long nMinPopupHLp = nRowHLp * 9;
+    const tools::Long nPopupWidthDev
+        = static_cast<tools::Long>(POPUP_GEOMETRY.clampWidth(nRowHLp * 45, nLogW) * fScale);
+    const tools::Long nPopupHDev
+        = POPUP_GEOMETRY.clampHeightPhysical(nContentHLp, nMinPopupHLp, nWorkH, fScale);
+    m_xRows->set_size_request(static_cast<int>(nPopupWidthDev),
+                              static_cast<int>(nPopupHDev));
 
     tools::Rectangle aRect(Point(0, 0), rAnchorWin.GetSizePixel());
     weld::Window* pParent = weld::GetPopupParent(rAnchorWin, aRect);
