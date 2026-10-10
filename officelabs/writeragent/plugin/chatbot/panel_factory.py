@@ -64,6 +64,7 @@ from plugin.framework.logging import start_watchdog_thread, init_logging
 from plugin.chatbot.dialogs import get_optional as get_optional_control, set_control_text, set_control_enabled, set_control_visible
 from plugin.framework.uno_context import get_extension_url, get_extension_path
 from plugin.chatbot.panel_wiring import _wireControls as wire_chatpanel_controls
+from plugin.chatbot.panel_resize import _BOTTOM_CLUSTER, _BOTTOM_MARGIN
 
 # debug-only: omitted in release (thread_guard stub has no _designated_main_thread).
 _LIVE_CHAT_PANELS: WeakSet[Any] | None = None
@@ -282,6 +283,45 @@ class ChatToolPanel(unohelper.Base, XToolPanel, XSidebarPanel):
             current_w = before.Width if before else 0
             current_h = before.Height if before else 0
 
+        # Vertical scrolling: the sidebar deck shows a scrollbar only when the
+        # panel's reported preferred height is LARGER than the visible deck.
+        # This XDL bulletinboard always fits its full content (the chat body +
+        # the bottom band anchored below the transcript), so compute the natural
+        # content height and report it as Preferred/Maximum. When the deck is
+        # shorter, the deck scrolls vertically instead of clipping the bottom
+        # band / last controls with no scrollbar. (fix: "right sidebar truncates
+        # the last button, horizontal scroll only").
+        natural_h = current_h if current_h > 0 else parent_h if parent_h > 0 else 400
+        snap = None
+        rl = getattr(self, "resize_listener", None)
+        if rl is not None and hasattr(rl, "_snapshot"):
+            snap = getattr(rl, "_snapshot", None)
+        if snap:
+            try:
+                bottom_rects = [
+                    snap[n] for n in _BOTTOM_CLUSTER if n in snap and snap[n]
+                ]
+                if bottom_rects:
+                    bottom_bottom = max(rect[1] + rect[3] for rect in bottom_rects)
+                    natural_h = bottom_bottom + _BOTTOM_MARGIN
+            except Exception as e:  # noqa: BLE001 - best-effort height probe
+                log.debug("getHeightForWidth natural_h probe skipped: %s", e)
+        # Guard: 0 ≤ Min ≤ Pref ≤ Max (DeckLayouter asserts this). Use a sane
+        # minimum so the deck never collapses the panel.
+        min_h = min(100, natural_h)
+        preferred = max(natural_h, min_h)
+        log.info(
+            "getHeightForWidth natural_h=%s current_h=%s parent_h=%s deck=%s",
+            natural_h,
+            current_h,
+            parent_h,
+            deck_w,
+        )
+        with suppress_disposed("getHeightForWidth getPosSize", logger=log):
+            before = self.PanelWindow.getPosSize()
+            current_w = before.Width if before else 0
+            current_h = before.Height if before else 0
+
         # Width is negotiated here; height stays whatever LO/deck already allocated.
         if current_h <= 0:
             current_h = parent_h if parent_h > 0 else 400
@@ -299,7 +339,10 @@ class ChatToolPanel(unohelper.Base, XToolPanel, XSidebarPanel):
             # Size the AWT dialog only, like last month. ChildFrame setPosSize is
             # gtk_widget_set_size_request (a minimum); typing grew past it and we
             # filled the new width (Keith: 995 → 1019).
-            self.PanelWindow.setPosSize(0, 0, eff_w, current_h, 15)
+            # Height uses the natural content height so the bulletinboard lays
+            # out every section; the deck scrolls vertically when natural_h
+            # exceeds the visible deck (fix: last controls truncate otherwise).
+            self.PanelWindow.setPosSize(0, 0, eff_w, natural_h, 15)
             after = self.PanelWindow.getPosSize()
             parent_after = self.parent_window.getPosSize()
             log.info(
@@ -319,7 +362,12 @@ class ChatToolPanel(unohelper.Base, XToolPanel, XSidebarPanel):
                 rl.relayout_now(self.PanelWindow)
                 log_rich_scroll("getHeightForWidth_after", control=rich, eff_w=eff_w)
 
-        return uno.createUnoStruct("com.sun.star.ui.LayoutSize", 100, -1, 400)
+        # Report the natural content height as Preferred/Maximum; the sidebar
+        # deck scrolls vertically when the deck is shorter, instead of clipping
+        # the bottom of the panel with no way to reach it.
+        return uno.createUnoStruct(
+            "com.sun.star.ui.LayoutSize", min_h, preferred, preferred
+        )
 
     def getMinimalWidth(self) -> int:
         # XDL dlg:width=180 is AppFont, ~300px on this machine (Clear right=304).
