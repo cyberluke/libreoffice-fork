@@ -666,12 +666,18 @@ endef
 # if ccache is enabled, then split it and use lastword as REAL_FOO
 # /opt/lo/bin/ccache /cygdrive/c/PROGRA~2/MICROS~2.0/VC/bin/cl.exe
 
+# Resolve the REAL compiler to its absolute MSVC path (MSVC_CXX). The naive
+# `lastword of CC` yields the bare command `cl`, which is only reachable when
+# the MSVC toolchain dir is on PATH; external autoconf sub-builds run in the
+# msys PATH which does not carry MSVC, so the wrapper then finds no real
+# compiler (cl D8003 "missing source filename" / cygpath "cannot create short
+# name"). Use the configured full path so externals build regardless of PATH.
 gb_AUTOCONF_WRAPPERS = \
-	REAL_CC="$(shell cygpath -w $(filter-out -%,$(CC)))" \
-	REAL_CC_FLAGS="$(filter -%,$(CC))" \
+	REAL_CC="$(MSVC_CXX)" \
+	REAL_CC_FLAGS="-nologo" \
 	CC="$(call gb_Executable_get_target_for_build,gcc-wrapper)" \
-	REAL_CXX="$(shell cygpath -w $(filter-out -%,$(CXX)))" \
-	REAL_CXX_FLAGS="$(filter -%,$(CXX))" \
+	REAL_CXX="$(MSVC_CXX)" \
+	REAL_CXX_FLAGS="-nologo" \
 	CXX="$(call gb_Executable_get_target_for_build,g++-wrapper)" \
     LD="$(shell cygpath -w $(COMPATH)/bin/link.exe) -nologo"
 

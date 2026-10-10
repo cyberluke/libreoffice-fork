@@ -76,6 +76,7 @@ const std::vector<Writer2027SemanticStyleDescriptor>& lcl_Descriptors()
         { R::Heading1,     static_cast<int>(SwPoolFormatId::COLL_HEADLINE1), false, TypeSystemFontRole::Heading, TypeSystemScaleSlot::Heading1, u"Heading 1"_ustr },
         { R::Heading2,     static_cast<int>(SwPoolFormatId::COLL_HEADLINE2), false, TypeSystemFontRole::Heading, TypeSystemScaleSlot::Heading2, u"Heading 2"_ustr },
         { R::Heading3,     static_cast<int>(SwPoolFormatId::COLL_HEADLINE3), false, TypeSystemFontRole::Heading, TypeSystemScaleSlot::Heading3, u"Heading 3"_ustr },
+        { R::HeadingBase,  static_cast<int>(SwPoolFormatId::COLL_HEADLINE_BASE), false, TypeSystemFontRole::Heading, TypeSystemScaleSlot::None, u"Heading Base"_ustr },
         { R::Heading4,     static_cast<int>(SwPoolFormatId::COLL_HEADLINE4), false, TypeSystemFontRole::Heading, TypeSystemScaleSlot::Heading4, u"Heading 4"_ustr },
         { R::Heading5,     static_cast<int>(SwPoolFormatId::COLL_HEADLINE5), false, TypeSystemFontRole::Heading, TypeSystemScaleSlot::Heading5, u"Heading 5"_ustr },
         { R::Heading6,     static_cast<int>(SwPoolFormatId::COLL_HEADLINE6), false, TypeSystemFontRole::Heading, TypeSystemScaleSlot::Heading6, u"Heading 6"_ustr },

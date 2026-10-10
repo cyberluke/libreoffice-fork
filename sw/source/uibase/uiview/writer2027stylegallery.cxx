@@ -393,9 +393,12 @@ BuildStyleGalleryModel(SwDoc& rDoc, int nCurrentPoolId)
     namespace TSMan = sw::writer2027typographymanager;
     for (const auto& rDesc : TSMan::GetWriter2027SemanticStyleDescriptors())
     {
-        // The paragraph gallery shows paragraph styles only (Body, H1-H6,
-        // Title, Subtitle, Quote, Caption, CodeBlock) - skip character styles.
+        // The paragraph gallery shows the user-facing paragraph styles only
+        // (Body, H1-H6, Title, Subtitle, Quote, Caption, CodeBlock, Default).
+        // Character styles and the internal Heading Base parent are skipped.
         if (rDesc.mbCharacterStyle)
+            continue;
+        if (rDesc.meRole == TSMan::Writer2027SemanticStyle::HeadingBase)
             continue;
         const auto ePoolId = static_cast<SwPoolFormatId>(rDesc.mnPoolId);
         SwTextFormatColl* pColl = rDoc.getIDocumentStylePoolAccess().GetTextCollFromPool(ePoolId);

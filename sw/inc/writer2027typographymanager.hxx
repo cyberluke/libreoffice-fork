@@ -57,6 +57,7 @@ enum class Writer2027SemanticStyle
 {
     DefaultBody,
     Body,
+    HeadingBase, // COLL_HEADLINE_BASE: the family/weight parent of H1-H6
     Heading1,
     Heading2,
     Heading3,
