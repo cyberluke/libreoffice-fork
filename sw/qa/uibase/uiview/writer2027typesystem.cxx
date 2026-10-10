@@ -18,13 +18,19 @@
 
 #include <svx/writer2027typesystem.hxx>
 #include <writer2027typesystem.hxx>
+#include <writer2027typographymanager.hxx>
 
 #include <IDocumentUndoRedo.hxx>
 #include <IDocumentStylePoolAccess.hxx>
+#include <IDocumentContentOperations.hxx>
 #include <docsh.hxx>
 #include <swtypes.hxx>
 #include <swundo.hxx>
 #include <fmtcol.hxx>
+#include <editsh.hxx>
+#include <ndtxt.hxx>
+#include <ndindex.hxx>
+#include <pam.hxx>
 
 #include <svl/itemset.hxx>
 #include <svl/whichranges.hxx>
@@ -300,6 +306,162 @@ CPPUNIT_TEST_FIXTURE(Writer2027TypeSystemTest, testMutatingAppliedFamilyDiverges
     pStandard->SetFormatAttr(aSet);
     const OUString aMutated = pStandard->GetAttrSet().Get(RES_CHRATR_FONT).GetFamilyName();
     CPPUNIT_ASSERT_MESSAGE("manual family mutation did not stick", aMutated != aPresetBody);
+}
+
+// ---------------------------------------------------------------------------
+// V4 migration: managed direct formatting must not defeat a Type System apply
+// (spec V4 2-13, 38). Applying a preset clears the managed family/size direct
+// overrides on existing text so the effective family actually changes, and it
+// re-scans clean (after == 0) with the preset detected afterwards.
+// ---------------------------------------------------------------------------
+
+CPPUNIT_TEST_FIXTURE(Writer2027TypeSystemTest, testApplyClearsManagedDirectFormatting)
+{
+    createSwDoc();
+    SwDoc* pDoc = getSwDoc();
+    CPPUNIT_ASSERT(pDoc);
+
+    // Insert a body paragraph and apply direct Liberation Serif on it, the way
+    // a user would override a style (spec V4 2). The direct char formatting must
+    // survive (proving the node really carries the override).
+    IDocumentContentOperations& rIDCO = pDoc->getIDocumentContentOperations();
+    SwNodeIndex aIdx(pDoc->GetNodes().GetEndOfContent(), -1);
+    SwPaM aPam(aIdx);
+    CPPUNIT_ASSERT_MESSAGE("AppendTextNode failed", rIDCO.AppendTextNode(*aPam.GetPoint()));
+    CPPUNIT_ASSERT_MESSAGE("InsertString failed", rIDCO.InsertString(aPam, u"A_Z9q7 body paragraph."_ustr));
+
+    // Find the inserted text node (contains the sample, wherever it landed).
+    SwTextNode* pText = nullptr;
+    for (SwNodeOffset n = SwNodeOffset(0); n < pDoc->GetNodes().Count(); ++n)
+    {
+        SwTextNode* pT = pDoc->GetNodes()[n]->GetTextNode();
+        if (pT && pT->GetText().indexOf(u"A_Z9q7 body"_ustr) >= 0)
+        {
+            pText = pT;
+            break;
+        }
+    }
+    CPPUNIT_ASSERT_MESSAGE("inserted text node not found", pText != nullptr);
+    {
+        SfxItemSet aSet(pDoc->GetAttrPool(), svl::Items<RES_CHRATR_BEGIN, RES_CHRATR_END - 1>);
+        aSet.Put(SvxFontItem(FAMILY_DONTKNOW, u"Liberation Serif"_ustr, OUString(),
+                             PITCH_DONTKNOW, RTL_TEXTENCODING_DONTKNOW, RES_CHRATR_FONT));
+        pText->SetAttr(aSet);
+    }
+    CPPUNIT_ASSERT_MESSAGE("direct Liberation was not applied to the node",
+                           pText->GetSwAttrSet().Get(RES_CHRATR_FONT).GetFamilyName()
+                               == u"Liberation Serif"_ustr);
+
+    // The scan must see the override.
+    {
+        const auto aBefore
+            = sw::writer2027typographymanager::ScanManagedTypographyOverrides(*pDoc);
+        CPPUNIT_ASSERT_MESSAGE("managed scan did not detect the direct family override",
+                               aBefore.fontFamily >= 1);
+    }
+
+    // Apply a preset through the real migration path (styles + override cleanup).
+    const TypeSystemPreset* pTech = lcl_Catalog().FindPreset(u"tech"_ustr);
+    CPPUNIT_ASSERT(pTech);
+    const ResolvedTypeSystem aResolved = ResolveTypeSystem(*pTech, nullptr);
+    sw::writer2027typographymanager::EnsureSemanticStylesMaterialized(*pDoc);
+    sw::writer2027typesystem::ApplyTypeSystem(*pDoc, *pTech, aResolved, nullptr);
+    sw::writer2027typographymanager::ClearManagedTypographyOverrides(*pDoc);
+
+    // The direct Liberation override must be gone (effective family changed).
+    const OUString aFamilyAfter
+        = pText->GetSwAttrSet().Get(RES_CHRATR_FONT).GetFamilyName();
+    CPPUNIT_ASSERT_MESSAGE(std::string("direct Liberation survived the migration: ")
+                               + std::string(aFamilyAfter.toUtf8().getStr()),
+                           aFamilyAfter != u"Liberation Serif"_ustr);
+
+    // Re-scan must be clean (spec V4 36: after == 0). A stale override is any
+    // managed value that still differs from what its style provides; Writer
+    // re-shows the style's own value in the automatic paragraph style, which is
+    // NOT an override and must not be counted.
+    const auto aAfter = sw::writer2027typographymanager::ScanManagedTypographyOverrides(*pDoc);
+    if (aAfter.Total() != 0)
+    {
+        std::fprintf(stderr,
+                     "[migtest] after.fontFamily=%d fontSize=%d rhythm=%d effectiveFamily=%s\n",
+                     static_cast<int>(aAfter.fontFamily), static_cast<int>(aAfter.fontSize),
+                     static_cast<int>(aAfter.paragraphRhythm),
+                     pText->GetSwAttrSet().Get(RES_CHRATR_FONT).GetFamilyName().toUtf8().getStr());
+    }
+    CPPUNIT_ASSERT_MESSAGE("managed overrides remain after migration",
+                           aAfter.Total() == 0);
+
+    // The decisive requirement (spec V4 2 / user report): re-applying a DIFFERENT
+    // preset must re-render the existing text. The effective family must change
+    // from tech's body font to editorial's body font — not stay frozen at the
+    // first apply's value.
+    const TypeSystemPreset* pEditorial = lcl_Catalog().FindPreset(u"editorial"_ustr);
+    CPPUNIT_ASSERT(pEditorial);
+    const ResolvedTypeSystem aResolved2 = ResolveTypeSystem(*pEditorial, nullptr);
+    sw::writer2027typesystem::ApplyTypeSystem(*pDoc, *pEditorial, aResolved2, nullptr);
+    sw::writer2027typographymanager::ClearManagedTypographyOverrides(*pDoc);
+    const OUString aFamilyReapply
+        = pText->GetSwAttrSet().Get(RES_CHRATR_FONT).GetFamilyName();
+    CPPUNIT_ASSERT_MESSAGE(
+        std::string("re-apply of Type System did not re-render existing text: ")
+            + std::string(aFamilyReapply.toUtf8().getStr()),
+        aFamilyReapply != aFamilyAfter);
+}
+
+CPPUNIT_TEST_FIXTURE(Writer2027TypeSystemTest, testMigrationIsOneUndoTurn)
+{
+    createSwDoc();
+    SwDoc* pDoc = getSwDoc();
+    CPPUNIT_ASSERT(pDoc);
+
+    IDocumentContentOperations& rIDCO = pDoc->getIDocumentContentOperations();
+    SwNodeIndex aIdx(pDoc->GetNodes().GetEndOfContent(), -1);
+    SwPaM aPam(aIdx);
+    CPPUNIT_ASSERT_MESSAGE("AppendTextNode failed (undo test)",
+                           rIDCO.AppendTextNode(*aPam.GetPoint()));
+    CPPUNIT_ASSERT_MESSAGE("InsertString failed (undo test)",
+                           rIDCO.InsertString(aPam, u"Some B8pQ9 body text."_ustr));
+    SwTextNode* pText = nullptr;
+    for (SwNodeOffset n = SwNodeOffset(0); n < pDoc->GetNodes().Count(); ++n)
+    {
+        SwTextNode* pT = pDoc->GetNodes()[n]->GetTextNode();
+        if (pT && pT->GetText().indexOf(u"B8pQ9 body"_ustr) >= 0)
+        {
+            pText = pT;
+            break;
+        }
+    }
+    CPPUNIT_ASSERT_MESSAGE("inserted text node not found (undo test)", pText != nullptr);
+    {
+        SfxItemSet aSet(pDoc->GetAttrPool(), svl::Items<RES_CHRATR_BEGIN, RES_CHRATR_END - 1>);
+        aSet.Put(SvxFontItem(FAMILY_DONTKNOW, u"Liberation Serif"_ustr, OUString(),
+                             PITCH_DONTKNOW, RTL_TEXTENCODING_DONTKNOW, RES_CHRATR_FONT));
+        pText->SetAttr(aSet);
+    }
+
+    // Apply once with undo grouping. A single Undo must restore the direct
+    // override (the styles change + the override cleanup were one turn).
+    const TypeSystemPreset* pEditorial = lcl_Catalog().FindPreset(u"editorial"_ustr);
+    CPPUNIT_ASSERT(pEditorial);
+    const ResolvedTypeSystem aResolved = ResolveTypeSystem(*pEditorial, nullptr);
+    pDoc->GetIDocumentUndoRedo().StartUndo(SwUndoId::WRITER2027_TYPE_SYSTEM, nullptr);
+    sw::writer2027typographymanager::EnsureSemanticStylesMaterialized(*pDoc);
+    sw::writer2027typesystem::ApplyTypeSystem(*pDoc, *pEditorial, aResolved, nullptr);
+    sw::writer2027typographymanager::ClearManagedTypographyOverrides(*pDoc);
+    pDoc->GetIDocumentUndoRedo().EndUndo(SwUndoId::WRITER2027_TYPE_SYSTEM, nullptr);
+
+    const OUString aAfter = pText->GetSwAttrSet().Get(RES_CHRATR_FONT).GetFamilyName();
+    CPPUNIT_ASSERT_MESSAGE(std::string("Liberation survived after apply: ")
+                               + std::string(aAfter.toUtf8().getStr()),
+                           aAfter != u"Liberation Serif"_ustr);
+
+    // One undo restores the direct override.
+    pDoc->GetIDocumentUndoRedo().DoUndo(true);
+    pDoc->GetIDocumentUndoRedo().Undo();
+    const OUString aAfterUndo = pText->GetSwAttrSet().Get(RES_CHRATR_FONT).GetFamilyName();
+    CPPUNIT_ASSERT_MESSAGE(std::string("one undo did not restore the direct override: ")
+                               + std::string(aAfterUndo.toUtf8().getStr()),
+                           aAfterUndo == u"Liberation Serif"_ustr);
 }
 
 } // namespace sw::writer2027typesystemtests

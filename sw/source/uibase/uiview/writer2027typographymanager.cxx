@@ -195,16 +195,35 @@ bool lcl_IsManagedParaStyle(const SwTextNode& rNode)
     return false;
 }
 
-/** Attribute-set override stats for one node (direct char/para attrs). */
-void lcl_CountNodeAttrs(const SwAttrSet& rSet, ManagedTypographyOverrideStats& rStats)
+/** A managed override is only a real (stale) override when the node's effective
+    value for nWhich differs from what its own paragraph style alone provides.
+    Writer materializes effective values into automatic paragraph styles, so a
+    direct item equal to the style is just the style re-shown and does NOT defeat
+    Type System propagation; only a genuine divergence (a value the current style
+    does not specify) would survive a re-apply and prevent re-rendering.
+    (spec V4 4 / 36) */
+bool lcl_IsStaleManagedOverride(const SwAttrSet& rNodeSet, sal_uInt16 nWhich)
 {
-    auto has = [&rSet](sal_uInt16 nWhich) { return rSet.GetItemState(nWhich, false) != SfxItemState::UNKNOWN; };
-    if (has(RES_CHRATR_FONT) || has(RES_CHRATR_CJK_FONT) || has(RES_CHRATR_CTL_FONT))
+    const SfxPoolItem& rEffective = rNodeSet.Get(nWhich, true); // node effective (direct wins)
+    const SfxPoolItem& rStyle
+        = rNodeSet.GetParent() ? rNodeSet.GetParent()->Get(nWhich, true)
+                               : rNodeSet.GetPool()->GetUserOrPoolDefaultItem(nWhich);
+    return rEffective != rStyle;
+}
+
+/** Attribute-set override stats for one node: counts only managed items whose
+    effective value diverges from what the paragraph style provides. */
+void lcl_CountNodeAttrs(const SwTextNode& rNode, const SwAttrSet& rSet,
+                        ManagedTypographyOverrideStats& rStats)
+{
+    auto stale = [&rSet](sal_uInt16 nWhich) { return lcl_IsStaleManagedOverride(rSet, nWhich); };
+    if (stale(RES_CHRATR_FONT) || stale(RES_CHRATR_CJK_FONT) || stale(RES_CHRATR_CTL_FONT))
         ++rStats.fontFamily;
-    if (has(RES_CHRATR_FONTSIZE) || has(RES_CHRATR_CJK_FONTSIZE)
-        || has(RES_CHRATR_CTL_FONTSIZE))
+    if (stale(RES_CHRATR_FONTSIZE) || stale(RES_CHRATR_CJK_FONTSIZE)
+        || stale(RES_CHRATR_CTL_FONTSIZE))
         ++rStats.fontSize;
-    if (has(RES_PARATR_LINESPACING) || has(RES_UL_SPACE))
+    if (lcl_IsManagedParaStyle(rNode)
+        && (stale(RES_PARATR_LINESPACING) || stale(RES_UL_SPACE)))
         ++rStats.paragraphRhythm;
 }
 } // namespace
@@ -219,15 +238,13 @@ ManagedTypographyOverrideStats ScanManagedTypographyOverrides(SwDoc& rDoc)
         SwTextNode* pText = pNode ? pNode->GetTextNode() : nullptr;
         if (!pText)
             continue;
-        // Direct char/para attributes on the node.
         if (const SwAttrSet* pSet = pText->GetpSwAttrSet())
         {
             ManagedTypographyOverrideStats aNodeStats;
-            lcl_CountNodeAttrs(*pSet, aNodeStats);
+            lcl_CountNodeAttrs(*pText, *pSet, aNodeStats);
             aStats.fontFamily += aNodeStats.fontFamily;
             aStats.fontSize += aNodeStats.fontSize;
-            if (lcl_IsManagedParaStyle(*pText))
-                aStats.paragraphRhythm += aNodeStats.paragraphRhythm;
+            aStats.paragraphRhythm += aNodeStats.paragraphRhythm;
         }
     }
     return aStats;
@@ -235,24 +252,35 @@ ManagedTypographyOverrideStats ScanManagedTypographyOverrides(SwDoc& rDoc)
 
 sal_Int32 ClearManagedTypographyOverrides(SwDoc& rDoc)
 {
-    sal_Int32 nProcessed = 0;
+    // Canonical "clear direct formatting to style" operation over the whole
+    // editable body: SwDoc::ResetAttrs removes the managed char override so the
+    // text inherits the semantic style. A naive node ResetAttr re-posts the
+    // inherited value as a SET item, which then survives the NEXT Type System
+    // change (the exact V4 bug: re-applying did not re-render existing text).
+    // This runs inside the caller's undo transaction.
+    SwPaM aPam(rDoc.GetNodes().GetEndOfContent());
+    aPam.Move(fnMoveBackward, GoInDoc); // to the start of content
+    aPam.Move(fnMoveForward, GoInDoc);  // select through the whole doc
+    o3tl::sorted_vector<sal_uInt16> aManaged;
+    for (const sal_uInt16 nWhich : aManagedCharWhich)
+        aManaged.insert(nWhich);
+    rDoc.ResetAttrs(aPam, true, aManaged);
+
+    // Rhythm (line-spacing / space-before+after) is only cleared on the managed
+    // semantic paragraph styles, never on custom styles (which keep their own
+    // rhythm). Per-node reset restores the style-defined spacing.
+    sal_Int32 nRhythmNodes = 0;
     const SwNodeOffset nCount = rDoc.GetNodes().Count();
     for (SwNodeOffset n = SwNodeOffset(0); n < nCount; ++n)
     {
-        SwNode* pNode = rDoc.GetNodes()[n];
-        SwTextNode* pText = pNode ? pNode->GetTextNode() : nullptr;
-        if (!pText)
+        SwTextNode* pText = rDoc.GetNodes()[n]->GetTextNode();
+        if (!pText || !lcl_IsManagedParaStyle(*pText))
             continue;
-        ++nProcessed;
-        // Clear managed family/size on the whole node (undo-aware).
-        for (const sal_uInt16 nWhich : aManagedCharWhich)
+        for (const sal_uInt16 nWhich : aManagedRhythmWhich)
             pText->ResetAttr(nWhich);
-        // Clear managed rhythm only on managed semantic paragraph styles.
-        if (lcl_IsManagedParaStyle(*pText))
-            for (const sal_uInt16 nWhich : aManagedRhythmWhich)
-                pText->ResetAttr(nWhich);
+        ++nRhythmNodes;
     }
-    return nProcessed;
+    return nRhythmNodes;
 }
 
 void ClearManagedInsertionAttributes(SwDoc& rDoc)
