@@ -3393,6 +3393,9 @@
                             <property name="visible">True</property>
                             <property name="can-focus">False</property>
                             <property name="valign">center</property>
+                            <property name="margin-start">6</property>
+                            <property name="margin-end">6</property>
+                            <property name="icon_size">3</property>
                             <property name="toolbar-style">icons</property>
                             <property name="show-arrow">False</property>
                             <child>
@@ -3456,6 +3459,9 @@
                             <property name="visible">True</property>
                             <property name="can-focus">False</property>
                             <property name="valign">center</property>
+                            <property name="margin-start">6</property>
+                            <property name="margin-end">6</property>
+                            <property name="icon_size">3</property>
                             <property name="toolbar-style">icons</property>
                             <property name="show-arrow">False</property>
                             <child>
@@ -3658,7 +3664,9 @@
                             <property name="visible">True</property>
                             <property name="can-focus">False</property>
                             <property name="valign">center</property>
+                            <property name="margin-start">6</property>
                             <property name="margin-end">6</property>
+                            <property name="icon_size">3</property>
                             <property name="toolbar-style">icons</property>
                             <property name="show-arrow">False</property>
                             <child>
@@ -3774,6 +3782,9 @@
                           <object class="sfxlo-NotebookbarToolBox" id="bxHomeIndentation">
                             <property name="visible">True</property>
                             <property name="can-focus">False</property>
+                            <property name="margin-start">6</property>
+                            <property name="margin-end">6</property>
+                            <property name="icon_size">3</property>
                             <property name="toolbar-style">icons</property>
                             <property name="show-arrow">False</property>
                             <child>
@@ -3822,6 +3833,9 @@
                           <object class="sfxlo-NotebookbarToolBox" id="bxHomeSpacing">
                             <property name="visible">True</property>
                             <property name="can-focus">False</property>
+                            <property name="margin-start">6</property>
+                            <property name="margin-end">6</property>
+                            <property name="icon_size">3</property>
                             <property name="toolbar-style">icons</property>
                             <property name="show-arrow">False</property>
                             <child>
