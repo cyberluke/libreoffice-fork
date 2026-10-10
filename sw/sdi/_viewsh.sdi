@@ -143,6 +143,24 @@ interface BaseTextEditView
         StateMethod = StateViewOptions ;
     ]
 
+    FN_WRITER2027_STORY
+    [
+        ExecMethod = ExecViewOptions ;
+        StateMethod = StateViewOptions ;
+    ]
+
+    FN_WRITER2027_INSERT_BLOCK
+    [
+        ExecMethod = ExecViewOptions ;
+        StateMethod = StateViewOptions ;
+    ]
+
+    FN_WRITER2027_DOCUMENT_KIT
+    [
+        ExecMethod = ExecViewOptions ;
+        StateMethod = StateViewOptions ;
+    ]
+
     FN_SINGLE_PAGE_PER_ROW
     [
         ExecMethod = ExecViewOptions ;

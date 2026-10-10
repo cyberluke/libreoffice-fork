@@ -544,6 +544,8 @@ case FN_WRITER2027_STORY:
         // document (draft layout + hidden rulers + page-width fit). View-only:
         // no content mutation, no undo entries, no document persistence of
         // its own (it rides on the existing view-option machinery).
+        svx::writer2027::Writer2027LogMessage(
+            "writer2027.story.execute", u"ENTER (view mode switch)"_ustr);
         bBrowseModeChanged = pOpt->getBrowseMode();
         bDraftViewChanged = !pOpt->getDraftView();
         pOpt->setBrowseMode( true );
@@ -557,12 +559,16 @@ case FN_WRITER2027_STORY:
     case FN_WRITER2027_INSERT_BLOCK:
         // Insert Block gallery: pure UI; insertion happens through the
         // canonical Writer structural APIs with one grouped undo action.
+        svx::writer2027::Writer2027LogMessage(
+            "writer2027.insertblock.execute", u"ENTER (open popup)"_ustr);
         OpenWriter2027BlockGalleryPopup();
         break;
 
     case FN_WRITER2027_DOCUMENT_KIT:
         // Document Kit picker: pure UI; applying happens through the
         // canonical Type System + block paths.
+        svx::writer2027::Writer2027LogMessage(
+            "writer2027.documentkit.execute", u"ENTER (open popup)"_ustr);
         OpenWriter2027DocumentKitPopup();
         break;
 

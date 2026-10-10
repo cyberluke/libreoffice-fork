@@ -33,12 +33,14 @@
 #include <com/sun/star/util/URL.hpp>
 
 #include <sfx2/dispatch.hxx>
+#include <sfx2/tbxctrl.hxx>
 #include <sfx2/viewsh.hxx>
 #include <sfx2/app.hxx>
 #include <sfx2/objsh.hxx>
 #include <sfx2/bindings.hxx>
 #include <sfx2/sfxsids.hrc>
 #include <svl/itemset.hxx>
+#include <svl/style.hxx>
 
 #include <swmodule.hxx>
 #include <wrtsh.hxx>
@@ -67,20 +69,19 @@ void lcl_PostStyleApply(const css::uno::Reference<css::frame::XFrame>& rFrame,
     if (!xProv.is())
         return;
 
-    css::util::URL aURL;
-    aURL.Complete = u".uno:StyleApply"_ustr;
-    css::uno::Reference<css::frame::XDispatch> xDispatch
-        = xProv->queryDispatch(aURL, OUString(), 0);
-    if (!xDispatch.is())
-        return;
+    // The canonical StyleApply argument set: Family must be a sal_Int16
+    // (SfxStyleFamily) exactly as the standard Styles panel dispatches it, and
+    // the URL must be parsed through an XURLTransformer before dispatch (an
+    // unparsed .uno: URL is not resolvable by the Sfx dispatch provider).
     css::uno::Sequence<css::beans::PropertyValue> aArgs(2);
-    css::beans::PropertyValue& rTempl = aArgs.getArray()[0];
-    rTempl.Name = u"Template"_ustr;
-    rTempl.Value <<= rStyleName;
-    css::beans::PropertyValue& rFam = aArgs.getArray()[1];
-    rFam.Name = u"Family"_ustr;
-    rFam.Value <<= sal_Int32(0); // SfxStyleFamily::Para
-    xDispatch->dispatch(aURL, aArgs);
+    aArgs.getArray()[0].Name = u"Template"_ustr;
+    aArgs.getArray()[0].Value <<= rStyleName;
+    aArgs.getArray()[1].Name = u"Family"_ustr;
+    aArgs.getArray()[1].Value <<= sal_Int16(SfxStyleFamily::Para);
+    SfxToolBoxControl::Dispatch(xProv, u".uno:StyleApply"_ustr, aArgs);
+    svx::writer2027::Writer2027LogMessage(
+        "stylegallery.apply.dispatched",
+        OUString::Concat(u"style=") + rStyleName);
 }
 
 int lcl_CurrentParaStylePoolId(const css::uno::Reference<css::frame::XFrame>& rFrame)
@@ -135,6 +136,18 @@ void SAL_CALL Writer2027StyleGalleryToolBoxControl::initialize(
         "writer2027.gallery.controller.initialize",
         u"implementation=lo.writer.Writer2027StyleGalleryToolBoxControl "
         u"git=<see build stamp>"_ustr);
+
+    // Live re-render (V4 49, 58): the gallery card strip reflects the real
+    // document styles, so rebuild it whenever the document's typography
+    // changes. Register as a status listener for the Type System slot and for
+    // the character font slots; their FeatureStateEvent triggers statusChanged()
+    // -> RebuildGallery() on the same event loop wherever New
+    // Writer2027 changes the underlying font / Type System (font picker,
+    // Type System apply, refresh of SID_ATTR_CHAR_FONT etc). addStatusListener
+    // is idempotent and defers to the init path if the frame is not ready yet.
+    addStatusListener(u".uno:Writer2027TypeSystem"_ustr);
+    addStatusListener(u".uno:CharFontName"_ustr);
+    addStatusListener(u".uno:CharFontHeight"_ustr);
 }
 
 css::uno::Reference<css::awt::XWindow> Writer2027StyleGalleryToolBoxControl::createItemWindow(
@@ -227,9 +240,9 @@ void Writer2027StyleGalleryToolBoxControl::RebuildGallery(
             = sw::writer2027stylegallery::BuildStyleGalleryModel(*aContext.pDoc, nCurrentPoolId);
         pGallery->SetFontList(aContext.pFontList);
         pGallery->SetItems(std::move(aItems));
+        const sal_Int32 nCount = static_cast<sal_Int32>(pGallery->GetItems().size());
         // Runtime provenance (spec V4 18): itemCount must be >= 9 on a normal
         // Writer document; fewer is logged as a failure, never silently shown.
-        const sal_Int32 nCount = static_cast<sal_Int32>(pGallery->GetItems().size());
         svx::writer2027::Writer2027LogMessage(
             "writer2027.gallery.model.rebuild",
             OUString::Concat(u"itemCount=") + OUString::number(nCount)

@@ -17,6 +17,7 @@
 #include <tools/gen.hxx>
 #include <tools/color.hxx>
 #include <tools/link.hxx>
+#include <vcl/vclevent.hxx>
 #include <vcl/window.hxx>
 #include <vcl/commandevent.hxx>
 #include <vcl/event.hxx>
@@ -55,6 +56,7 @@ class SW_DLLPUBLIC Writer2027StyleGallery : public vcl::Window
 public:
     Writer2027StyleGallery(vcl::Window* pParent, WinBits nStyle = WB_TABSTOP);
     virtual ~Writer2027StyleGallery() override;
+    virtual void dispose() override;
 
     void SetItems(std::vector<StyleGalleryItem> aItems);
     const std::vector<StyleGalleryItem>& GetItems() const { return maItems; }
@@ -76,11 +78,17 @@ protected:
     virtual void MouseMove(const MouseEvent& rEvent) override;
     virtual void KeyInput(const KeyEvent& rEvent) override;
     virtual void Command(const CommandEvent& rEvent) override;
+    /// Preferred natural size (used by the notebookbar toolbox layout).
+    virtual Size GetOptimalSize() const override;
 
 private:
     void ActivateAt(int nIndex);
     void ScrollBy(tools::Long nDeltaPx);
     tools::Long GetMaxScrollOffset() const;
+    tools::Long DesiredHeightPx() const;
+    /// Fill the parent (toolbox) horizontal extent while keeping the strip height.
+    void FitToParent();
+    DECL_LINK(ParentResizeHdl, VclWindowEvent&, void);
     double Scale() const;
     tools::Long CardWidthPx() const;
     tools::Long CardHeightPx() const;
@@ -93,6 +101,7 @@ private:
     int mnFocusIndex = -1; // keyboard focus (distinct from hover/current, spec V4 31)
     tools::Long mnScrollOffsetPx = 0;
     Link<const OUString&, void> m_aActivateHdl;
+    bool mbTrackingParent = false;
 };
 
 /** Build the gallery item set from the semantic descriptor map + the document

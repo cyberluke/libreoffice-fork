@@ -31,6 +31,7 @@
 #include <vcl/metric.hxx>
 #include <vcl/settings.hxx>
 #include <vcl/svapp.hxx>
+#include <vcl/vclevent.hxx>
 
 #include <algorithm>
 #include <cmath>
@@ -50,9 +51,67 @@ constexpr tools::Long SCROLL_STEP_LP = 48;
 Writer2027StyleGallery::Writer2027StyleGallery(vcl::Window* pParent, WinBits nStyle)
     : Window(pParent, nStyle)
 {
+    // The natural size is a horizontal strip of semantic-style cards. A
+    // freshly created item window has a zero default size, so hand the toolbox
+    // a usable size and track the parent (the notebookbar toolbox) so the strip
+    // fills the horizontal extent it is given instead of staying invisible.
+    SetSizePixel(get_preferred_size());
+    if (vcl::Window* pParentWindow = GetParent())
+    {
+        pParentWindow->AddEventListener(LINK(this, Writer2027StyleGallery, ParentResizeHdl));
+        mbTrackingParent = true;
+    }
+    FitToParent();
 }
 
-Writer2027StyleGallery::~Writer2027StyleGallery() = default;
+Writer2027StyleGallery::~Writer2027StyleGallery() { disposeOnce(); }
+
+void Writer2027StyleGallery::dispose()
+{
+    if (mbTrackingParent)
+    {
+        if (vcl::Window* pParentWindow = GetParent())
+            pParentWindow->RemoveEventListener(
+                LINK(this, Writer2027StyleGallery, ParentResizeHdl));
+        mbTrackingParent = false;
+    }
+    Window::dispose();
+}
+
+Size Writer2027StyleGallery::GetOptimalSize() const
+{
+    return Size(CardWidthPx() * 4 + PAD_LP, DesiredHeightPx());
+}
+
+tools::Long Writer2027StyleGallery::DesiredHeightPx() const
+{
+    return CardHeightPx() + 2 * PAD_LP + 2;
+}
+
+IMPL_LINK(Writer2027StyleGallery, ParentResizeHdl, VclWindowEvent&, rEvent, void)
+{
+    if (rEvent.GetId() == VclEventId::WindowResize)
+        FitToParent();
+}
+
+void Writer2027StyleGallery::FitToParent()
+{
+    vcl::Window* pParentWindow = GetParent();
+    if (!pParentWindow)
+        return;
+    const Size aParentSize(pParentWindow->GetOutputSizePixel());
+    // The underlying toolbox may not be laid out yet while we are constructed.
+    if (aParentSize.Width() <= 0 || aParentSize.Height() <= 0)
+        return;
+    const tools::Long nWidth = std::max<tools::Long>(CardWidthPx(), aParentSize.Width() - 2);
+    const Size aSize(nWidth, DesiredHeightPx());
+    if (GetSizePixel() == aSize)
+        return;
+    SetSizePixel(aSize);
+    // Let the toolbox reformat the item rect around the new size.
+    pParentWindow->queue_resize();
+    Invalidate();
+}
 
 double Writer2027StyleGallery::Scale() const
 {
