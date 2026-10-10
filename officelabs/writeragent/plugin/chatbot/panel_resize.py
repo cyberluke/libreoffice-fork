@@ -23,6 +23,7 @@ _STRETCH_CONTROLS = frozenset({
     "status",
     "chat_mode_selector",
     "model_selector",
+    "prompt_selector",
     "image_model_selector",
     "aspect_ratio_selector",
 })
@@ -48,6 +49,7 @@ _BOTTOM_CLUSTER = frozenset({
     "chat_mode_selector",
     "model_label",
     "model_selector",
+    "prompt_selector",
     "image_model_selector",
     "base_size_label",
     "base_size_input",
@@ -90,7 +92,18 @@ def compute_chat_panel_layout(
 
     bottom_top_initial, cluster_height, response_y = _cluster_metrics(snapshot)
     response_x, _oy, _ow, _oh = snapshot["response"]
-    bottom_top_new = height - bottom_margin - cluster_height
+    # Anchor the bottom band near the panel bottom, but never climb above the
+    # transcript's minimum room. When the deck is too short to fit everything,
+    # keep the transcript readable and let the cluster overflow below the panel:
+    # the sidebar window has a vertical scrollbar, so those sections stay
+    # reachable instead of being clipped with no scrollbar (fix: whole sidebar
+    # scrollable).
+    anchored = height - bottom_margin - cluster_height
+    min_cluster_top = response_y + response_gap + min_response_height
+    if anchored >= min_cluster_top:
+        bottom_top_new = anchored
+    else:
+        bottom_top_new = min_cluster_top
     cluster_delta = bottom_top_new - bottom_top_initial
     response_h = max(min_response_height, bottom_top_new - response_gap - response_y)
     response_w = max(20, width - response_x - right_margin)

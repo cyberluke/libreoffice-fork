@@ -430,6 +430,32 @@ class ChatPanelElement(unohelper.Base, XUIElement):
         if hasattr(self.m_panelRootWindow, "setVisible"):
             with suppress_disposed("set panel root window visible", logger=log):
                 self.m_panelRootWindow.setVisible(True)
+        # Make the WHOLE sidebar scrollable. The XDL window has no scrollbar of
+        # its own (the dialog DTD exposes no vscroll on <dlg:window>), so enable
+        # a vertical scrollbar on the panel container window itself. When the
+        # sidebar holds more sections than fit the visible deck, the scrollbar
+        # reveals the lower sections instead of clipping them with no way to
+        # reach them (fix: "whole sidebar sections not reachable").
+        try:
+            try:
+                import uno
+                _vb = bool(uno.Bool(True))
+            except Exception:
+                _vb = True
+            _root_model = getattr(self.m_panelRootWindow, "getModel", None)
+            if _root_model is not None:
+                _root_model = _root_model()
+            if _root_model is not None and hasattr(_root_model, "setPropertyValue"):
+                _root_model.setPropertyValue("VScroll", _vb)
+                log.info("[LAYOUT] panel root VScroll enabled via model")
+            _root_peer = getattr(self.m_panelRootWindow, "getPeer", None)
+            if _root_peer is not None:
+                _root_peer = _root_peer()
+            if _root_peer is not None and hasattr(_root_peer, "setProperty"):
+                _root_peer.setProperty("VScroll", _vb)
+                log.info("[LAYOUT] panel root VScroll enabled via peer")
+        except Exception as e:
+            log.debug("[LAYOUT] panel root VScroll enable skipped: %s", e)
         # Bug fix: on restored-wide startup, createContainerWindow can leave the root
         # at a stale frame-sized width before DeckLayouter calls getHeightForWidth.
         # Briefly cap that pre-negotiation size so sfx2 does not seed an H-scroll
