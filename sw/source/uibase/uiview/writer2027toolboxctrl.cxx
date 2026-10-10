@@ -30,6 +30,9 @@
 
 #include <svx/writer2027typesystempopup.hxx>
 #include <svx/writer2027typesystem.hxx>
+#include <svx/writer2027blocks.hxx>
+#include <svx/writer2027documentkitpopup.hxx>
+#include <svx/writer2027blockgallerypopup.hxx>
 #include <svx/writer2027log.hxx>
 
 #include <comphelper/servicehelper.hxx>
@@ -40,6 +43,13 @@
 #include <unotxdoc.hxx>
 #include <writer2027typesystem.hxx>
 #include <writer2027typographymanager.hxx>
+#include <writer2027blocks.hxx>
+#include <editsh.hxx>
+#include <docsh.hxx>
+
+#include <editeng/flstitem.hxx>
+#include <svl/itemset.hxx>
+#include <svl/whichranges.hxx>
 
 #include <exception>
 
@@ -324,6 +334,392 @@ void Writer2027TypeSystemToolBoxControl::ApplyPreset(const OUString& rPresetId)
             + u" detected=" + aResult.detectedPresetAfter);
 }
 
+// Resolve the owning SwView from THIS controller's frame (never a
+// document-global shortcut). Null if no writable Writer view is attached.
+SwView* lcl_FrameSwView(const css::uno::Reference<css::frame::XFrame>& rFrame)
+{
+    if (!rFrame.is())
+        return nullptr;
+    try
+    {
+        css::uno::Reference<css::frame::XController> xController = rFrame->getController();
+        if (!xController.is())
+            return nullptr;
+        SwXTextDocument* pTextDoc
+            = comphelper::getFromUnoTunnel<SwXTextDocument>(xController->getModel());
+        if (!pTextDoc || !pTextDoc->GetDocShell())
+            return nullptr;
+        return pTextDoc->GetDocShell()->GetView();
+    }
+    catch (const css::uno::Exception&)
+    {
+    }
+    catch (const std::exception&)
+    {
+    }
+    return nullptr;
+}
+
+// Editorial Block gallery button (.uno:Writer2027InsertBlock). A
+// svt::PopupWindowController so the framework anchors the WeldToolbarPopup
+// gallery under the button at any DPI (same scheme as the Type System button).
+class Writer2027InsertBlockToolBoxControl final : public svt::PopupWindowController
+{
+public:
+    explicit Writer2027InsertBlockToolBoxControl(
+        const css::uno::Reference<css::uno::XComponentContext>& rxContext)
+        : PopupWindowController(rxContext, css::uno::Reference<css::frame::XFrame>(),
+                                u".uno:Writer2027InsertBlock"_ustr)
+    {
+    }
+
+    // XServiceInfo
+    virtual OUString SAL_CALL getImplementationName() override
+    {
+        return u"lo.writer.Writer2027InsertBlockToolBoxControl"_ustr;
+    }
+    virtual sal_Bool SAL_CALL supportsService(const OUString& rServiceName) override
+    {
+        return cppu::supportsService(this, rServiceName);
+    }
+    virtual css::uno::Sequence<OUString> SAL_CALL getSupportedServiceNames() override
+    {
+        return { u"com.sun.star.frame.ToolbarController"_ustr };
+    }
+
+    using svt::PopupWindowController::initialize;
+
+    virtual void SAL_CALL statusChanged(const css::frame::FeatureStateEvent& /*rEvent*/) override
+    {
+        if (m_pToolbar)
+            m_pToolbar->set_item_sensitive(m_aCommandURL, true);
+        else
+        {
+            ToolBox* pToolBox = nullptr;
+            ToolBoxItemId nId;
+            if (getToolboxId(nId, &pToolBox))
+                pToolBox->EnableItem(nId, true);
+        }
+    }
+
+    virtual void SAL_CALL execute(sal_Int16 /*nKeyModifier*/) override
+    {
+        try
+        {
+            createPopupWindow();
+        }
+        catch (const css::uno::Exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException("Writer2027InsertBlockToolBoxControl::execute",
+                                                    rEx);
+        }
+        catch (const std::exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException("Writer2027InsertBlockToolBoxControl::execute",
+                                                    rEx);
+        }
+        catch (...)
+        {
+            svx::writer2027::Writer2027LogUnknownException(
+                "Writer2027InsertBlockToolBoxControl::execute");
+        }
+    }
+
+    virtual std::unique_ptr<WeldToolbarPopup> weldPopupWindow() override
+    {
+        try
+        {
+            auto xPopup = std::make_unique<svx::writer2027::Writer2027BlockGalleryPopup>(
+                getFrameInterface(), m_pToolbar);
+            xPopup->SetActiveKitId(maActiveKitId);
+            xPopup->connect_select(LINK(this, Writer2027InsertBlockToolBoxControl, OnSelect));
+            return xPopup;
+        }
+        catch (const css::uno::Exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException(
+                "Writer2027InsertBlockToolBoxControl::weldPopupWindow", rEx);
+        }
+        catch (const std::exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException(
+                "Writer2027InsertBlockToolBoxControl::weldPopupWindow", rEx);
+        }
+        catch (...)
+        {
+            svx::writer2027::Writer2027LogUnknownException(
+                "Writer2027InsertBlockToolBoxControl::weldPopupWindow");
+        }
+        return nullptr;
+    }
+
+    virtual VclPtr<vcl::Window> createVclPopupWindow(vcl::Window* pParent) override
+    {
+        try
+        {
+            if (mxInterimPopover)
+                mxInterimPopover.disposeAndClear();
+            auto xPopup = std::make_unique<svx::writer2027::Writer2027BlockGalleryPopup>(
+                getFrameInterface(), pParent->GetFrameWeld());
+            xPopup->SetActiveKitId(maActiveKitId);
+            xPopup->connect_select(LINK(this, Writer2027InsertBlockToolBoxControl, OnSelect));
+            mxInterimPopover = VclPtr<InterimToolbarPopup>::Create(
+                getFrameInterface(), pParent, std::move(xPopup));
+            mxInterimPopover->Show();
+            return mxInterimPopover;
+        }
+        catch (const css::uno::Exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException(
+                "Writer2027InsertBlockToolBoxControl::createVclPopupWindow", rEx);
+        }
+        catch (const std::exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException(
+                "Writer2027InsertBlockToolBoxControl::createVclPopupWindow", rEx);
+        }
+        catch (...)
+        {
+            svx::writer2027::Writer2027LogUnknownException(
+                "Writer2027InsertBlockToolBoxControl::createVclPopupWindow");
+        }
+        return nullptr;
+    }
+
+private:
+    DECL_LINK(OnSelect, const OUString&, void);
+
+    OUString maActiveKitId;
+};
+
+IMPL_LINK(Writer2027InsertBlockToolBoxControl, OnSelect, const OUString&, rBlockId, void)
+{
+    try
+    {
+        if (SwView* pView = lcl_FrameSwView(m_xFrame))
+        {
+            if (pView->GetDocShell() && pView->GetDocShell()->IsReadOnly())
+            {
+                EndPopupMode();
+                return;
+            }
+            const svx::writer2027::EditorialBlockDefinition* pBlock
+                = svx::writer2027::Writer2027EditorialBlockCatalog::Get().FindBlock(rBlockId);
+            if (pBlock)
+                sw::writer2027blocks::InsertEditorialBlock(*pView->GetWrtShellPtr(), *pBlock,
+                                                           nullptr);
+        }
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027InsertBlockToolBoxControl::OnSelect",
+                                                rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027InsertBlockToolBoxControl::OnSelect",
+                                                rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027InsertBlockToolBoxControl::OnSelect");
+    }
+    EndPopupMode();
+}
+
+// Document Kit button (.uno:Writer2027DocumentKit). svt::PopupWindowController
+// anchors the WeldToolbarPopup kit picker under the button.
+class Writer2027DocumentKitToolBoxControl final : public svt::PopupWindowController
+{
+public:
+    explicit Writer2027DocumentKitToolBoxControl(
+        const css::uno::Reference<css::uno::XComponentContext>& rxContext)
+        : PopupWindowController(rxContext, css::uno::Reference<css::frame::XFrame>(),
+                                u".uno:Writer2027DocumentKit"_ustr)
+    {
+    }
+
+    // XServiceInfo
+    virtual OUString SAL_CALL getImplementationName() override
+    {
+        return u"lo.writer.Writer2027DocumentKitToolBoxControl"_ustr;
+    }
+    virtual sal_Bool SAL_CALL supportsService(const OUString& rServiceName) override
+    {
+        return cppu::supportsService(this, rServiceName);
+    }
+    virtual css::uno::Sequence<OUString> SAL_CALL getSupportedServiceNames() override
+    {
+        return { u"com.sun.star.frame.ToolbarController"_ustr };
+    }
+
+    using svt::PopupWindowController::initialize;
+
+    virtual void SAL_CALL statusChanged(const css::frame::FeatureStateEvent& /*rEvent*/) override
+    {
+        if (m_pToolbar)
+            m_pToolbar->set_item_sensitive(m_aCommandURL, true);
+        else
+        {
+            ToolBox* pToolBox = nullptr;
+            ToolBoxItemId nId;
+            if (getToolboxId(nId, &pToolBox))
+                pToolBox->EnableItem(nId, true);
+        }
+    }
+
+    virtual void SAL_CALL execute(sal_Int16 /*nKeyModifier*/) override
+    {
+        try
+        {
+            createPopupWindow();
+        }
+        catch (const css::uno::Exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException("Writer2027DocumentKitToolBoxControl::execute",
+                                                    rEx);
+        }
+        catch (const std::exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException("Writer2027DocumentKitToolBoxControl::execute",
+                                                    rEx);
+        }
+        catch (...)
+        {
+            svx::writer2027::Writer2027LogUnknownException(
+                "Writer2027DocumentKitToolBoxControl::execute");
+        }
+    }
+
+    virtual std::unique_ptr<WeldToolbarPopup> weldPopupWindow() override
+    {
+        try
+        {
+            auto xPopup = std::make_unique<svx::writer2027::Writer2027DocumentKitPopup>(
+                getFrameInterface(), m_pToolbar);
+            xPopup->connect_select(LINK(this, Writer2027DocumentKitToolBoxControl, OnSelect));
+            return xPopup;
+        }
+        catch (const css::uno::Exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException(
+                "Writer2027DocumentKitToolBoxControl::weldPopupWindow", rEx);
+        }
+        catch (const std::exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException(
+                "Writer2027DocumentKitToolBoxControl::weldPopupWindow", rEx);
+        }
+        catch (...)
+        {
+            svx::writer2027::Writer2027LogUnknownException(
+                "Writer2027DocumentKitToolBoxControl::weldPopupWindow");
+        }
+        return nullptr;
+    }
+
+    virtual VclPtr<vcl::Window> createVclPopupWindow(vcl::Window* pParent) override
+    {
+        try
+        {
+            if (mxInterimPopover)
+                mxInterimPopover.disposeAndClear();
+            auto xPopup = std::make_unique<svx::writer2027::Writer2027DocumentKitPopup>(
+                getFrameInterface(), pParent->GetFrameWeld());
+            xPopup->connect_select(LINK(this, Writer2027DocumentKitToolBoxControl, OnSelect));
+            mxInterimPopover = VclPtr<InterimToolbarPopup>::Create(
+                getFrameInterface(), pParent, std::move(xPopup));
+            mxInterimPopover->Show();
+            return mxInterimPopover;
+        }
+        catch (const css::uno::Exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException(
+                "Writer2027DocumentKitToolBoxControl::createVclPopupWindow", rEx);
+        }
+        catch (const std::exception& rEx)
+        {
+            svx::writer2027::Writer2027LogException(
+                "Writer2027DocumentKitToolBoxControl::createVclPopupWindow", rEx);
+        }
+        catch (...)
+        {
+            svx::writer2027::Writer2027LogUnknownException(
+                "Writer2027DocumentKitToolBoxControl::createVclPopupWindow");
+        }
+        return nullptr;
+    }
+
+private:
+    DECL_LINK(OnSelect, const OUString&, void);
+};
+
+IMPL_LINK(Writer2027DocumentKitToolBoxControl, OnSelect, const OUString&, rKitId, void)
+{
+    try
+    {
+        svx::writer2027::Writer2027LogMessage(
+            "documentkit.apply", OUString::Concat(u"kit=") + rKitId);
+        if (SwView* pView = lcl_FrameSwView(m_xFrame))
+        {
+            SwDocShell* pDocShell = pView->GetDocShell();
+            if (!pDocShell || pDocShell->IsReadOnly())
+            {
+                EndPopupMode();
+                return;
+            }
+            const svx::writer2027::DocumentKit* pKit
+                = svx::writer2027::Writer2027DocumentKitCatalog::Get().FindKit(rKitId);
+            if (!pKit)
+            {
+                EndPopupMode();
+                return;
+            }
+            // Session aid: remember the active kit and offer the kit's
+            // recommended Type System (the document stays the source of truth).
+            if (!pKit->maTypeSystemId.isEmpty())
+            {
+                const svx::writer2027::TypeSystemPreset* pPreset
+                    = svx::writer2027::Writer2027TypeSystemCatalog::Get().FindPreset(
+                        pKit->maTypeSystemId);
+                if (pPreset)
+                {
+                    const SvxFontListItem* pFontListItem
+                        = pDocShell->GetItem(SID_ATTR_CHAR_FONTLIST);
+                    const FontList* pFontList
+                        = pFontListItem ? pFontListItem->GetFontList() : nullptr;
+                    const OUString aCurrent
+                        = sw::writer2027typesystem::DetectCurrentTypeSystem(*pDocShell->GetDoc(),
+                                                                            pFontList);
+                    if (aCurrent != pKit->maTypeSystemId
+                        && pView->AskApplyRecommendedTypeSystem(*pKit))
+                    {
+                        const svx::writer2027::ResolvedTypeSystem aResolved
+                            = svx::writer2027::ResolveTypeSystem(*pPreset, pFontList);
+                        sw::writer2027typesystem::ApplyTypeSystem(*pDocShell->GetDoc(), *pPreset,
+                                                                  aResolved, pFontList);
+                    }
+                }
+            }
+        }
+    }
+    catch (const css::uno::Exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027DocumentKitToolBoxControl::OnSelect",
+                                                rEx);
+    }
+    catch (const std::exception& rEx)
+    {
+        svx::writer2027::Writer2027LogException("Writer2027DocumentKitToolBoxControl::OnSelect",
+                                                rEx);
+    }
+    catch (...)
+    {
+        svx::writer2027::Writer2027LogUnknownException("Writer2027DocumentKitToolBoxControl::OnSelect");
+    }
+    EndPopupMode();
+}
+
 } // namespace
 
 extern "C" SAL_DLLPUBLIC_EXPORT css::uno::XInterface*
@@ -331,6 +727,20 @@ lo_writer_Writer2027TypeSystemToolBoxControl_get_implementation(
     css::uno::XComponentContext* rContext, css::uno::Sequence<css::uno::Any> const&)
 {
     return cppu::acquire(new Writer2027TypeSystemToolBoxControl(rContext));
+}
+
+extern "C" SAL_DLLPUBLIC_EXPORT css::uno::XInterface*
+lo_writer_Writer2027InsertBlockToolBoxControl_get_implementation(
+    css::uno::XComponentContext* rContext, css::uno::Sequence<css::uno::Any> const&)
+{
+    return cppu::acquire(new Writer2027InsertBlockToolBoxControl(rContext));
+}
+
+extern "C" SAL_DLLPUBLIC_EXPORT css::uno::XInterface*
+lo_writer_Writer2027DocumentKitToolBoxControl_get_implementation(
+    css::uno::XComponentContext* rContext, css::uno::Sequence<css::uno::Any> const&)
+{
+    return cppu::acquire(new Writer2027DocumentKitToolBoxControl(rContext));
 }
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

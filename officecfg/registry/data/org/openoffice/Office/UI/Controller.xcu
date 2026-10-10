@@ -1459,6 +1459,28 @@
           <value>lo.writer.Writer2027TypeSystemToolBoxControl</value>
         </prop>
       </node>
+      <node oor:name="Writer2027InsertBlockToolBoxControl" oor:op="replace">
+        <prop oor:name="Command">
+          <value>.uno:Writer2027InsertBlock</value>
+        </prop>
+        <prop oor:name="Module">
+          <value/>
+        </prop>
+        <prop oor:name="Controller">
+          <value>lo.writer.Writer2027InsertBlockToolBoxControl</value>
+        </prop>
+      </node>
+      <node oor:name="Writer2027DocumentKitToolBoxControl" oor:op="replace">
+        <prop oor:name="Command">
+          <value>.uno:Writer2027DocumentKit</value>
+        </prop>
+        <prop oor:name="Module">
+          <value/>
+        </prop>
+        <prop oor:name="Controller">
+          <value>lo.writer.Writer2027DocumentKitToolBoxControl</value>
+        </prop>
+      </node>
       <node oor:name="Writer2027StyleGalleryToolBoxControl" oor:op="replace">
         <prop oor:name="Command">
           <value>.uno:Writer2027StyleGallery</value>

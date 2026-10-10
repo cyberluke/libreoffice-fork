@@ -12,15 +12,17 @@
 
 #include <svx/svxdllapi.h>
 
+#include <svtools/toolbarmenu.hxx>
+
 #include <vcl/weld/Builder.hxx>
 #include <vcl/weld/Entry.hxx>
-#include <vcl/weld/Popover.hxx>
 #include <vcl/weld/TreeView.hxx>
 
 #include <memory>
 #include <vector>
 
-class vcl::Window;
+namespace com::sun::star::frame { class XFrame; }
+namespace weld { class Widget; }
 namespace svx::writer2027
 {
 struct EditorialBlockDefinition;
@@ -31,31 +33,33 @@ namespace svx::writer2027
 
 /** Writer 2027 Insert Block gallery popup.
 
-    A weld::Popover with a search entry and a custom-rendered card list:
-    category header rows (Recommended / Editorial / Technical) followed by
-    one card per block. Each card draws a lightweight miniature composition
-    preview (pure vector drawing - no raster assets, crisp on HiDPI) plus the
-    block name and description.
+    A WeldToolbarPopup (framework-owned toolbar popover) with a search entry
+    and a custom-rendered card list: category header rows (Recommended /
+    Editorial / Technical) followed by one card per block. Each card draws a
+    lightweight miniature composition preview (pure vector drawing - no raster
+    assets, crisp on HiDPI) plus the block name and description.
 
     Pure UI: hovering never mutates the document. Selecting a block closes
     the popup and hands the block id to the caller, which inserts it through
     the canonical Writer structural APIs (sw::writer2027blocks).
+
+    Deriving from WeldToolbarPopup lets svt::PopupWindowController anchor the
+    popover under the toolbar button at any DPI (same scheme as the Type System
+    picker); the popover's direct child must carry the stable id "container".
  */
-class SVXCORE_DLLPUBLIC Writer2027BlockGalleryPopup
+class SVXCORE_DLLPUBLIC Writer2027BlockGalleryPopup final : public WeldToolbarPopup
 {
 public:
-    Writer2027BlockGalleryPopup();
-    ~Writer2027BlockGalleryPopup();
+    Writer2027BlockGalleryPopup(const css::uno::Reference<css::frame::XFrame>& xFrame,
+                                weld::Widget* pParent);
+    ~Writer2027BlockGalleryPopup() override;
 
-    /** Open anchored below rAnchorWin. rActiveKitId is the kit id applied
-        most recently in this session (may be empty); its recommended blocks
-        are shown first inside the Recommended group. */
-    void Open(const OUString& rActiveKitId, vcl::Window& rAnchorWin);
+    virtual void GrabFocus() override;
 
-    /** Close the popup if open (no selection made). */
-    void Close();
-
-    bool IsOpen() const { return mbOpen; }
+    /** rActiveKitId is the kit id applied most recently in this session (may
+        be empty); its recommended blocks are shown first inside the
+        Recommended group. */
+    void SetActiveKitId(const OUString& rActiveKitId) { maActiveKitId = rActiveKitId; }
 
     /** Called when the popup closes for any reason (selection, Escape,
         outside click). */
@@ -77,7 +81,6 @@ private:
     DECL_LINK(TreeMousePressHdl, const MouseEvent&, bool);
     DECL_LINK(RowGetSizeHdl, weld::TreeView::get_size_args, Size);
     DECL_LINK(RowRenderHdl, weld::TreeView::render_args, void);
-    DECL_LINK(PopupClosedHdl, weld::Popover&, void);
 
     /// Paint one row. Separated from the Link wrapper so a paint-time
     /// exception cannot take down the application (see RowRenderHdl).
@@ -95,8 +98,6 @@ private:
     /// Row ids: "h:<category>" (inert header) or "b:<block id>".
     std::vector<OUString> maRowIds;
 
-    std::unique_ptr<weld::Builder> m_xBuilder;
-    std::unique_ptr<weld::Popover> m_xPopup;
     std::unique_ptr<weld::Entry> m_xSearch;
     std::unique_ptr<weld::TreeView> m_xRows;
 
@@ -104,7 +105,6 @@ private:
     OUString maSearchText;
     int mnLastSelectedIndex = -1;
     bool mbInternalMove = false;
-    bool mbOpen = false;
     Link<Writer2027BlockGalleryPopup&, void> m_aCloseHdl;
     Link<const OUString&, void> m_aSelectHdl;
 };
@@ -112,5 +112,3 @@ private:
 } // namespace svx::writer2027
 
 #endif // INCLUDED_SVX_WRITER2027BLOCKGALLERYPOPUP_HXX
-
-/* vim:set shiftwidth=4 softtabstop=4 expandtab: */

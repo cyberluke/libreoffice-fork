@@ -557,19 +557,14 @@ case FN_WRITER2027_STORY:
         break;
 
     case FN_WRITER2027_INSERT_BLOCK:
-        // Insert Block gallery: pure UI; insertion happens through the
-        // canonical Writer structural APIs with one grouped undo action.
-        svx::writer2027::Writer2027LogMessage(
-            "writer2027.insertblock.execute", u"ENTER (open popup)"_ustr);
-        OpenWriter2027BlockGalleryPopup();
+        // Insert Block gallery is now a UNO toolbar controller
+        // (Writer2027InsertBlockToolBoxControl) anchored under the button; the
+        // app never dispatches this slot for the notebookbar button.
         break;
 
     case FN_WRITER2027_DOCUMENT_KIT:
-        // Document Kit picker: pure UI; applying happens through the
-        // canonical Type System + block paths.
-        svx::writer2027::Writer2027LogMessage(
-            "writer2027.documentkit.execute", u"ENTER (open popup)"_ustr);
-        OpenWriter2027DocumentKitPopup();
+        // Document Kit picker is now a UNO toolbar controller
+        // (Writer2027DocumentKitToolBoxControl) anchored under the button.
         break;
 
     case FN_WRITER2027_PUBLISH_WEB:
@@ -1066,36 +1061,10 @@ void SwView::ExecNavigatorWin(const SfxRequest& rReq)
 
 void SwView::OpenWriter2027BlockGalleryPopup()
 {
-    try
-    {
-        SwDocShell* pDocShell = GetDocShell();
-        if (!pDocShell || pDocShell->IsReadOnly())
-            return;
-
-        if (!m_xWriter2027BlockGalleryPopup)
-        {
-            m_xWriter2027BlockGalleryPopup.reset(new svx::writer2027::Writer2027BlockGalleryPopup());
-            m_xWriter2027BlockGalleryPopup->connect_select(
-                LINK(this, SwView, Writer2027BlockSelectHdl));
-        }
-
-        vcl::Window* pAnchor = &GetViewFrame().GetWindow();
-        if (!pAnchor)
-            return;
-        m_xWriter2027BlockGalleryPopup->Open(m_aActiveKitId, *pAnchor);
-    }
-    catch (const css::uno::Exception& rEx)
-    {
-        svx::writer2027::Writer2027LogException("OpenWriter2027BlockGalleryPopup", rEx);
-    }
-    catch (const std::exception& rEx)
-    {
-        svx::writer2027::Writer2027LogException("OpenWriter2027BlockGalleryPopup", rEx);
-    }
-    catch (...)
-    {
-        svx::writer2027::Writer2027LogUnknownException("OpenWriter2027BlockGalleryPopup");
-    }
+    // No-op: the Insert Block button is a UNO toolbar controller
+    // (Writer2027InsertBlockToolBoxControl) that anchors the gallery under the
+    // button; this Sfx-slot route is retained for slot-table compatibility.
+    (void)GetDocShell();
 }
 
 IMPL_LINK(SwView, Writer2027BlockSelectHdl, const OUString&, rBlockId, void)
@@ -1132,35 +1101,10 @@ IMPL_LINK(SwView, Writer2027BlockSelectHdl, const OUString&, rBlockId, void)
 
 void SwView::OpenWriter2027DocumentKitPopup()
 {
-    try
-    {
-        SwDocShell* pDocShell = GetDocShell();
-        if (!pDocShell || pDocShell->IsReadOnly())
-            return;
-
-        if (!m_xWriter2027DocumentKitPopup)
-        {
-            m_xWriter2027DocumentKitPopup.reset(new svx::writer2027::Writer2027DocumentKitPopup());
-            m_xWriter2027DocumentKitPopup->connect_select(LINK(this, SwView, Writer2027KitSelectHdl));
-        }
-
-        vcl::Window* pAnchor = &GetViewFrame().GetWindow();
-        if (!pAnchor)
-            return;
-        m_xWriter2027DocumentKitPopup->Open(*pAnchor);
-    }
-    catch (const css::uno::Exception& rEx)
-    {
-        svx::writer2027::Writer2027LogException("OpenWriter2027DocumentKitPopup", rEx);
-    }
-    catch (const std::exception& rEx)
-    {
-        svx::writer2027::Writer2027LogException("OpenWriter2027DocumentKitPopup", rEx);
-    }
-    catch (...)
-    {
-        svx::writer2027::Writer2027LogUnknownException("OpenWriter2027DocumentKitPopup");
-    }
+    // No-op: the Document Kit button is a UNO toolbar controller
+    // (Writer2027DocumentKitToolBoxControl) that anchors the picker under the
+    // button; this Sfx-slot route is retained for slot-table compatibility.
+    (void)GetDocShell();
 }
 
 IMPL_LINK(SwView, Writer2027KitSelectHdl, const OUString&, rKitId, void)

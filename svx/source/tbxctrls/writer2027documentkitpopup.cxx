@@ -23,7 +23,6 @@
 #include <vcl/window.hxx>
 #include <vcl/weld/TreeView.hxx>
 #include <vcl/weld/Window.hxx>
-#include <vcl/weld/weldutils.hxx>
 
 #include <svx/dialmgr.hxx>
 #include <svx/strings.hrc>
@@ -36,10 +35,6 @@ namespace svx::writer2027
 namespace
 {
 
-// Target desktop geometry (logical px, scaled by the UI DPI factor). Uses the
-// central visual constitution + shared AdaptivePopoverGeometry policy.
-constexpr auto POPUP_GEOMETRY
-    = svx::writer2027::AdaptivePopoverGeometry(/*min*/ 520, /*preferred*/ 640, /*max*/ 760);
 constexpr int ROW_MARGIN = svx::writer2027::Spacing::M;
 
 bool lcl_IsPlainKey(const KeyEvent& rKEvt, sal_uInt16 nCode)
@@ -80,7 +75,6 @@ void lcl_DrawKitPreview(vcl::RenderContext& rCtx, const tools::Rectangle& rRect,
 
     if (bEditorial)
     {
-        // Big display block + indented quote-like lines.
         rCtx.Push(vcl::PushFlags::FILLCOLOR | vcl::PushFlags::LINECOLOR);
         rCtx.SetFillColor(rText);
         rCtx.SetLineColor(rText);
@@ -96,7 +90,6 @@ void lcl_DrawKitPreview(vcl::RenderContext& rCtx, const tools::Rectangle& rRect,
     }
     else if (bDense)
     {
-        // Dense rows of small lines.
         rCtx.Push(vcl::PushFlags::FILLCOLOR | vcl::PushFlags::LINECOLOR);
         rCtx.SetFillColor(rText);
         rCtx.SetLineColor(rText);
@@ -112,7 +105,6 @@ void lcl_DrawKitPreview(vcl::RenderContext& rCtx, const tools::Rectangle& rRect,
     }
     else
     {
-        // Clean product rhythm: heading + sub + two body lines.
         rCtx.Push(vcl::PushFlags::FILLCOLOR | vcl::PushFlags::LINECOLOR);
         rCtx.SetFillColor(rText);
         rCtx.SetLineColor(rText);
@@ -137,107 +129,31 @@ void lcl_DrawKitPreview(vcl::RenderContext& rCtx, const tools::Rectangle& rRect,
 
 } // namespace
 
-Writer2027DocumentKitPopup::Writer2027DocumentKitPopup() = default;
+Writer2027DocumentKitPopup::Writer2027DocumentKitPopup(
+    const css::uno::Reference<css::frame::XFrame>& xFrame, weld::Widget* pParent)
+    : WeldToolbarPopup(xFrame, pParent, u"svx/ui/writer2027documentkitpopup.ui"_ustr,
+                       u"Writer2027DocumentKitPopup"_ustr)
+    , m_xRows(m_xBuilder->weld_tree_view(u"rows"_ustr))
+{
+    m_xRows->set_selection_mode(SelectionMode::Single);
+    m_xRows->set_column_custom_renderer(0, true);
+    m_xRows->connect_custom_get_size(LINK(this, Writer2027DocumentKitPopup, RowGetSizeHdl));
+    m_xRows->connect_custom_render(LINK(this, Writer2027DocumentKitPopup, RowRenderHdl));
+    m_xRows->connect_key_press(LINK(this, Writer2027DocumentKitPopup, TreeKeyHdl));
+    m_xRows->connect_selection_changed(LINK(this, Writer2027DocumentKitPopup, TreeSelectionHdl));
+    m_xRows->connect_mouse_press(LINK(this, Writer2027DocumentKitPopup, TreeMousePressHdl));
+
+    RebuildRows();
+    if (m_xRows->n_children() > 0)
+        SelectRowIndex(0, true);
+}
 
 Writer2027DocumentKitPopup::~Writer2027DocumentKitPopup() = default;
 
-void Writer2027DocumentKitPopup::Open(vcl::Window& rAnchorWin)
+void Writer2027DocumentKitPopup::GrabFocus()
 {
-    // Re-entrancy guard: reused instance; a second click while the popover is
-    // already shown must not rebuild + re-pop an open popover (weld hang).
-    if (mbOpen)
-    {
+    if (m_xRows)
         m_xRows->grab_focus();
-        return;
-    }
-
-    try
-    {
-        // Build the popover once; reuse the instance across opens.
-        if (!m_xBuilder)
-        {
-            tools::Rectangle aInitRect(Point(0, 0), rAnchorWin.GetSizePixel());
-            weld::Window* pInitParent = weld::GetPopupParent(rAnchorWin, aInitRect);
-            m_xBuilder = Application::CreateBuilder(pInitParent,
-                                                    u"svx/ui/writer2027documentkitpopup.ui"_ustr);
-            m_xPopup = m_xBuilder->weld_popover(u"Writer2027DocumentKitPopup"_ustr);
-            m_xRows = m_xBuilder->weld_tree_view(u"rows"_ustr);
-
-            m_xPopup->set_accessible_name(SvxResId(STR_WRITER2027_KIT_PICKER_TITLE));
-            m_xPopup->connect_closed(LINK(this, Writer2027DocumentKitPopup, PopupClosedHdl));
-
-            m_xRows->set_selection_mode(SelectionMode::Single);
-            m_xRows->set_column_custom_renderer(0, true);
-            m_xRows->connect_custom_get_size(LINK(this, Writer2027DocumentKitPopup, RowGetSizeHdl));
-            m_xRows->connect_custom_render(LINK(this, Writer2027DocumentKitPopup, RowRenderHdl));
-            m_xRows->connect_key_press(LINK(this, Writer2027DocumentKitPopup, TreeKeyHdl));
-            m_xRows->connect_selection_changed(LINK(this, Writer2027DocumentKitPopup, TreeSelectionHdl));
-            m_xRows->connect_mouse_press(LINK(this, Writer2027DocumentKitPopup, TreeMousePressHdl));
-        }
-
-        RebuildRows();
-
-    // Geometry: shared AdaptivePopoverGeometry policy (single source of truth).
-    // All width/content heights are LOGICAL px; set_size_request consumes
-    // DEVICE px, so the logical result is scaled by fScale. This matches the
-    // policy contract (clampWidth/clampHeightPhysical take logical inputs) and
-    // avoids the old device-vs-logical mixing that blew the popup size up on
-    // HiDPI and let the custom-rendered rows clip / fonts collide.
-    const double fScale = Application::GetDefaultDevice()
-                              ? Application::GetDefaultDevice()->GetDPIScaleFactor()
-                              : 1.0;
-    const AbsoluteScreenPixelRectangle aScreenRect = rAnchorWin.GetDesktopRectPixel();
-    const tools::Long nWorkW = aScreenRect.GetWidth();  // physical px
-    const tools::Long nWorkH = aScreenRect.GetHeight(); // physical px
-    const tools::Long nLogW = static_cast<tools::Long>(nWorkW / fScale);
-
-    // Row heights derive from the tree's own text metrics (same basis as the
-    // custom-measure callback), kept in LOGICAL px for the policy, converted
-    // to device px at set_size_request so the popup request is consistent with
-    // the rows the tree actually lays out at any DPI.
-    const tools::Long nTextHDev = std::max<tools::Long>(m_xRows->get_text_height(), 12);
-    const tools::Long nRowHLp = std::max<tools::Long>(nTextHDev / fScale, 12);
-    const tools::Long nContentHLp = nRowHLp * 9 * maRowIds.size();
-    const tools::Long nMinPopupHLp = nRowHLp * 9;
-    const tools::Long nPopupWidthDev
-        = static_cast<tools::Long>(POPUP_GEOMETRY.clampWidth(nRowHLp * 45, nLogW) * fScale);
-    const tools::Long nPopupHDev
-        = POPUP_GEOMETRY.clampHeightPhysical(nContentHLp, nMinPopupHLp, nWorkH, fScale);
-    m_xRows->set_size_request(static_cast<int>(nPopupWidthDev),
-                              static_cast<int>(nPopupHDev));
-
-    tools::Rectangle aRect(Point(0, 0), rAnchorWin.GetSizePixel());
-    weld::Window* pParent = weld::GetPopupParent(rAnchorWin, aRect);
-    mbOpen = true;
-    m_xPopup->popup_at_rect(pParent, aRect, weld::Placement::Under);
-    m_xPopup->resize_to_request();
-
-    if (m_xRows->n_children() > 0)
-        SelectRowIndex(0, true);
-    m_xRows->grab_focus();
-    }
-    catch (const css::uno::Exception& rEx)
-    {
-        mbOpen = false;
-        svx::writer2027::Writer2027LogException("Writer2027DocumentKitPopup::Open", rEx);
-    }
-    catch (const std::exception& rEx)
-    {
-        mbOpen = false;
-        svx::writer2027::Writer2027LogException("Writer2027DocumentKitPopup::Open", rEx);
-    }
-    catch (...)
-    {
-        mbOpen = false;
-        svx::writer2027::Writer2027LogUnknownException("Writer2027DocumentKitPopup::Open");
-    }
-}
-
-void Writer2027DocumentKitPopup::Close()
-{
-    if (!mbOpen)
-        return;
-    m_xPopup->popdown(); // PopupClosedHdl fires via signal_closed
 }
 
 void Writer2027DocumentKitPopup::RebuildRows()
@@ -263,7 +179,7 @@ void Writer2027DocumentKitPopup::RebuildRows()
                     // SetEntryText on custom-rendered rows.
                     m_xRows->set_text(rIter, SvxResId(pKit->maNameResId) + u" — "_ustr
                                                  + SvxResId(pKit->maDescriptionResId),
-                                               0);
+                                     0);
                 }
                 m_xRows->set_id(rIter, rId);
             });
@@ -274,8 +190,8 @@ void Writer2027DocumentKitPopup::ApplyKit(const OUString& rKitId)
 {
     if (rKitId.isEmpty() || !rKitId.startsWith(u"k:"_ustr))
         return;
-    m_aSelectHdl.Call(rKitId.copy(2));
-    Close();
+    if (m_aSelectHdl.IsSet())
+        m_aSelectHdl.Call(rKitId.copy(2));
 }
 
 void Writer2027DocumentKitPopup::MoveCursor(int nDelta)
@@ -350,7 +266,7 @@ IMPL_LINK(Writer2027DocumentKitPopup, TreeKeyHdl, const KeyEvent&, rKEvt, bool)
     }
     if (lcl_IsPlainKey(rKEvt, KEY_ESCAPE))
     {
-        Close();
+        // The framework closes the popover on Escape; nothing more to do.
         return true;
     }
     return false;
@@ -387,12 +303,6 @@ IMPL_LINK(Writer2027DocumentKitPopup, TreeMousePressHdl, const MouseEvent&, rEve
 
 IMPL_LINK(Writer2027DocumentKitPopup, RowGetSizeHdl, weld::TreeView::get_size_args, aPayload, Size)
 {
-    // Row heights MUST be derived from the render context metrics (the same
-    // device the paint callback draws into) — this is the FmFilterNavigator
-    // convention. The VCL tree stores the returned height verbatim
-    // (SvLBoxString::InitViewData -> mnHeight) and lays out / hit-tests with
-    // it in DEVICE pixels; fixed logical constants collapse the cards on
-    // high-DPI (4K@200%) and make the text lines collide.
     const vcl::RenderContext& rCtx = aPayload.first;
     const tools::Long nTextH = rCtx.GetTextHeight();
     const tools::Long nBaseH = std::max<tools::Long>(nTextH, 12);
@@ -406,8 +316,6 @@ IMPL_LINK(Writer2027DocumentKitPopup, RowRenderHdl, weld::TreeView::render_args,
     const bool bSelected = std::get<2>(aPayload);
     const OUString& rId = std::get<3>(aPayload);
 
-    // A paint-time exception in a custom renderer must never take down the
-    // application: log it and render nothing for that row instead.
     try
     {
         RowRender(rCtx, rRect, bSelected, rId);
@@ -442,16 +350,12 @@ void Writer2027DocumentKitPopup::RowRender(vcl::RenderContext& rCtx,
     Color aLineColor = aMutedColor;
     aLineColor.Merge(aWindowColor, 140);
 
-    // All vertical metrics derive from the render context text height — the
-    // same device the measure callback used (see RowGetSizeHdl), so cards
-    // stay consistent with the row the tree actually lays out at any DPI.
     const tools::Long nTextH = std::max<tools::Long>(rCtx.GetTextHeight(), 12);
 
     const tools::Long nX = rRect.Left() + ROW_MARGIN;
 
     if (bSelected)
     {
-        // Restrained selection: a subtle tint, never the OS slab.
         Color aSelColor(aWindowColor);
         aSelColor.Merge(rStyleSettings.GetHighlightColor(), 80);
         rCtx.Push(vcl::PushFlags::FILLCOLOR | vcl::PushFlags::LINECOLOR);
@@ -463,8 +367,7 @@ void Writer2027DocumentKitPopup::RowRender(vcl::RenderContext& rCtx,
         rCtx.Pop();
     }
 
-    // 1. Miniature composition preview (left). Height and gutter derive from
-    // the text height so the card scales with the row at any DPI.
+    // 1. Miniature composition preview (left).
     {
         const tools::Long nPrevH = std::max<tools::Long>(nTextH * 5, 60);
         const tools::Long nPrevW = nPrevH * 4 / 5;
@@ -535,13 +438,6 @@ void Writer2027DocumentKitPopup::RowRender(vcl::RenderContext& rCtx,
                             SvxResId(pKit->maUseResId), nTextMaxW);
         rCtx.Pop();
     }
-}
-
-IMPL_LINK_NOARG(Writer2027DocumentKitPopup, PopupClosedHdl, weld::Popover&, void)
-{
-    mbOpen = false;
-    mnLastSelectedIndex = -1;
-    m_aCloseHdl.Call(*this);
 }
 
 } // namespace svx::writer2027

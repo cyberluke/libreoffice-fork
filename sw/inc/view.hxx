@@ -210,14 +210,13 @@ class SW_DLLPUBLIC SwView: public SfxViewShell
     // WRITER2027_REMEDIATION_SPEC Phase B).
 
     // Writer 2027 Editorial Blocks (Phase 7): Insert Block gallery + Document
-    // Kit picker, both reused across opens. The active kit is a session-level
+    // Kit picker are UNO toolbar controllers (Writer2027InsertBlock/DocumentKit
+    // ToolBoxControl) anchored under the button; the Sfx-slot Open() routes are
+    // kept as slot-table-compatible no-ops. The active kit is a session-level
     // insertion aid (the document remains authoritative, see §27).
-    std::unique_ptr<svx::writer2027::Writer2027BlockGalleryPopup> m_xWriter2027BlockGalleryPopup;
-    std::unique_ptr<svx::writer2027::Writer2027DocumentKitPopup> m_xWriter2027DocumentKitPopup;
     OUString m_aActiveKitId;
     void OpenWriter2027BlockGalleryPopup();
     void OpenWriter2027DocumentKitPopup();
-    bool AskApplyRecommendedTypeSystem(const svx::writer2027::DocumentKit& rKit);
     DECL_LINK(Writer2027BlockSelectHdl, const OUString&, void);
     DECL_LINK(Writer2027KitSelectHdl, const OUString&, void);
 
@@ -432,6 +431,10 @@ private:
 
 public:
     SfxDispatcher   &GetDispatcher();
+
+/// Whether to apply the kit's recommended Type System (confirm dialog). Used
+    /// by the Writer2027DocumentKitToolBoxControl toolbar controller.
+    bool AskApplyRecommendedTypeSystem(const svx::writer2027::DocumentKit& rKit);
 
     void                    GotFocus() const;
     virtual SdrView*        GetDrawView() const override;

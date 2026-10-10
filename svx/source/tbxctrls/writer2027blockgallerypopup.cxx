@@ -22,7 +22,6 @@
 #include <vcl/window.hxx>
 #include <vcl/weld/TreeView.hxx>
 #include <vcl/weld/Window.hxx>
-#include <vcl/weld/weldutils.hxx>
 
 #include <svx/dialmgr.hxx>
 #include <svx/strings.hrc>
@@ -35,10 +34,6 @@ namespace svx::writer2027
 namespace
 {
 
-// Target desktop geometry (logical px, scaled by the UI DPI factor). Uses the
-// central visual constitution + shared AdaptivePopoverGeometry policy.
-constexpr auto POPUP_GEOMETRY
-    = svx::writer2027::AdaptivePopoverGeometry(/*min*/ 520, /*preferred*/ 640, /*max*/ 760);
 constexpr int ROW_MARGIN = svx::writer2027::Spacing::M;
 
 bool lcl_IsPlainKey(const KeyEvent& rKEvt, sal_uInt16 nCode)
@@ -217,123 +212,43 @@ void lcl_DrawPreview(vcl::RenderContext& rCtx, const tools::Rectangle& rRect,
 
 } // namespace
 
-Writer2027BlockGalleryPopup::Writer2027BlockGalleryPopup() = default;
-
-Writer2027BlockGalleryPopup::~Writer2027BlockGalleryPopup() = default;
-
-void Writer2027BlockGalleryPopup::Open(const OUString& rActiveKitId, vcl::Window& rAnchorWin)
+Writer2027BlockGalleryPopup::Writer2027BlockGalleryPopup(
+    const css::uno::Reference<css::frame::XFrame>& xFrame, weld::Widget* pParent)
+    : WeldToolbarPopup(xFrame, pParent, u"svx/ui/writer2027blockgallerypopup.ui"_ustr,
+                       u"Writer2027BlockGalleryPopup"_ustr)
+    , m_xSearch(m_xBuilder->weld_entry(u"search"_ustr))
+    , m_xRows(m_xBuilder->weld_tree_view(u"rows"_ustr))
 {
-    // Re-entrancy guard: reused instance; a second click while the popover is
-    // already shown must not rebuild + re-pop an open popover (weld hang).
-    if (mbOpen)
+    m_xRows->set_selection_mode(SelectionMode::Single);
+    m_xRows->set_column_custom_renderer(0, true);
+    m_xRows->connect_custom_get_size(LINK(this, Writer2027BlockGalleryPopup, RowGetSizeHdl));
+    m_xRows->connect_custom_render(LINK(this, Writer2027BlockGalleryPopup, RowRenderHdl));
+    m_xRows->connect_key_press(LINK(this, Writer2027BlockGalleryPopup, TreeKeyHdl));
+    m_xRows->connect_selection_changed(LINK(this, Writer2027BlockGalleryPopup, TreeSelectionHdl));
+    m_xRows->connect_mouse_press(LINK(this, Writer2027BlockGalleryPopup, TreeMousePressHdl));
+
+    if (m_xSearch)
     {
-        maActiveKitId = rActiveKitId;
-        m_xSearch->grab_focus();
-        return;
+        m_xSearch->connect_changed(LINK(this, Writer2027BlockGalleryPopup, SearchChangedHdl));
+        m_xSearch->connect_activate(LINK(this, Writer2027BlockGalleryPopup, SearchActivateHdl));
+        m_xSearch->connect_key_press(LINK(this, Writer2027BlockGalleryPopup, SearchKeyHdl));
     }
 
-    try
-    {
-        maActiveKitId = rActiveKitId;
-
-        // Build the popover once; reuse the instance across opens.
-        if (!m_xBuilder)
-        {
-            tools::Rectangle aInitRect(Point(0, 0), rAnchorWin.GetSizePixel());
-            weld::Window* pInitParent = weld::GetPopupParent(rAnchorWin, aInitRect);
-            m_xBuilder = Application::CreateBuilder(pInitParent,
-                                                    u"svx/ui/writer2027blockgallerypopup.ui"_ustr);
-            m_xPopup = m_xBuilder->weld_popover(u"Writer2027BlockGalleryPopup"_ustr);
-            m_xSearch = m_xBuilder->weld_entry(u"search"_ustr);
-            m_xRows = m_xBuilder->weld_tree_view(u"rows"_ustr);
-
-            m_xPopup->set_accessible_name(SvxResId(STR_WRITER2027_GALLERY_TITLE));
-            m_xPopup->connect_closed(LINK(this, Writer2027BlockGalleryPopup, PopupClosedHdl));
-
-            m_xSearch->connect_changed(LINK(this, Writer2027BlockGalleryPopup, SearchChangedHdl));
-            m_xSearch->connect_key_press(LINK(this, Writer2027BlockGalleryPopup, SearchKeyHdl));
-            m_xSearch->connect_activate(LINK(this, Writer2027BlockGalleryPopup, SearchActivateHdl));
-
-            m_xRows->set_selection_mode(SelectionMode::Single);
-            m_xRows->set_column_custom_renderer(0, true);
-            m_xRows->connect_custom_get_size(LINK(this, Writer2027BlockGalleryPopup, RowGetSizeHdl));
-            m_xRows->connect_custom_render(LINK(this, Writer2027BlockGalleryPopup, RowRenderHdl));
-            m_xRows->connect_key_press(LINK(this, Writer2027BlockGalleryPopup, TreeKeyHdl));
-            m_xRows->connect_selection_changed(
-                LINK(this, Writer2027BlockGalleryPopup, TreeSelectionHdl));
-            m_xRows->connect_mouse_press(LINK(this, Writer2027BlockGalleryPopup, TreeMousePressHdl));
-        }
-
-        RebuildRows();
-
-    // Geometry: shared AdaptivePopoverGeometry policy (single source of truth).
-    // All width/content heights are LOGICAL px; set_size_request consumes
-    // DEVICE px, so the logical result is scaled by fScale. This matches the
-    // policy contract (clampWidth/clampHeightPhysical take logical inputs) and
-    // avoids the old device-vs-logical mixing that blew the popup size up on
-    // HiDPI and let the custom-rendered rows clip / fonts collide.
-    const double fScale = Application::GetDefaultDevice()
-                              ? Application::GetDefaultDevice()->GetDPIScaleFactor()
-                              : 1.0;
-    const AbsoluteScreenPixelRectangle aScreenRect = rAnchorWin.GetDesktopRectPixel();
-    const tools::Long nWorkW = aScreenRect.GetWidth();  // physical px
-    const tools::Long nWorkH = aScreenRect.GetHeight(); // physical px
-    const tools::Long nLogW = static_cast<tools::Long>(nWorkW / fScale);
-
-    // Row heights derive from the tree's own text metrics (same basis as the
-    // custom-measure callback), kept in LOGICAL px for the policy, converted
-    // to device px at set_size_request so the popup request is consistent with
-    // the rows the tree actually lays out at any DPI.
-    const tools::Long nTextHDev = std::max<tools::Long>(m_xRows->get_text_height(), 12);
-    const tools::Long nRowHLp = std::max<tools::Long>(nTextHDev / fScale, 12);
-    tools::Long nContentHLp = 0;
-    for (const auto& rId : maRowIds)
-        nContentHLp += (rId.startsWith(u"h:"_ustr)) ? nRowHLp * 3 : nRowHLp * 8;
-    const tools::Long nMinPopupHLp = nRowHLp * 3 + nRowHLp * 8;
-    const tools::Long nPopupWidthDev
-        = static_cast<tools::Long>(POPUP_GEOMETRY.clampWidth(nRowHLp * 40, nLogW) * fScale);
-    const tools::Long nPopupHDev
-        = POPUP_GEOMETRY.clampHeightPhysical(nContentHLp, nMinPopupHLp, nWorkH, fScale);
-    m_xRows->set_size_request(static_cast<int>(nPopupWidthDev),
-                              static_cast<int>(nPopupHDev));
-
-    tools::Rectangle aRect(Point(0, 0), rAnchorWin.GetSizePixel());
-    weld::Window* pParent = weld::GetPopupParent(rAnchorWin, aRect);
-    mbOpen = true;
-    m_xPopup->popup_at_rect(pParent, aRect, weld::Placement::Under);
-    m_xPopup->resize_to_request();
-
-    // Focus the search box; keep a sane default selection in the list.
-    m_xSearch->grab_focus();
+    RebuildRows();
     if (m_xRows->n_children() > 0)
     {
         int nIndex = GetNextSelectableIndex(-1, 1);
         if (nIndex >= 0)
             SelectRowIndex(nIndex, true);
     }
-    }
-    catch (const css::uno::Exception& rEx)
-    {
-        mbOpen = false;
-        svx::writer2027::Writer2027LogException("Writer2027BlockGalleryPopup::Open", rEx);
-    }
-    catch (const std::exception& rEx)
-    {
-        mbOpen = false;
-        svx::writer2027::Writer2027LogException("Writer2027BlockGalleryPopup::Open", rEx);
-    }
-    catch (...)
-    {
-        mbOpen = false;
-        svx::writer2027::Writer2027LogUnknownException("Writer2027BlockGalleryPopup::Open");
-    }
 }
 
-void Writer2027BlockGalleryPopup::Close()
+Writer2027BlockGalleryPopup::~Writer2027BlockGalleryPopup() = default;
+
+void Writer2027BlockGalleryPopup::GrabFocus()
 {
-    if (!mbOpen)
-        return;
-    m_xPopup->popdown(); // PopupClosedHdl fires via signal_closed
+    if (m_xSearch)
+        m_xSearch->grab_focus();
 }
 
 void Writer2027BlockGalleryPopup::RebuildRows()
@@ -356,11 +271,8 @@ void Writer2027BlockGalleryPopup::RebuildRows()
         return aName.indexOf(aSearchLower) >= 0 || aDesc.indexOf(aSearchLower) >= 0;
     };
 
-    // Blocks ordered by category: Recommended, Editorial, Technical.
     std::vector<const EditorialBlockDefinition*> aOrdered;
 
-    // Recommended: kit-recommended blocks first, then remaining recommended
-    // blocks in catalog order.
     if (pKit)
     {
         for (const auto& rBlockId : pKit->maRecommendedBlocks)
@@ -374,16 +286,13 @@ void Writer2027BlockGalleryPopup::RebuildRows()
     {
         if (rBlock.meCategory != EditorialBlockCategory::Recommended || !matches(rBlock))
             continue;
-        const bool bAlready
-            = std::any_of(aOrdered.begin(), aOrdered.end(),
-                          [&rBlock](const EditorialBlockDefinition* pB) {
-                              return pB->maId == rBlock.maId;
-                          });
+        const bool bAlready = std::any_of(
+            aOrdered.begin(), aOrdered.end(),
+            [&rBlock](const EditorialBlockDefinition* pB) { return pB->maId == rBlock.maId; });
         if (!bAlready)
             aOrdered.push_back(&rBlock);
     }
 
-    // The remaining categories follow in catalog order.
     for (EditorialBlockCategory eCat : { EditorialBlockCategory::Editorial,
                                          EditorialBlockCategory::Technical })
     {
@@ -392,7 +301,6 @@ void Writer2027BlockGalleryPopup::RebuildRows()
                 aOrdered.push_back(&rBlock);
     }
 
-    // Build rows: a header row before each category change, then the cards.
     EditorialBlockCategory eCurrent = static_cast<EditorialBlockCategory>(-1);
     for (const auto* pBlock : aOrdered)
     {
@@ -435,13 +343,11 @@ void Writer2027BlockGalleryPopup::RebuildRows()
                         = Writer2027EditorialBlockCatalog::Get().FindBlock(rId.copy(2));
                     if (pBlock)
                     {
-                        // Expose name + description to assistive technologies
-                        // through the row text.
                         aText = SvxResId(pBlock->maNameResId) + u" — "_ustr
                                 + SvxResId(pBlock->maDescriptionResId);
                     }
                 }
-                m_xRows->set_text(rIter, aText, 0); // explicit col: avoids col==-1 SvTreeListBox::SetEntryText crash on custom-rendered rows
+                m_xRows->set_text(rIter, aText, 0);
                 m_xRows->set_id(rIter, rId);
             });
     }
@@ -451,8 +357,8 @@ void Writer2027BlockGalleryPopup::ApplyBlock(const OUString& rBlockId)
 {
     if (rBlockId.isEmpty() || !rBlockId.startsWith(u"b:"_ustr))
         return;
-    m_aSelectHdl.Call(rBlockId.copy(2));
-    Close();
+    if (m_aSelectHdl.IsSet())
+        m_aSelectHdl.Call(rBlockId.copy(2));
 }
 
 void Writer2027BlockGalleryPopup::MoveCursor(int nDelta)
@@ -510,9 +416,8 @@ IMPL_LINK(Writer2027BlockGalleryPopup, SearchChangedHdl, weld::TextWidget&, rWid
     RebuildRows();
 }
 
-IMPL_LINK(Writer2027BlockGalleryPopup, SearchActivateHdl, weld::Entry&, rEntry, bool)
+IMPL_LINK(Writer2027BlockGalleryPopup, SearchActivateHdl, weld::Entry&, /*rEntry*/, bool)
 {
-    // Enter in the search box inserts the currently selected block.
     const int nSel = m_xRows->get_selected_index();
     if (IsSelectableIndex(nSel))
         ApplyBlock(maRowIds[nSel]);
@@ -522,19 +427,9 @@ IMPL_LINK(Writer2027BlockGalleryPopup, SearchActivateHdl, weld::Entry&, rEntry, 
 IMPL_LINK(Writer2027BlockGalleryPopup, SearchKeyHdl, const KeyEvent&, rKEvt, bool)
 {
     if (lcl_IsPlainKey(rKEvt, KEY_ESCAPE))
-    {
-        // First Escape clears an active search; the second one closes.
-        if (!maSearchText.isEmpty())
-        {
-            m_xSearch->set_text(OUString());
-            return true;
-        }
-        Close();
-        return true;
-    }
+        return true; // framework closes the popover on Escape
     if (lcl_IsPlainKey(rKEvt, KEY_DOWN))
     {
-        // Down from the search box moves into the list.
         if (m_xRows->n_children() > 0)
         {
             m_xRows->grab_focus();
@@ -578,11 +473,6 @@ IMPL_LINK(Writer2027BlockGalleryPopup, TreeKeyHdl, const KeyEvent&, rKEvt, bool)
             ApplyBlock(maRowIds[nSel]);
         return true;
     }
-    if (lcl_IsPlainKey(rKEvt, KEY_ESCAPE))
-    {
-        Close();
-        return true;
-    }
     return false;
 }
 
@@ -599,8 +489,6 @@ IMPL_LINK(Writer2027BlockGalleryPopup, TreeSelectionHdl, weld::ItemView&, rItemV
         return;
     }
 
-    // Inert header rows can never keep selected state: restore the previous
-    // selection immediately.
     if (mnLastSelectedIndex >= 0 && IsSelectableIndex(mnLastSelectedIndex))
     {
         SelectRowIndex(mnLastSelectedIndex, false);
@@ -629,17 +517,11 @@ IMPL_LINK(Writer2027BlockGalleryPopup, TreeMousePressHdl, const MouseEvent&, rEv
         ApplyBlock(maRowIds[nIndex]);
         return true;
     }
-    return false; // header row: let the selection handler restore state
+    return false;
 }
 
 IMPL_LINK(Writer2027BlockGalleryPopup, RowGetSizeHdl, weld::TreeView::get_size_args, aPayload, Size)
 {
-    // Row heights MUST be derived from the render context metrics (the same
-    // device the paint callback draws into) — this is the FmFilterNavigator
-    // convention. The VCL tree stores the returned height verbatim
-    // (SvLBoxString::InitViewData -> mnHeight) and lays out / hit-tests with
-    // it in DEVICE pixels; fixed logical constants collapse the cards on
-    // high-DPI (4K@200%) and make the preview + text block overlap.
     const vcl::RenderContext& rCtx = aPayload.first;
     const tools::Long nTextH = rCtx.GetTextHeight();
     const tools::Long nBaseH = std::max<tools::Long>(nTextH, 12);
@@ -657,8 +539,6 @@ IMPL_LINK(Writer2027BlockGalleryPopup, RowRenderHdl, weld::TreeView::render_args
     const bool bSelected = std::get<2>(aPayload);
     const OUString& rId = std::get<3>(aPayload);
 
-    // A paint-time exception in a custom renderer must never take down the
-    // application: log it and render nothing for that row instead.
     try
     {
         RowRender(rCtx, rRect, bSelected, rId);
@@ -689,14 +569,10 @@ void Writer2027BlockGalleryPopup::RowRender(vcl::RenderContext& rCtx,
     Color aLineColor = aMutedColor;
     aLineColor.Merge(aWindowColor, 140);
 
-    // All vertical metrics derive from the render context text height — the
-    // same device the measure callback used (see RowGetSizeHdl), so cards
-    // stay consistent with the row the tree actually lays out at any DPI.
     const tools::Long nTextH = std::max<tools::Long>(rCtx.GetTextHeight(), 12);
 
     const tools::Long nX = rRect.Left() + ROW_MARGIN;
 
-    // Category header row: muted, all-caps label with a hairline rule.
     if (rId.startsWith(u"h:"_ustr))
     {
         const OUString aLabel
@@ -721,7 +597,6 @@ void Writer2027BlockGalleryPopup::RowRender(vcl::RenderContext& rCtx,
 
     if (bSelected)
     {
-        // Restrained selection: a subtle tint, never the OS slab.
         Color aSelColor(aWindowColor);
         aSelColor.Merge(rStyleSettings.GetHighlightColor(), 80);
         rCtx.Push(vcl::PushFlags::FILLCOLOR | vcl::PushFlags::LINECOLOR);
@@ -733,8 +608,6 @@ void Writer2027BlockGalleryPopup::RowRender(vcl::RenderContext& rCtx,
         rCtx.Pop();
     }
 
-    // 1. Miniature composition preview (left). Height and gutter derive from
-    // the text height so the card scales with the row at any DPI.
     {
         const tools::Long nPrevH = std::max<tools::Long>(nTextH * 5, 60);
         const tools::Long nPrevW = nPrevH * 3 / 2;
@@ -750,7 +623,6 @@ void Writer2027BlockGalleryPopup::RowRender(vcl::RenderContext& rCtx,
     const tools::Long nTextX = nX + nTextH * 11;
     const tools::Long nTextMaxW = rRect.GetWidth() - (nTextX - rRect.Left()) - ROW_MARGIN;
 
-    // 2. Block name (bold).
     {
         vcl::Font aNameFont(rCtx.GetFont());
         aNameFont.SetWeight(WEIGHT_BOLD);
@@ -763,7 +635,6 @@ void Writer2027BlockGalleryPopup::RowRender(vcl::RenderContext& rCtx,
         rCtx.Pop();
     }
 
-    // 3. One-line description (muted).
     {
         vcl::Font aDescFont(rCtx.GetFont());
         aDescFont.SetFontSize(Size(0, nTextH * 9 / 10));
@@ -775,7 +646,6 @@ void Writer2027BlockGalleryPopup::RowRender(vcl::RenderContext& rCtx,
         rCtx.Pop();
     }
 
-    // 4. Insertion policy hint (subtle).
     {
         vcl::Font aHintFont(rCtx.GetFont());
         aHintFont.SetFontSize(Size(0, nTextH * 8 / 10));
@@ -804,13 +674,6 @@ void Writer2027BlockGalleryPopup::RowRender(vcl::RenderContext& rCtx,
                                 nTextMaxW);
         rCtx.Pop();
     }
-}
-
-IMPL_LINK_NOARG(Writer2027BlockGalleryPopup, PopupClosedHdl, weld::Popover&, void)
-{
-    mbOpen = false;
-    mnLastSelectedIndex = -1;
-    m_aCloseHdl.Call(*this);
 }
 
 } // namespace svx::writer2027

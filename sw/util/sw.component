@@ -34,6 +34,14 @@
       constructor="lo_writer_Writer2027TypeSystemToolBoxControl_get_implementation">
     <service name="com.sun.star.frame.ToolbarController"/>
   </implementation>
+  <implementation name="lo.writer.Writer2027InsertBlockToolBoxControl"
+      constructor="lo_writer_Writer2027InsertBlockToolBoxControl_get_implementation">
+    <service name="com.sun.star.frame.ToolbarController"/>
+  </implementation>
+  <implementation name="lo.writer.Writer2027DocumentKitToolBoxControl"
+      constructor="lo_writer_Writer2027DocumentKitToolBoxControl_get_implementation">
+    <service name="com.sun.star.frame.ToolbarController"/>
+  </implementation>
   <implementation name="com.sun.star.comp.sw.Writer2027StyleGalleryToolBoxControl"
       constructor="sw_Writer2027StyleGalleryToolBoxControl_get_implementation">
     <service name="com.sun.star.frame.ToolbarController"/>
