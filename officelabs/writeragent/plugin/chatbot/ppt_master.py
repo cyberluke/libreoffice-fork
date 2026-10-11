@@ -9,46 +9,17 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from plugin.framework.prompts import get_chat_response_format_instructions
 from plugin.framework.tool import ToolBase, ToolContext
 
 log = logging.getLogger(__name__)
 
-# Live PPT-Master turns use the skill pack (SKILL.md), not this constant.
-PPT_MASTER_SUB_AGENT_INSTRUCTIONS = """PPT-MASTER MODE (venv worker):
-You run the upstream ppt-master workflow with filesystem + script access in the user Python venv.
-
-WORKFLOW:
-1. SKILL.md and routing files are pre-loaded; use read_ppt_master_workflow_file for references/ when needed.
-2. Use run_ppt_master_script for upstream commands under scripts/ (project_manager, pdf_to_md, svg_to_pptx, etc.).
-3. Use read_project_file / write_project_file for project artifacts (svg_output/, design_spec.md, …).
-4. When exports are ready, call export_presentation_project on the host to import into the active Impress/Draw document.
-5. validate_ppt_master_project checks project artifacts before export.
-6. apply_ppt_master_template_fill and apply_ppt_master_native_enhance for template-fill and enhancement routes.
-
-REQUIREMENTS:
-- Configured user Python venv with ppt-master requirements.txt installed.
-- PPT-Master data path must contain SKILL.md and scripts/.
-
-HTML RULES:
-- reply_to_user and ppt_master_finished messages must be HTML (see CHAT RESPONSE FORMAT).
-
-COMPLETION:
-- reply_to_user: continue the PPT-Master session.
-- ppt_master_finished: end when the deck is done or the user switches back to Chat mode. Set exported=true if export_presentation_project succeeded."""
-
-
-def get_ppt_master_sub_agent_instructions(ctx: Any | None = None) -> str:
-    """Full system instructions for the PPT-Master smol sub-agent (Impress/Draw sidebar)."""
-    parts = [
-        PPT_MASTER_SUB_AGENT_INSTRUCTIONS,
-        get_chat_response_format_instructions(ctx),
-    ]
-    return "\n\n".join(parts)
-
 
 def _selected_chat_model(ctx: ToolContext) -> str | None:
-    """Send handlers pass the sidebar model id via ToolContext.doc (not the UNO document)."""
+    """Return a model id only when ctx.doc is not a UNO document.
+
+    On the live path ctx.doc is the document model (it has getURL). A leftover
+    string id is the only case that is not a document.
+    """
     doc = ctx.doc
     if doc is None or hasattr(doc, "getURL"):
         return None
@@ -79,10 +50,9 @@ def _run_ppt_master_venv_agent(
     from plugin.framework.thread_guard import on_main_thread
     from plugin.framework.queue_executor import execute_on_main_thread
 
-    # Bugfix: The tool runs on a background thread (is_async=True). Accessing ctx.doc,
-    # calling get_active_document(), or calling getURL() off the main thread (including via
-    # _selected_chat_model) causes a UNO thread safety violation. Wrapping these in
-    # execute_on_main_thread ensures they execute safely on the main thread.
+    # The tool runs on a background thread (is_async=True). ctx.doc,
+    # get_active_document(), and getURL() (including via _selected_chat_model)
+    # are main-thread-only; execute_on_main_thread keeps that access on VCL.
     def _resolve_session_and_model() -> tuple[str, str | None]:
         uno_doc = ctx.doc if hasattr(ctx.doc, "getURL") else get_active_document(get_ctx())
         sess_id = ppt_master_session_id(uno_doc)
@@ -119,6 +89,7 @@ def _run_ppt_master_venv_agent(
         session_id=session_id,
         on_worker_event=on_worker_event,
         stop_checker=stop_checker,
+        cancellation_scope=getattr(ctx, "send_cancellation", None),
     )
 
 

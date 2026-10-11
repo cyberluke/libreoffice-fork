@@ -3,8 +3,10 @@ UI population helpers for LibreOffice dialogs and Settings.
 """
 from typing import Any
 from plugin.framework.config import (
+    LRU_MAX_ITEMS,
     get_config,
     set_config,
+    set_configs,
     get_current_endpoint,
     get_api_key_for_endpoint,
 )
@@ -295,9 +297,9 @@ def populate_combobox_with_lru(
 
     fetch_succeeded = False
     to_show: list[str] = []
+    # get_config LRU values are JSON-shaped; normalize to str ids for the filter.
+    lru_clean = [str(m) for m in lru if not _is_model_combobox_placeholder(str(m))]
     if not auth_blocked:
-        # get_config LRU values are JSON-shaped; normalize to str ids for the filter.
-        lru_clean = [str(m) for m in lru if not _is_model_combobox_placeholder(str(m))]
         to_show = _filter_models_for_provider(lru_clean, provider)
 
         # We do NOT inline-fetch for known massive providers (openrouter, together).
@@ -349,7 +351,13 @@ def populate_combobox_with_lru(
 
     curr_val_str = _sanitize_model_combobox_value(current_val)
     if not auth_blocked and not curr_val_str and req_cap == "text":
-        if provider:
+        # After an endpoint switch, use this endpoint's last-used model (the
+        # LRU is scoped per endpoint, newest first) before the provider default.
+        lru_for_provider = _filter_models_for_provider(lru_clean, provider)
+        if lru_for_provider:
+            curr_val_str = lru_for_provider[0]
+
+        if not curr_val_str and provider:
             from plugin.framework.default_models import get_provider_defaults
 
             curr_val_str = str(get_provider_defaults(provider).get("text_model", "") or "").strip()
@@ -418,31 +426,75 @@ def populate_combobox_with_lru(
         ctrl.setText("")
     return display_val if display_val else ""
 
-def update_lru_history(val: Any, lru_key: str, endpoint: str, max_items: int | None = None) -> None:
-    """Helper to update an LRU list in config. Scoped to endpoint."""
-    if max_items is None:
-        from plugin.framework.config import LRU_MAX_ITEMS
-        max_items = LRU_MAX_ITEMS
+def lru_config_key(lru_key: str, endpoint: str) -> str:
+    """Config key for an LRU list. Endpoint-scoped lists are ``name@url``."""
+    return f"{lru_key}@{endpoint}" if endpoint else lru_key
+
+
+def next_lru_list(current: Any, val: Any, max_items: int) -> list[str] | None:
+    """LRU list after prepending *val*, or None when that would not be a write.
+
+    Blank values are not entries. A value that is already the first item is
+    not a write. *current* may be a non-list (a missing key read as something
+    else); that still becomes a one-item list, matching the old
+    ``update_lru_history`` compare.
+    """
     val_str = str(val).strip()
     if not val_str:
-        return
-
-    scoped_key = f"{lru_key}@{endpoint}" if endpoint else lru_key
-    lru_raw = get_config(scoped_key)
+        return None
     # LRU entries are model id strings; get_config is JSON-shaped so normalize explicitly.
-    lru: list[str] = [str(m) for m in lru_raw] if isinstance(lru_raw, list) else []
-    # Short-circuit if value is already at top of LRU: avoids redundant set_config
-    # and unnecessary config_changed event_bus emissions.
+    lru: list[str] = [str(item) for item in current] if isinstance(current, list) else []
+    # Already at the head: a set_config here would rewrite the file and emit
+    # config:changed for a list the UI already shows first.
     if lru and lru[0] == val_str:
-        return
+        return None
     if val_str in lru:
         lru.remove(val_str)
     lru.insert(0, val_str)
     new_lru = lru[:max_items]
-    old = get_config(scoped_key)
-    if isinstance(old, list) and old == new_lru:
+    if isinstance(current, list) and current == new_lru:
+        return None
+    return new_lru
+
+
+def update_lru_history(val: Any, lru_key: str, endpoint: str, max_items: int | None = None) -> None:
+    """Prepend *val* to an endpoint-scoped LRU list in writeragent.json.
+
+    No write when the value is blank or already the first item. Settings OK
+    and the sidebar model sync do not call this once per key: they merge
+    ``next_lru_list`` into the same ``set_configs`` as the field change.
+    """
+    if max_items is None:
+        max_items = LRU_MAX_ITEMS
+    scoped_key = lru_config_key(lru_key, endpoint)
+    new_lru = next_lru_list(get_config(scoped_key), val, max_items)
+    if new_lru is None:
         return
     set_config(scoped_key, new_lru)
+
+
+def sync_sidebar_image_model(ctrl: Any, update_lru: bool = True) -> str | None:
+    """Persist sidebar image model combobox text to image_model and optionally image_model_lru."""
+    if not ctrl or not hasattr(ctrl, "getText"):
+        return None
+    txt = _sanitize_model_combobox_value(str(ctrl.getText() or ""))
+    if not txt:
+        return None
+    from plugin.framework.client.model_fetcher import get_image_model
+
+    patch: dict[str, Any] = {}
+    if txt != get_image_model():
+        patch["image_model"] = txt
+
+    if update_lru:
+        lru_key = lru_config_key("image_model_lru", get_current_endpoint())
+        updated = next_lru_list(get_config(lru_key), txt, LRU_MAX_ITEMS)
+        if updated is not None:
+            patch[lru_key] = updated
+
+    if patch:
+        set_configs(patch)
+    return txt
 
 
 def sync_sidebar_text_model(ctx: Any, ctrl: Any) -> str | None:
@@ -450,17 +502,30 @@ def sync_sidebar_text_model(ctx: Any, ctrl: Any) -> str | None:
 
     Dropdown picks fire ItemListener; paste/typing only change ComboBox text.
     Send and TextListener call this so get_text_model/get_api_config match the UI.
+
+    Both ``text_model`` and ``model_lru@endpoint`` go in one ``set_configs``
+    when they differ from disk. Separate writes each rewrite
+    ``writeragent.json`` and emit ``config:changed``. A model that already
+    matches, or an LRU head that already matches, is left out of that dict,
+    so one real change is still one write and one event.
     """
+    del ctx  # Listeners pass the panel context; the write uses the config store.
     if not ctrl or not hasattr(ctrl, "getText"):
         return None
     txt = _sanitize_model_combobox_value(str(ctrl.getText() or ""))
     if not txt:
         return None
-    from plugin.framework.client.model_fetcher import get_text_model, set_text_model
+    from plugin.framework.client.model_fetcher import get_text_model
 
+    patch: dict[str, Any] = {}
     if txt != get_text_model():
-        set_text_model(txt, update_lru=False)
-    update_lru_history(txt, "model_lru", get_current_endpoint())
+        patch["text_model"] = txt
+    lru_key = lru_config_key("model_lru", get_current_endpoint())
+    updated = next_lru_list(get_config(lru_key), txt, LRU_MAX_ITEMS)
+    if updated is not None:
+        patch[lru_key] = updated
+    if patch:
+        set_configs(patch)
     return txt
 
 
@@ -514,55 +579,6 @@ def populate_endpoint_selector(ctx: Any, ctrl: Any, current_endpoint: Any) -> No
     if current_url:
         ctrl.setText(current_url)
 
-def get_endpoint_options(services: Any) -> list[dict[str, str]]:
-    """Options provider for AI endpoint combobox in Tools → Options."""
-    options = []
-    presets = ENDPOINT_PRESETS
-    preset_urls = set()
-    for label, url in presets:
-        url_norm = normalize_endpoint_url(url)
-        preset_urls.add(url_norm)
-        options.append({"value": url_norm, "label": label})
-
-    lru = get_config("endpoint_lru")
-    if not isinstance(lru, list):
-        lru = []
-    for url in lru:
-        u = normalize_endpoint_url(url)
-        if not u or u in preset_urls:
-            continue
-        options.append({"value": u, "label": u})
-    return options
-
-def get_text_model_options(services: Any) -> list[dict[str, str]]:
-    """Options provider for the simple text model combobox in Tools → Options."""
-    endpoint = get_current_endpoint()
-    scoped_key = f"model_lru@{endpoint}" if endpoint else "model_lru"
-    lru = get_config(scoped_key)
-    if not isinstance(lru, list):
-        lru = []
-    options = [{"value": "", "label": "(none)"}]
-    for mid in lru:
-        mid_str = str(mid).strip()
-        if not mid_str:
-            continue
-        options.append({"value": mid_str, "label": mid_str})
-    return options
-
-def get_image_model_options(services: Any) -> list[dict[str, str]]:
-    """Options provider for the simple image model combobox in Tools → Options."""
-    endpoint = get_current_endpoint()
-    scoped_key = f"image_model_lru@{endpoint}" if endpoint else "image_model_lru"
-    lru = get_config(scoped_key)
-    if not isinstance(lru, list):
-        lru = []
-    options = [{"value": "", "label": "(none)"}]
-    for mid in lru:
-        mid_str = str(mid).strip()
-        if not mid_str:
-            continue
-        options.append({"value": mid_str, "label": mid_str})
-    return options
 
 def populate_image_model_selector(
     ctx: Any,

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import time
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
@@ -25,6 +24,7 @@ from plugin.embeddings.venv.embeddings_sqlite import (
     delete_paragraph_keys,
     ensure_schema,
     upsert_chunk_with_vector,
+    _conn_operational_error,
     _dim_from_meta_path,
     model_slug,
 )
@@ -44,6 +44,7 @@ class IngestState(TypedDict):
     chunks: NotRequired[list[dict[str, Any]]]
     upserted: NotRequired[int]
     dim: NotRequired[int]
+    heartbeat_fn: NotRequired[Any]
 
 
 def rows_to_chunks(state: IngestState) -> dict[str, Any]:
@@ -76,7 +77,12 @@ def delete_stale(state: IngestState) -> dict[str, Any]:
 
     conn = connect_corpus_db(str(state["db_path"]))
     try:
-        # Try to resolve dimension from model_metadata in the DB first
+        # Cold corpus: model_metadata does not exist until ensure_schema.
+        # Catch this connection's OperationalError and continue. macOS opens
+        # the corpus with pysqlite3 (stdlib sqlite3 has no
+        # enable_load_extension), and pysqlite3.OperationalError does not
+        # subclass sqlite3.OperationalError, so "no such table" would abort
+        # the node.
         if dim is None and build_vectors:
             try:
                 row = conn.execute(
@@ -85,7 +91,7 @@ def delete_stale(state: IngestState) -> dict[str, Any]:
                 ).fetchone()
                 if row is not None:
                     dim = int(row["dim"])
-            except sqlite3.OperationalError:
+            except _conn_operational_error(conn):
                 pass
 
         # Cold build: embedding dim is unknown until embed runs; upsert creates vec_chunks.
@@ -129,7 +135,7 @@ def embed_and_upsert_batches(state: IngestState) -> dict[str, Any]:
             _load_vec_extension(conn)
         schema_dim = _dim_from_meta_path(str(state.get("meta_path") or ""))
 
-        # Try to resolve dimension from model_metadata in the DB first
+        # Same cold-DB catch as delete_stale: this connection's OperationalError.
         if schema_dim is None and build_vectors:
             try:
                 row = conn.execute(
@@ -138,7 +144,7 @@ def embed_and_upsert_batches(state: IngestState) -> dict[str, Any]:
                 ).fetchone()
                 if row is not None:
                     schema_dim = int(row["dim"])
-            except sqlite3.OperationalError:
+            except _conn_operational_error(conn):
                 pass
 
         with_vec = build_vectors and schema_dim is not None
@@ -207,6 +213,7 @@ def embed_and_upsert_batches(state: IngestState) -> dict[str, Any]:
         upserted = 0
         dim = schema_dim or 0
         total_batches = (len(all_chunks) + batch_size - 1) // batch_size
+        heartbeat_fn = state.get("heartbeat_fn")
 
         for batch_index, start in enumerate(range(0, len(all_chunks), batch_size)):
             window = all_chunks[start : start + batch_size]
@@ -236,6 +243,8 @@ def embed_and_upsert_batches(state: IngestState) -> dict[str, Any]:
                 upserted += 1
 
             conn.commit()
+            if heartbeat_fn is not None:
+                heartbeat_fn({"phase": "embed", "chunks": upserted})
             count = corpus_chunk_count(conn)
             _write_meta(state, chunk_count_override=count, dim=dim)
             log.debug(
@@ -346,12 +355,22 @@ def ingest_paragraphs(
     delete_keys: list[dict[str, Any]] | None = None,
     build_fts: bool = False,
     build_vectors: bool = True,
+    fill_vector_gaps: bool = False,
+    heartbeat_fn: Any | None = None,
 ) -> dict[str, Any]:
-    """Run the LangGraph ingest pipeline for changed paragraph rows."""
+    """Run the LangGraph ingest pipeline for changed paragraph rows.
+
+    *fill_vector_gaps* runs the graph even when *rows* and *delete_keys* are
+    empty, so ``embed_and_upsert_batches`` can embed chunks that have no
+    vector for this model.
+    """
     model = (model_name or "").strip()
     if not model and build_vectors:
         raise ValueError("embedding model name is required")
-    if not rows and not delete_keys:
+    # An empty row list still enters the graph. fill_vector_gaps sets
+    # has_missing and calls ingest with no rows so the graph can embed chunks
+    # missing from vec_chunks. Returning here makes that pass a no-op.
+    if not rows and not delete_keys and not fill_vector_gaps:
         return {"indexed": 0, "dim": 0, "storage_backend": "sqlite_vec"}
 
     initial: IngestState = {
@@ -363,6 +382,8 @@ def ingest_paragraphs(
         "rows": list(rows or []),
         "delete_keys": list(delete_keys or []),
     }
+    if heartbeat_fn is not None:
+        initial["heartbeat_fn"] = heartbeat_fn
     final = _get_ingest_graph().invoke(initial)
     upserted = int(final.get("upserted") or 0)
     dim = int(final.get("dim") or 0)

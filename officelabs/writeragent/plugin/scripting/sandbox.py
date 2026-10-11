@@ -9,12 +9,14 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     import subprocess
+    from collections.abc import Sequence
 
 from plugin.framework.deal_shim import (
     DEAL_MAX_ARGV,
@@ -30,10 +32,12 @@ from plugin.framework.deal_shim import (
 # --- Import whitelist (shared by venv_sandbox and import_policy) ---
 
 # Dynamically sync/mirror allowed and dangerous modules from smolagents to avoid silent drift.
+# Note: LibreHarper bundles sandbox.py for wrap_command_for_sandbox without bundling
+# smolagents; fallback tuples ensure sandbox.py can still be imported in that slim package.
 try:
     from plugin.contrib.smolagents.utils import BASE_BUILTIN_MODULES as _BASE_BUILTIN
     BASE_BUILTIN_MODULES: tuple[str, ...] = tuple(_BASE_BUILTIN)
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     BASE_BUILTIN_MODULES = (
         "collections",
         "datetime",
@@ -51,7 +55,7 @@ except ImportError:
 try:
     from plugin.contrib.smolagents.local_python_executor import DANGEROUS_MODULES as _DANGEROUS
     DANGEROUS_MODULES: tuple[str, ...] = tuple(_DANGEROUS)
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     DANGEROUS_MODULES = (
         "builtins",
         "io",
@@ -65,9 +69,48 @@ except ImportError:
         "sys",
     )
 
+
+def _writeragent_alias_mirrors(entries: tuple[str, ...]) -> tuple[str, ...]:
+    """``writeragent.X`` spellings of plugin modules already on the allowlist.
+
+    AliasImporter maps ``writeragent.X`` to ``plugin.X``. A blanket
+    ``writeragent.*`` made that map every plugin module, so a sandboxed script
+    could import ``plugin.framework.config`` and ``LlmClient``. The vendored
+    checker cannot translate the alias, so each allowlisted ``plugin.`` entry
+    is repeated under ``writeragent.``.
+    """
+    mirrors: list[str] = []
+    for entry in entries:
+        if entry.startswith("plugin."):
+            mirrors.append("writeragent." + entry[len("plugin."):])
+    return tuple(mirrors)
+
+
 # Curated by WriterAgent (see docs/enabling_numpy_in_libreoffice.md)—not "whatever is in the venv".
-VENV_AUTHORIZED_IMPORTS: tuple[str, ...] = (
+# No ``writeragent.*``: that wildcard is not an allow. See ``import_authorized``.
+# These libraries (pandas.*, numpy.*, PIL.*, matplotlib.*) can read/write files
+# (e.g. DataFrame.to_csv, plt.savefig). That is accepted on purpose: compute callers
+# are presumed trusted, and the container plus a scrubbed environment is the boundary.
+# We do not want arbitrary writes as a goal; if callers ever become untrusted, revisit
+# this allowlist (narrow to the submodules formulas need). Review noted 2026-10-06.
+_VENV_STDLIB: tuple[str, ...] = (
+    "copy",
+    "csv",
+    "dataclasses",
+    "decimal",
+    "enum",
+    "fractions",
+    "functools",
+    "json",
+    "operator",
     "platform",
+    "pprint",
+    "string",
+    "textwrap",
+    "typing",
+)
+
+_VENV_PACKAGES: tuple[str, ...] = (
     "numpy",
     "numpy.*",
     "pandas",
@@ -93,47 +136,15 @@ VENV_AUTHORIZED_IMPORTS: tuple[str, ...] = (
     "pandas_montecarlo",
     "pandas_montecarlo.*",
     "cv2",
-    "json",
-    "csv",
-    "decimal",
-    "fractions",
-    "functools",
-    "operator",
-    "string",
-    "textwrap",
-    "enum",
-    "dataclasses",
-    "typing",
-    "copy",
-    "pprint",
-    "webview",
-    "rocher",
-    "jedi",
-    "PyQt6",
-    "PyQt6.QtWebEngineWidgets",
-    "qtpy",
+    # webview / PyQt / jedi are editor-only. They are probed in a one-shot
+    # subprocess (venv_diagnostics), not imported into the warm =PY() worker.
     "writeragent",
-    "writeragent.*",
     "plugin.scripting.writeragent_api",
     "plugin.scripting.writeragent_api.*",
     "plugin.scripting.writeragent_namespace",
     "plugin.scripting.writeragent_namespace.*",
     "plugin.scripting.payload_codec",
-    "plugin.embeddings.venv.embeddings_index",
-    "plugin.embeddings.venv.embeddings_sqlite",
-    "plugin.embeddings.venv.embeddings_llama_index",
-    "plugin.embeddings.venv.embeddings_ingest_graph",
-    "plugin.embeddings.venv.embeddings_search_graph",
-    "plugin.embeddings.venv.embeddings_zvec",
-    "plugin.embeddings.venv.embeddings_hybrid_search",
     "plugin.scripting.analysis",
-    "plugin.scripting.duckdb_sql",
-    "plugin.vision",
-    "plugin.vision.venv.vision",
-    "plugin.vision.vision_common",
-    "plugin.vision.venv.vision_docling",
-    "plugin.vision.venv.vision_paddle",
-    "plugin.vision.venv.vision_html_export",
     "css_inline",
     "latex2mathml",
     "latex2mathml.*",
@@ -148,6 +159,12 @@ VENV_AUTHORIZED_IMPORTS: tuple[str, ...] = (
     "spacytextblob.*",
     "pint",
     "pint.*",
+    # duckdb stays importable so user scripts can call connect/execute/df on
+    # the raw C module. Removing it from this allowlist made `import duckdb`
+    # raise "Import of duckdb is not allowed" before get_safe_module could
+    # return that module. session_duckdb() still returns
+    # GuardedDuckDBConnection for trusted SQL. import_policy keeps the name
+    # out of LLM blurbs.
     "duckdb",
     "duckdb.*",
     "sentence_transformers",
@@ -167,32 +184,124 @@ VENV_AUTHORIZED_IMPORTS: tuple[str, ...] = (
     "plugin.scripting.forecast",
     "plugin.scripting.calc_functions",
     "plugin.scripting.calc_functions.*",
-    "plugin.writer.locale.vale",
-    "plugin.writer.locale.languagetool",
 )
+
+_VENV_AUTHORIZED_IMPORT_BASE: tuple[str, ...] = _VENV_STDLIB + _VENV_PACKAGES
+
+# Script imports whose plugin path stays off the direct list.
+# vision: ``from writeragent.vision import run_vision`` (not plugin.vision.venv.vision).
+# duckdb_sql: SQL templates. ``plugin.scripting.duckdb_sql`` stays unlisted so
+# the LLM blurb and the import-policy test do not grow a direct plugin entry.
+# ``duckdb`` / ``duckdb.*`` above are unchanged.
+_ALIAS_ONLY_IMPORTS: tuple[str, ...] = (
+    "writeragent.vision",
+    "writeragent.scripting.duckdb_sql",
+)
+
+VENV_AUTHORIZED_IMPORTS: tuple[str, ...] = (
+    _VENV_AUTHORIZED_IMPORT_BASE
+    + _writeragent_alias_mirrors(_VENV_AUTHORIZED_IMPORT_BASE)
+    + _ALIAS_ONLY_IMPORTS
+)
+
+
+def _alias_real_module(name: str) -> str | None:
+    """Plugin module a ``writeragent`` alias import loads, else ``None``."""
+    if name == "writeragent":
+        return "plugin.scripting.writeragent_api"
+    if name.startswith("writeragent."):
+        return "plugin" + name[len("writeragent"):]
+    return None
+
+
+@functools.lru_cache(maxsize=128)
+def _compile_allowlist(authorized_imports: tuple[str, ...]) -> tuple[frozenset[str], tuple[str, ...]]:
+    exact: set[str] = set()
+    wildcards: list[str] = []
+    for entry in authorized_imports:
+        if entry == "*":
+            wildcards.append("")
+        elif entry.endswith(".*"):
+            prefix = entry[:-2]
+            exact.add(prefix)
+            wildcards.append(prefix + ".")
+        else:
+            exact.add(entry)
+    return frozenset(exact), tuple(wildcards)
+
+
+def _matches_allowlist(name: str, exact: frozenset[str], wildcards: tuple[str, ...]) -> bool:
+    if name in exact:
+        return True
+    return any(name.startswith(p) for p in wildcards)
+
+
+def import_authorized(name: str, authorized_imports: Sequence[str]) -> bool:
+    """Whether *name* is on the sandbox import allowlist.
+
+    An intermediate trie node such as 'plugin' or 'plugin.scripting' is not
+    an authorized import. Require an exact allowlist entry or a wildcard
+    prefix ('a.b.*' matching 'a.b' and 'a.b.<child>'). Precompute exact names
+    and wildcard prefixes per allowlist instead of rebuilding the trie on
+    every check.
+
+    A ``writeragent.*`` import is allowed only when the plugin module
+    AliasImporter would load is on the same list, or the alias itself is an
+    explicit entry. The blanket pattern ``writeragent.*`` is ignored: it
+    authorized every alias, and the hook then loaded ``plugin.framework.config``
+    and ``LlmClient``. Names that are not aliases, including ``duckdb`` and
+    ``duckdb.*``, are checked against the precomputed allowlist.
+    """
+    # crosshair: off
+    tuple_imports = tuple(authorized_imports)
+    exact, wildcards = _compile_allowlist(tuple_imports)
+
+    real = _alias_real_module(name)
+    if real is None:
+        return _matches_allowlist(name, exact, wildcards)
+
+    if _matches_allowlist(real, exact, wildcards):
+        return True
+
+    if "writeragent.*" in tuple_imports:
+        without_blanket = tuple(item for item in tuple_imports if item != "writeragent.*")
+        exact_no_blanket, wildcards_no_blanket = _compile_allowlist(without_blanket)
+        return _matches_allowlist(name, exact_no_blanket, wildcards_no_blanket)
+
+    return _matches_allowlist(name, exact, wildcards)
 
 
 # In-process LO embedded sandbox (execute_python_script) — stdlib-only extras beyond BASE_BUILTIN_MODULES.
-CALC_AUTHORIZED_IMPORTS: tuple[str, ...] = (
-    "math",
-    "datetime",
-    "random",
-    "json",
-    "re",
-    "collections",
-    "itertools",
-    "statistics",
-)
+CALC_AUTHORIZED_IMPORTS: tuple[str, ...] = tuple(sorted(set(BASE_BUILTIN_MODULES) | {"json"}))
 
 # --- Subprocess environment ---
 
-_BLOCKED_ENV_SUBSTR = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL")
+_BLOCKED_ENV_TOKENS = frozenset({"KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "CREDENTIAL"})
+# XAUTHORITY contains AUTH but is the X11 cookie path, not a credential name.
+_ENV_CREDENTIAL_ALLOW = frozenset({"XAUTHORITY"})
+# Token prefixes that are known non-credential device or system names (e.g. KEYBOARD_*).
+_ENV_TOKEN_ALLOW = frozenset({"KEYBOARD"})
+
 # LibreOffice sets PYTHONHOME/PYTHONPATH to its bundled stdlib; letting these
 # leak into a venv subprocess causes SRE module mismatch and import failures.
-_BLOCKED_ENV_EXACT = {"PYTHONHOME", "PYTHONPATH", "LD_LIBRARY_PATH"}
-
-_NOT_SET = "__not_set__"
-_cached_sandbox: str | None = _NOT_SET  # type: ignore[assignment]  # sentinel
+# LD_PRELOAD, LD_AUDIT, and DYLD_INSERT_LIBRARIES run code before the harness.
+# PYTHONSTARTUP, PYTHONUSERBASE, PYTHONBREAKPOINT, PYTHONINSPECT alter python execution.
+# DATABASE_URL is a common connection string containing database credentials.
+# WRITERAGENT_COMPUTE_WORKER is compute-service only; venv workers support bidirectional tool calls.
+_BLOCKED_ENV_EXACT = {
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "PYTHONUSERBASE",
+    "PYTHONBREAKPOINT",
+    "PYTHONINSPECT",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "DYLD_INSERT_LIBRARIES",
+    "DATABASE_URL",
+    "WRITERAGENT_COMPUTE_WORKER",
+}
 
 _PIPE_BUF_TARGET = 1024 * 1024
 
@@ -202,13 +311,19 @@ _DEAL_SCRUB_DICT = 1 if UNDER_CROSSHAIR else DEAL_MAX_ARGV
 _DEAL_SCRUB_KEY = 2 if UNDER_CROSSHAIR else DEAL_MAX_TOKEN
 _DEAL_SCRUB_VAL = 4 if UNDER_CROSSHAIR else DEAL_MAX_ARGV
 
-# cover-all 35526755391: basename ~10m under str_bounded path. ASCII short under CrossHair.
-_DEAL_BASENAME_LEN = 8 if UNDER_CROSSHAIR else DEAL_MAX_PATH
+
+def _deal_scrub_env_ok_pytest(base: object) -> bool:
+    # os.environ values (PATH) exceed DEAL_MAX_ARGV and names can exceed
+    # a token. The old cap raised PreContractError before secrets were
+    # dropped. Values must stay str so the post (str→str) holds.
+    # CrossHair keeps the one-entry domain.
+    if base is None:
+        return True
+    return isinstance(base, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in base.items())
 
 
-@deal.pre(
-    lambda base: base is None
-    or (
+def _deal_scrub_env_ok_crosshair(base: object) -> bool:
+    return base is None or (
         isinstance(base, dict)
         and len(base) <= _DEAL_SCRUB_DICT
         and all(
@@ -219,12 +334,61 @@ _DEAL_BASENAME_LEN = 8 if UNDER_CROSSHAIR else DEAL_MAX_PATH
             for k, v in base.items()
         )
     )
-)
+
+
+_deal_scrub_env_ok = _deal_scrub_env_ok_crosshair if UNDER_CROSSHAIR else _deal_scrub_env_ok_pytest
+
+
+def _deal_path_ok_pytest(path: object) -> bool:
+    # Real venv and workspace paths are longer than DEAL_MAX_PATH (256).
+    # The cap raised PreContractError instead of the body's bool/strip.
+    return isinstance(path, str)
+
+
+def _deal_path_ok_crosshair(path: object) -> bool:
+    return str_bounded(path, DEAL_MAX_PATH)
+
+
+_deal_path_ok = _deal_path_ok_crosshair if UNDER_CROSSHAIR else _deal_path_ok_pytest
+
+# cover-all 35526755391: basename ~10m under str_bounded path. ASCII short under CrossHair.
+_DEAL_BASENAME_LEN = 8 if UNDER_CROSSHAIR else DEAL_MAX_PATH
+
+
+def _env_name_is_credential(name: str) -> bool:
+    """True when an env name is a credential, matched on ``_`` tokens.
+
+    Match tokens that equal, start with, or end with a blocked word.
+    Prefix-only matching let OPENAI_APIKEY, GITHUB_APITOKEN, AWS_SECRETKEY,
+    and DATABASE_URL/*_DSN through, and blocked KEYBOARD_*. KEYBOARD tokens
+    are allowed. DATABASE_URL and names ending in _DSN are blocked.
+    """
+    nu = name.upper()
+    if nu in _ENV_CREDENTIAL_ALLOW:
+        return False
+    if nu == "DATABASE_URL" or nu == "DSN" or nu.endswith("_DSN"):
+        return True
+    tokens = [part for part in nu.replace("-", "_").split("_") if part]
+    for token in tokens:
+        if any(token == allowed or token.startswith(allowed) for allowed in _ENV_TOKEN_ALLOW):
+            continue
+        for word in _BLOCKED_ENV_TOKENS:
+            if (
+                token == word
+                or token.startswith(word)
+                or token.endswith(word)
+                or token.endswith(word + "S")
+            ):
+                return True
+    return False
+
+
+@deal.pre(lambda base: _deal_scrub_env_ok(base))
 @deal.post(lambda result: isinstance(result, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in result.items()))
 @inverse_ensure(lambda base, result: all(k.upper() not in _BLOCKED_ENV_EXACT for k in result))
-@inverse_ensure(lambda base, result: all(not any(s in k.upper() for s in _BLOCKED_ENV_SUBSTR) for k in result))
+@inverse_ensure(lambda base, result: all(not _env_name_is_credential(k) for k in result))
 @deal.ensure(
-    lambda base, result: (base is None or len(base) == 0)
+    lambda base, result: base is None
     or (
         result.get("PYTHONIOENCODING") == "utf-8"
         and result.get("PYTHONUTF8") == "1"
@@ -232,46 +396,55 @@ _DEAL_BASENAME_LEN = 8 if UNDER_CROSSHAIR else DEAL_MAX_PATH
     )
 )
 def scrub_subprocess_env(base: dict[str, str] | None) -> dict[str, str]:
-    """Drop likely-secret vars and LO Python overrides from the environment passed to venv Python."""
-    if base is None or len(base) == 0:
+    """Drop likely-secret vars and LO Python overrides from the environment passed to venv Python.
+
+    Only ``base is None`` returns {}. An empty dict still receives the UTF-8
+    and bytecode overrides. Returning {} for {} skipped those overrides.
+    """
+    if base is None:
         return {}
     out: dict[str, str] = {}
     for k, v in base.items():
         ku = k.upper()
         if ku in _BLOCKED_ENV_EXACT:
             continue
-        if any(s in ku for s in _BLOCKED_ENV_SUBSTR):
+        if _env_name_is_credential(k):
             continue
         out[k] = v
-    out.setdefault("PYTHONIOENCODING", "utf-8")
-    out.setdefault("PYTHONUTF8", "1")
-    out.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+    # setdefault kept whatever the parent already had. Callers pass
+    # dict(os.environ) (venv worker, editor host, compute worker). A latin-1
+    # PYTHONIOENCODING, PYTHONUTF8=0, or PYTHONDONTWRITEBYTECODE=0 then failed
+    # the ensure in deal builds and spawned the child with that encoding once
+    # release builds strip deal. Force the values the postcondition requires.
+    out["PYTHONIOENCODING"] = "utf-8"
+    out["PYTHONUTF8"] = "1"
+    out["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Child processes should log to the same writeragent_debug.log. Read the
+    # path at call time (logging may not be initialized at import). Use the
+    # public getter; a private import plus bare ``except Exception`` hid
+    # failures other than a missing logging module.
     try:
-        from plugin.framework.logging import _debug_log_path
-        if _debug_log_path:
-            out["WRITERAGENT_DEBUG_LOG_PATH"] = _debug_log_path
-    except Exception:
-        pass
+        from plugin.framework.logging import get_debug_log_path
+    except ImportError:
+        return out
+    debug_log_path = get_debug_log_path()
+    if debug_log_path:
+        out["WRITERAGENT_DEBUG_LOG_PATH"] = debug_log_path
     return out
 
 
+@functools.cache
 def detect_sandbox() -> str | None:
     """Return ``'flatpak'``, ``'snap'``, or ``None``.
 
     The result is cached because sandbox status cannot change at runtime.
     """
     # crosshair: off
-    global _cached_sandbox
-    if _cached_sandbox is not _NOT_SET:
-        return _cached_sandbox
-
     if os.path.exists("/.flatpak-info") or os.environ.get("FLATPAK_ID"):
-        _cached_sandbox = "flatpak"
-    elif os.environ.get("SNAP_NAME"):
-        _cached_sandbox = "snap"
-    else:
-        _cached_sandbox = None
-    return _cached_sandbox
+        return "flatpak"
+    if os.environ.get("SNAP_NAME"):
+        return "snap"
+    return None
 
 
 def optimize_pipe(pipe_fd: int) -> None:
@@ -330,14 +503,13 @@ def wrap_command_for_sandbox(cmd: list[str]) -> list[str]:
 
 def _reset_cache() -> None:  # pyright: ignore[reportUnusedFunction]  # test helper to clear sandbox path cache
     """Reset the cached detection result (for tests only)."""
-    global _cached_sandbox
-    _cached_sandbox = _NOT_SET  # type: ignore[assignment]
+    detect_sandbox.cache_clear()
 
 
 # --- Interpreter resolution ---
 
 
-@deal.pre(lambda path: str_bounded(path, DEAL_MAX_PATH))
+@deal.pre(lambda path: _deal_path_ok(path))
 def _strip_surrounding_quotes(path: str) -> str:
     """Strip one layer of matching quotes (Windows Explorer \"Copy as path\")."""
     # crosshair: off
@@ -388,9 +560,10 @@ def _normalize_venv_path_input(venv_dir: str) -> str:
 
 @deal.pre(lambda base: ascii_bounded(base, _DEAL_BASENAME_LEN))
 def _is_acceptable_python_basename(base: str) -> bool:
-    """True for python / python3 / python.exe; false for pythonw (no console I/O)."""
+    """True for python / python3 / python.exe; false for pythonw and -config scripts."""
+    # python3.X-config scripts are shell wrappers, not Python interpreters.
     lower = base.lower()
-    if lower in ("pythonw", "pythonw.exe"):
+    if lower in ("pythonw", "pythonw.exe") or lower.endswith(("-config", "-config.exe")):
         return False
     return lower.startswith("python")
 
@@ -517,8 +690,14 @@ def _python_candidates_in_bin_dir(bin_dir: str) -> list[str]:
     else:
         for name in ("python", "python3"):
             candidates.append(os.path.join(bin_dir, name))
+    # os.listdir raises OSError on a race or an unreadable directory. Same
+    # guard as _bundled_lo_python_candidates.
     if os.path.isdir(bin_dir):
-        for entry in sorted(os.listdir(bin_dir)):
+        try:
+            entries = sorted(os.listdir(bin_dir))
+        except OSError:
+            entries = []
+        for entry in entries:
             if entry.startswith("python3."):
                 candidates.append(os.path.join(bin_dir, entry))
     return candidates
@@ -591,24 +770,34 @@ def resolve_venv_python(venv_dir: str) -> Optional[str]:
     return _first_executable_python(candidates)
 
 
-@deal.pre(lambda target_path, root_dir: str_bounded(target_path, DEAL_MAX_PATH) and str_bounded(root_dir, DEAL_MAX_PATH))
+@deal.pre(lambda target_path, root_dir: _deal_path_ok(target_path) and _deal_path_ok(root_dir))
 @deal.post(lambda result: isinstance(result, bool))
 @deal.ensure(
     lambda target_path, root_dir, result: (
         not result
         or os.path.commonpath(
-            [os.path.abspath(os.path.join(os.path.abspath(root_dir), target_path)), os.path.abspath(root_dir)]
+            [
+                os.path.realpath(os.path.join(os.path.realpath(root_dir), target_path)),
+                os.path.realpath(root_dir),
+            ]
         )
-        == os.path.abspath(root_dir)
+        == os.path.realpath(root_dir)
     )
 )
 def is_safe_workspace_path(target_path: str, root_dir: str) -> bool:
-    """Return True if *target_path* resolves strictly inside *root_dir* (prevents path traversal)."""
+    """Return True if *target_path* resolves strictly inside *root_dir*.
+
+    ``realpath`` follows symlinks. ``abspath`` only collapses ``..``, so a
+    link inside the root that pointed outside used to count as safe.
+    """
     if not target_path or not root_dir:
         return False
     try:
-        abs_root = os.path.abspath(root_dir)
-        abs_target = os.path.abspath(os.path.join(abs_root, target_path))
+        # abspath left symlink targets unchecked: root/link -> /etc/passwd
+        # stayed "inside" root because the link path itself was inside.
+        # realpath resolves that target before the commonpath comparison.
+        abs_root = os.path.realpath(root_dir)
+        abs_target = os.path.realpath(os.path.join(abs_root, target_path))
         return os.path.commonpath([abs_target, abs_root]) == abs_root
     except Exception:
         return False

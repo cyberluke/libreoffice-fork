@@ -43,6 +43,8 @@ config:
     default: false
     widget: checkbox
     label: Enable Speech Output (TTS)
+    # Default checkbox width is 120 and clips this caption. Dutch is longer.
+    width: 220
     helper: Speak assistant responses aloud using text-to-speech.
 
   tts_sentence_mode:
@@ -102,7 +104,7 @@ config:
     # so Voice's right edge no longer matched Provider/Model/Speed. inline
     # keeps the next control (Test voice) on this row without narrowing it.
     inline: true
-    options_provider: plugin.audio.tts_service:settings_voice_options
+    options_provider: plugin.audio.tts_voices:settings_voice_options
     options:
       - value: "alloy"
         label: "alloy (OpenAI Neutral)"

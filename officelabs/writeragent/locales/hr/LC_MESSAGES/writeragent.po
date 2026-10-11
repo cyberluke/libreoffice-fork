@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-26 14:02-0400\n"
+"POT-Creation-Date: 2026-10-07 23:17-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: Croatian <LL@li.org>\n"
@@ -192,17 +192,17 @@ msgstr "Ponovna izgradnja nije uspjela: "
 msgid "TLS/SSL Error: {0}"
 msgstr "TLS/SSL pogreška: {0}"
 
-#: plugin/framework/errors.py
+#: plugin/framework/errors.py plugin/framework/client/errors.py
 msgid "Invalid API Key. Please check your settings."
 msgstr "Nevažeći API ključ. Molimo provjerite svoje postavke."
 
-#: plugin/framework/errors.py
+#: plugin/framework/errors.py plugin/framework/client/errors.py
 msgid "API access Forbidden. Your key may lack permissions for this model."
 msgstr ""
 "Pristup API-ju je zabranjen. Vašem ključu možda nedostaju dozvole za ovaj "
 "model."
 
-#: plugin/framework/errors.py
+#: plugin/framework/errors.py plugin/framework/client/errors.py
 msgid "Endpoint not found (404). Check your URL and Model name."
 msgstr ""
 "Krajnja točka nije pronađena (404). Provjerite svoj URL i naziv modela."
@@ -287,17 +287,9 @@ msgstr "AI pružatelj usluge prijavio je pogrešku. Pokušajte ponovno."
 msgid "{resource_type} not found: {identifier}"
 msgstr "{resource_type} nije pronađen: {identifier}"
 
-#: plugin/framework/config_schema.py
-msgid "Chat max tokens must be >= 0"
-msgstr "Maksimalni broj tokena za chat mora biti >= 0"
-
-#: plugin/framework/config_schema.py
-msgid "Request timeout must be > 0"
-msgstr "Vremensko ograničenje zahtjeva mora biti > 0"
-
-#: plugin/framework/config_schema.py
-msgid "Temperature must be <= 1.0"
-msgstr "Temperatura mora biti <= 1.0"
+#: plugin/framework/queue_executor.py
+msgid "Waiting for another document's reply..."
+msgstr "Čekanje na odgovor drugog dokumenta..."
 
 #: plugin/framework/thread_guard.py
 msgid "UNO Thread Violation"
@@ -370,6 +362,7 @@ msgid "Error: {0}"
 msgstr "Pogreška: {0}"
 
 #: plugin/framework/client/llm_client.py
+#: plugin/framework/client/base_provider_shim.py
 msgid "Stream ended with finish_reason=error"
 msgstr "Strujanje je završilo s finish_reason=error"
 
@@ -407,56 +400,129 @@ msgstr "Molimo postavite model u postavkama."
 msgid "Please select a valid model in Settings (not a placeholder)."
 msgstr "Molimo odaberite važeći model u postavkama (ne rezervirano mjesto)."
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_voices.py
 msgid "Hello, I'm your LibreOffice WriterAgent."
 msgstr "Pozdrav, ja sam vaš LibreOffice WriterAgent."
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
 #, python-brace-format
-msgid "Speech request failed ({0}): {1}"
-msgstr "Zahtjev za govor nije uspio ({0}): {1}"
+msgid "Transcribing with local Whisper ({0})…"
+msgstr "Transkripcija uz lokalni Whisper ({0})…"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
 #, python-brace-format
-msgid "Speech request failed: {0}"
-msgstr "Zahtjev za govor nije uspio: {0}"
+msgid ""
+"Transcribing with local Whisper ({0})… The first run downloads the model."
+msgstr ""
+"Transkripcija uz lokalni Whisper ({0})… Prvo pokretanje preuzima model."
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
+msgid "Transcribing audio..."
+msgstr "Transkribiranje zvuka..."
+
+#: plugin/audio/stt_service.py
 #, python-brace-format
-msgid "Speech request failed ({0})."
-msgstr "Zahtjev za govor nije uspio ({0})."
+msgid "Local Whisper failed: {0}"
+msgstr "Lokalni Whisper nije uspio: {0}"
 
-#: plugin/audio/tts_service.py
-msgid "Speech request failed."
-msgstr "Zahtjev za govor nije uspio."
+#: plugin/audio/stt_service.py
+msgid "Local Whisper did not return a transcript."
+msgstr "Lokalni Whisper nije vratio transkript."
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
+#, python-brace-format
+msgid ""
+"Local Whisper runs in the Settings → Python venv, not LibreOffice's Python. "
+"Set the venv, then install with: {0}"
+msgstr ""
+"Lokalni Whisper se pokreće u Postavke → Python venv, a ne u LibreOffice "
+"Pythonu. Postavite venv, zatim instalirajte s: {0}"
+
+#: plugin/audio/stt_service.py
+#, python-brace-format
+msgid ""
+"faster-whisper is not installed in the Settings → Python venv. Install with:"
+" {0}. Settings → Python Test lists it under Audio optional packages."
+msgstr ""
+"faster-whisper nije instaliran u Postavke → Python venv. Instalirajte s: "
+"{0}. Postavke → Python test ga navodi pod neobaveznim audio paketima."
+
+#: plugin/audio/stt_service.py
+msgid "Local Whisper script is missing from the extension."
+msgstr "Skripta za lokalni Whisper nedostaje u proširenju."
+
+#: plugin/audio/stt_service.py
+msgid ""
+"Local Whisper timed out or could not start. Try again, or pick a smaller "
+"Local Model in Settings → Speech."
+msgstr ""
+"Lokalni Whisper je istekao ili se nije mogao pokrenuti. Pokušajte ponovo ili"
+" odaberite manji lokalni model u Postavke → Govor."
+
+#: plugin/audio/stt_service.py
+msgid ""
+"Local Whisper timed out or could not start. The first run downloads model "
+"weights; try again, or pick a smaller Local Model in Settings → Speech."
+msgstr ""
+"Lokalni Whisper je istekao ili se nije mogao pokrenuti. Prvo pokretanje "
+"preuzima težine modela; pokušajte ponovo ili odaberite manji lokalni model u"
+" Postavke → Govor."
+
+#: plugin/audio/stt_service.py
+msgid "No language-model client is available for endpoint speech-to-text."
+msgstr ""
+"Nijedan klijent jezičnog modela nije dostupan za krajnju točku pretvorbe "
+"govora u tekst."
+
+#: plugin/audio/tts_models.py
 msgid "Downloading Kokoro voice model…"
 msgstr "Preuzimanje Kokoro glasovnog modela…"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 msgid "Couldn't download Kokoro; using OS speech"
 msgstr "Nije moguće preuzeti Kokoro; koristi se OS govor"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 #, python-brace-format
 msgid "Downloading Piper voice {0}…"
 msgstr "Preuzimanje Piper glasa {0}…"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 #, python-brace-format
 msgid "Couldn't download {0}; using Lessac"
 msgstr "Nije moguće preuzeti {0}; koristi se Lessac"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 #, python-brace-format
 msgid "Couldn't download {0}; using OS speech"
 msgstr "Nije moguće preuzeti {0}; koristi se OS govor"
 
+#: plugin/audio/tts_endpoint.py
+#, python-brace-format
+msgid "Speech request failed ({0}): {1}"
+msgstr "Zahtjev za govor nije uspio ({0}): {1}"
+
+#: plugin/audio/tts_endpoint.py
+#, python-brace-format
+msgid "Speech request failed: {0}"
+msgstr "Zahtjev za govor nije uspio: {0}"
+
+#: plugin/audio/tts_endpoint.py
+#, python-brace-format
+msgid "Speech request failed ({0})."
+msgstr "Zahtjev za govor nije uspio ({0})."
+
+#: plugin/audio/tts_endpoint.py
+msgid "Speech request failed."
+msgstr "Zahtjev za govor nije uspio."
+
 #: plugin/audio/tts_service.py
-msgid "Kokoro phonemizer failed; this language may be misread."
-msgstr ""
-"Kokoro fonemizator nije uspio; ovaj jezik možda neće biti ispravno pročitan."
+msgid "Misaki not found; Kokoro used English phonemes"
+msgstr "Misaki nije pronađen; Kokoro koristi engleske foneme"
+
+#: plugin/audio/tts_service.py
+msgid "Kokoro used English phonemes for non-English voice"
+msgstr "Kokoro koristi engleske foneme za glas koji nije engleski"
 
 #: plugin/audio/kokoro_g2p.py
 msgid "Installing Kokoro phonemizer…"
@@ -506,6 +572,7 @@ msgid "Cannot import webview (pywebview) in the configured venv."
 msgstr "Nije moguće uvesti webview (pywebview) u konfiguriranom venv-u."
 
 #: plugin/calc/python/init_script_editor.py
+#: plugin/scripting/editor_ui_strings.py
 msgid "Initialization script saved."
 msgstr "Skripta za inicijalizaciju je spremljena."
 
@@ -518,8 +585,7 @@ msgid "Status:"
 msgstr "Status:"
 
 #: plugin/calc/python/cell_editor_ui.py plugin/chatbot/panel_wiring.py
-#: plugin/chatbot/panel.py plugin/scripting/editor_ui_strings.py
-#: plugin/xdl_strings.py
+#: plugin/scripting/editor_ui_strings.py plugin/xdl_strings.py
 msgid "Ready"
 msgstr "Spremno"
 
@@ -659,7 +725,7 @@ msgstr "Slika umetnuta"
 msgid "Images inserted"
 msgstr "Umetnute slike"
 
-#: plugin/calc/python/geometric_recalc.py
+#: plugin/calc/python/geometric_recalc_core.py
 #, python-format
 msgid ""
 "Geometric Recalc Order skipped sheet '%(sheet)s': found %(cap)s or more "
@@ -695,6 +761,15 @@ msgstr "WriterAgent: Uredi odabir (Calc)"
 #: plugin/calc/editselection.py
 msgid "WriterAgent: Extend Selection (Calc)"
 msgstr "WriterAgent: Proširi odabir (Calc)"
+
+#: plugin/calc/vision_egress.py plugin/vision/vision_runner.py
+#, python-brace-format
+msgid ""
+"Image '{name}' not found. Use image_list or leave image_name empty and "
+"select the graphic."
+msgstr ""
+"Slika '{name}' nije pronađena. Koristite image_list ili ostavite image_name "
+"praznim i odaberite grafiku."
 
 #: plugin/calc/vision_egress.py
 msgid "Select an embedded image, then Run again."
@@ -850,6 +925,44 @@ msgstr "Prihvati ovu promjenu"
 msgid "Reject this change"
 msgstr "Odbij ovu promjenu"
 
+#: plugin/writer/edit_review.py
+#, python-brace-format
+msgid "Failed to write streamed text to the document: {0}"
+msgstr "Nije uspjelo pisanje strujanog teksta u dokument: {0}"
+
+#: plugin/writer/edit_review.py
+#, python-brace-format
+msgid ""
+"Failed to finalize the tracked edit and preserve the generated text: {0}"
+msgstr ""
+"Nije uspjelo dovršavanje praćene izmjene i očuvanje generiranog teksta: {0}"
+
+#: plugin/writer/edit_review.py
+msgid ""
+"Failed to collapse the streamed edit into a single tracked change. The "
+"generated text was kept, but it may still appear as multiple tracked "
+"changes."
+msgstr ""
+"Nije uspjelo sažimanje strujane izmjene u jednu praćenu promjenu. Generirani"
+" tekst je zadržan, ali se možda još uvijek prikazuje kao više praćenih "
+"promjena."
+
+#: plugin/writer/edit_review.py
+msgid ""
+"Failed to collapse the streamed continuation into a single tracked change. "
+"The text was kept, but may not be reviewable."
+msgstr ""
+"Nije uspjelo sažimanje strujanog nastavka u jednu praćenu promjenu. Tekst je"
+" zadržan, ali možda nije moguće pregledati izmjene."
+
+#: plugin/writer/editselection.py
+msgid ""
+"This selection contains tracked insertions or deletions. Accept or reject "
+"those changes first. The selection was not modified."
+msgstr ""
+"Ovaj odabir sadrži praćene umetke ili brisanja. Prvo prihvatite ili odbijte "
+"te promjene. Odabir nije izmijenjen."
+
 #: plugin/writer/editselection.py
 msgid "WriterAgent: Extend Selection"
 msgstr "WriterAgent: Proširi odabir"
@@ -972,10 +1085,6 @@ msgid "any"
 msgstr "bilo koji"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "awards"
-msgstr "nagrade"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "best"
 msgstr "najbolje"
 
@@ -1000,10 +1109,6 @@ msgid "concise"
 msgstr "sažeto"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "depth"
-msgstr "dubina"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "description"
 msgstr "opis"
 
@@ -1022,10 +1127,6 @@ msgstr "prikaz"
 #: plugin/chatbot/research_cache_fluff.py
 msgid "each"
 msgstr "svaki"
-
-#: plugin/chatbot/research_cache_fluff.py
-msgid "features"
-msgstr "značajke"
 
 #: plugin/chatbot/research_cache_fluff.py
 msgid "find"
@@ -1080,10 +1181,6 @@ msgid "me"
 msgstr "ja"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "notable"
-msgstr "značajno"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "overall"
 msgstr "sveukupno"
 
@@ -1116,10 +1213,6 @@ msgid "question"
 msgstr "pitanje"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "ratings"
-msgstr "ocjene"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "recommendation"
 msgstr "preporuka"
 
@@ -1132,10 +1225,6 @@ msgid "research"
 msgstr "istraživanje"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "reviews"
-msgstr "recenzije"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "search"
 msgstr "pretraživanje"
 
@@ -1146,10 +1235,6 @@ msgstr "kratko"
 #: plugin/chatbot/research_cache_fluff.py
 msgid "show"
 msgstr "prikaži"
-
-#: plugin/chatbot/research_cache_fluff.py
-msgid "signature"
-msgstr "potpis"
 
 #: plugin/chatbot/research_cache_fluff.py
 msgid "source"
@@ -1188,10 +1273,6 @@ msgid "top"
 msgstr "vrh"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "trends"
-msgstr "trendovi"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "types"
 msgstr "vrste"
 
@@ -1218,6 +1299,10 @@ msgstr "zašto"
 #: plugin/chatbot/research_cache_fluff.py
 msgid "you"
 msgstr "vi"
+
+#: plugin/chatbot/module_config_dialog.py plugin/chatbot/dialog_views.py
+msgid "Invalid Setting"
+msgstr "Nevažeća postavka"
 
 #: plugin/chatbot/dialogs.py
 msgid "Agent requests approval"
@@ -1294,8 +1379,8 @@ msgid "Debug"
 msgstr "Otklanjanje pogrešaka"
 
 #: plugin/chatbot/tool_loop.py plugin/chatbot/panel.py
-msgid "[No speech detected.]"
-msgstr "[Govor nije prepoznat.]"
+msgid "[Voice message]"
+msgstr "[Glasovna poruka]"
 
 #: plugin/chatbot/tool_loop.py
 msgid "Error: Toolkit unavailable"
@@ -1305,7 +1390,7 @@ msgstr "Pogreška: Alatna traka nije dostupna"
 msgid "Chat"
 msgstr "Razgovor"
 
-#: plugin/chatbot/chat_sidebar_mode.py
+#: plugin/chatbot/chat_sidebar_mode.py plugin/xdl_strings.py
 msgid "Image"
 msgstr "Slika"
 
@@ -1365,6 +1450,10 @@ msgstr "Promijeni model (probno)"
 msgid "Slash commands:"
 msgstr "Slash naredbe:"
 
+#: plugin/chatbot/panel.py plugin/xdl_strings.py
+msgid "Send"
+msgstr "Pošalji"
+
 #: plugin/chatbot/panel.py
 msgid "Accept"
 msgstr "Prihvati"
@@ -1382,6 +1471,10 @@ msgid "Waiting for approval…"
 msgstr "Čekanje na odobrenje…"
 
 #: plugin/chatbot/panel.py
+msgid "Hands-free off"
+msgstr "Hands-free isključen"
+
+#: plugin/chatbot/panel.py
 #, python-format
 msgid "Recording audio… (%d ms silence)"
 msgstr "Snimanje zvuka… (%d ms tišine)"
@@ -1390,13 +1483,9 @@ msgstr "Snimanje zvuka… (%d ms tišine)"
 msgid "Record"
 msgstr "Snimi"
 
-#: plugin/chatbot/panel.py
+#: plugin/chatbot/panel.py plugin/chatbot/sidebar_test_hooks.py
 msgid "Stop Rec"
 msgstr "Zaustavi snimanje"
-
-#: plugin/chatbot/panel.py plugin/xdl_strings.py
-msgid "Send"
-msgstr "Pošalji"
 
 #: plugin/chatbot/panel.py
 msgid "Starting..."
@@ -1424,6 +1513,18 @@ msgstr ""
 " prijavite ovo!]"
 
 #: plugin/chatbot/panel.py
+msgid "[Audio error: recording stopped without a sound file.]"
+msgstr "[Zvučna pogreška: snimanje je zaustavljeno bez zvučne datoteke.]"
+
+#: plugin/chatbot/panel.py plugin/scripting/audio_recorder_service.py
+msgid "[No speech detected.]"
+msgstr "[Govor nije prepoznat.]"
+
+#: plugin/chatbot/panel.py
+msgid "[Hands-free off: no speech heard.]"
+msgstr "[Hands-free isključen: govor nije prepoznat.]"
+
+#: plugin/chatbot/panel.py
 #, python-brace-format
 msgid ""
 "[Model {0} does not support native audio. Please select an STT Model in "
@@ -1433,8 +1534,22 @@ msgstr ""
 "postavkama.]"
 
 #: plugin/chatbot/panel.py
+#, python-brace-format
+msgid "[Agent backend error: {0}]"
+msgstr "[Pogreška pozadinskog programa agenta: {0}]"
+
+#: plugin/chatbot/panel.py
 msgid "[Peer send requires Chat mode on this sidebar.]"
 msgstr "[Slanje kolegama zahtijeva način rada Chat na ovoj bočnoj traci.]"
+
+#: plugin/chatbot/record_gesture.py
+msgid "Hands-free recording..."
+msgstr "Snimanje bez ruku..."
+
+#: plugin/chatbot/record_gesture.py
+#, python-format
+msgid "Hands-free… (%d ms silence)"
+msgstr "Hands-free… (%d ms tišine)"
 
 #: plugin/chatbot/settings_dialog.py plugin/xdl_strings.py
 msgid "Square"
@@ -1494,7 +1609,7 @@ msgstr "Spremljeno u predmemoriju istraživanja (ključ: %s)"
 msgid "Opening '%s' for read-only access."
 msgstr "Otvaranje '%s' za pristup samo za čitanje."
 
-#: plugin/chatbot/web_research.py
+#: plugin/chatbot/web_research.py plugin/chatbot/web_research_deep.py
 msgid "Web research completed."
 msgstr "Web istraživanje dovršeno."
 
@@ -1527,10 +1642,6 @@ msgid "Could not start editor: {0}"
 msgstr "Nije bilo moguće pokrenuti uređivač: {0}"
 
 #: plugin/chatbot/send_handlers.py
-msgid "Transcribing audio..."
-msgstr "Transkribiranje zvuka..."
-
-#: plugin/chatbot/send_handlers.py
 #, python-brace-format
 msgid "[Transcription error: {0}]"
 msgstr "[Pogreška transkripcije: {0}]"
@@ -1552,6 +1663,10 @@ msgid ""
 msgstr ""
 "[Pozadinski agent '{0}' nije dostupan. Provjerite postavke (putanja, "
 "instalacija).]"
+
+#: plugin/chatbot/send_handlers.py
+msgid "Thinking..."
+msgstr "Razmišljam..."
 
 #: plugin/chatbot/send_handlers.py
 msgid "Perfect! I'm switching you to the main assistant now."
@@ -1637,7 +1752,6 @@ msgid "Web research collected no usable evidence."
 msgstr "Web istraživanje nije prikupilo nikakve iskoristive dokaze."
 
 #: plugin/chatbot/rich_text_paste.py plugin/chatbot/rich_text.py
-#: plugin/chatbot/panel_factory.py
 msgid "Assistant:"
 msgstr "Pomoćnik:"
 
@@ -1679,10 +1793,6 @@ msgstr ""
 "Dostupna je novija verzija %(name)s (%(version)s). Koristite Alati → "
 "Upravitelj proširenja za provjeru ažuriranja i instalaciju najnovijeg "
 "proširenja."
-
-#: plugin/chatbot/dialog_views.py
-msgid "Invalid Setting"
-msgstr "Nevažeća postavka"
 
 #: plugin/chatbot/dialog_views.py
 #, python-brace-format
@@ -1795,6 +1905,24 @@ msgid "Width:"
 msgstr "Širina:"
 
 #: plugin/chatbot/panel_factory.py
+msgid ""
+"Send. Record: click to record one message, hold 2 seconds for hands-free. "
+"Stop Rec: send the recording (hands-free keeps listening)."
+msgstr ""
+"Pošalji. Snimanje: kliknite za snimanje jedne poruke, držite 2 sekunde za "
+"rad bez ruku. Zaustavi snimanje: pošaljite snimku (rad bez ruku nastavlja "
+"slušati)."
+
+#: plugin/chatbot/panel_factory.py
+msgid ""
+"Stop the reply or speech (also ends hands-free). While recording: the first "
+"click leaves hands-free, the next click cancels the recording."
+msgstr ""
+"Zaustavite odgovor ili govor (također prekida rad bez ruku). Tijekom "
+"snimanja: prvi klik izlazi iz rada bez ruku, sljedeći klik poništava "
+"snimanje."
+
+#: plugin/chatbot/panel_factory.py
 msgid "Speak responses aloud (TTS)"
 msgstr "Izgovori odgovore naglas (TTS)"
 
@@ -1807,6 +1935,10 @@ msgstr "Nova Python skripta"
 #: plugin/xdl_strings.py
 msgid "Script name:"
 msgstr "Naziv skripte:"
+
+#: plugin/scripting/script_dialogs.py
+msgid "Script name cannot start with a reserved prefix."
+msgstr "Naziv skripte ne može započeti rezerviranim prefiksom."
 
 #: plugin/scripting/script_dialogs.py plugin/scripting/editor_ui_strings.py
 #: plugin/xdl_strings.py
@@ -1883,13 +2015,14 @@ msgstr "Skripte"
 msgid "My Scripts"
 msgstr "Moje skripte"
 
-#: plugin/scripting/editor_ui_strings.py
+#: plugin/scripting/editor_ui_strings.py plugin/scripting/document_scripts.py
+#: plugin/scripting/python_runner_ui.py
 msgid "Built-in helpers are read-only. Use Copy to My Scripts to customize."
 msgstr ""
 "Ugrađeni pomoćnici su samo za čitanje. Koristite Kopiraj u Moje skripte za "
 "prilagodbu."
 
-#: plugin/scripting/editor_ui_strings.py
+#: plugin/scripting/editor_ui_strings.py plugin/scripting/document_scripts.py
 msgid ""
 "Document changed — close and reopen Run Python Script to edit document "
 "scripts."
@@ -1976,12 +2109,26 @@ msgid "No document is open to save scripts."
 msgstr "Nijedan dokument nije otvoren za spremanje skripti."
 
 #: plugin/scripting/document_scripts.py
+msgid "Document is read-only or properties cannot be written."
+msgstr "Dokument je samo za čitanje ili se svojstva ne mogu zapisati."
+
+#: plugin/scripting/document_scripts.py
 msgid ""
-"Document is read-only or properties cannot be written. Script saved to your "
-"personal library instead."
+"Document properties cannot be written (missing or unwriteable "
+"UserDefinedProperties)."
 msgstr ""
-"Dokument je samo za čitanje ili se svojstva ne mogu zapisati. Skripta je "
-"umjesto toga spremljena u vašu osobnu biblioteku."
+"Svojstva dokumenta nije moguće zapisati (nedostaju ili nije moguće zapisati "
+"UserDefinedProperties)."
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "'{0}' starts with a reserved prefix."
+msgstr "'{0}' započinje rezerviranim prefiksom."
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "'{0}' is reserved for the workbook init script."
+msgstr "'{0}' je rezervirano za inicijalizacijsku skriptu radne knjige."
 
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
@@ -1989,13 +2136,40 @@ msgid "A script named '{0}' already exists in this document."
 msgstr "Skripta pod nazivom '{0}' već postoji u ovom dokumentu."
 
 #: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "Script '{0}' does not exist in this document."
+msgstr "Skripta '{0}' ne postoji u ovom dokumentu."
+
+#: plugin/scripting/document_scripts.py
 msgid "This Document"
 msgstr "Ovaj dokument"
 
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
-msgid "Saved script '{0}' to My Scripts."
-msgstr "Skripta '{0}' spremljena u Moje skripte."
+msgid "Script '{0}' does not exist in My Scripts."
+msgstr "Skripta '{0}' ne postoji u Mojim skriptama."
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid ""
+"Script '{0}' is not in My Scripts or this document, so it was not saved."
+msgstr ""
+"Skripta '{0}' nije u Mojim skriptama ili ovom dokumentu, stoga nije "
+"spremljena."
+
+#: plugin/scripting/document_scripts.py plugin/scripting/python_runner_ui.py
+msgid "No document is open."
+msgstr "Nijedan dokument nije otvoren."
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "A script named '{0}' already exists in My Scripts. {1}"
+msgstr "Skripta pod nazivom '{0}' već postoji u Mojim skriptama. {1}"
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "Saved script '{0}' to My Scripts. {1}"
+msgstr "Skripta '{0}' spremljena u Moje skripte. {1}"
 
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
@@ -2022,10 +2196,6 @@ msgstr "Skripta pod nazivom '{0}' već postoji u Mojim skriptama."
 msgid "Copied script '{0}' to My Scripts."
 msgstr "Skripta '{0}' je kopirana u Moje skripte."
 
-#: plugin/scripting/document_scripts.py plugin/scripting/python_runner_ui.py
-msgid "No document is open."
-msgstr "Nijedan dokument nije otvoren."
-
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
 msgid "Deleted document script '{0}'."
@@ -2036,9 +2206,23 @@ msgstr "Izbrisana je skripta dokumenta '{0}'."
 msgid "Deleted script '{0}'."
 msgstr "Izbrisana je skripta '{0}'."
 
+#: plugin/scripting/document_scripts.py
+msgid "The document was closed."
+msgstr "Dokument je zatvoren."
+
+#: plugin/scripting/python_runner_ui.py
+msgid "The document is no longer open."
+msgstr "Dokument više nije otvoren."
+
 #: plugin/scripting/python_runner_ui.py
 msgid "PythonScriptDialog could not be loaded from the extension."
 msgstr "PythonScriptDialog se nije mogao učitati iz proširenja."
+
+#: plugin/scripting/python_runner_ui.py
+#, python-format
+msgid "Cannot save to My Scripts: a script named '%s' already exists."
+msgstr ""
+"Nije moguće spremiti u Moje skripte: skripta pod nazivom '%s' već postoji."
 
 #: plugin/scripting/python_runner_ui.py
 #, python-format
@@ -2054,6 +2238,14 @@ msgstr "Skripta '%s' je spremljena u ovaj dokument."
 #, python-format
 msgid "Script '%s' saved successfully."
 msgstr "Skripta '%s' uspješno spremljena."
+
+#: plugin/scripting/python_runner_ui.py
+msgid "Running..."
+msgstr "Pokretanje..."
+
+#: plugin/scripting/python_runner_ui.py
+msgid "Execution Error"
+msgstr "Pogreška pri izvršavanju"
 
 #: plugin/scripting/python_runner_ui.py
 #, python-format
@@ -2088,20 +2280,9 @@ msgstr "Skripta '%s' stvorena u ovom dokumentu."
 msgid "Script '%s' created in My Scripts."
 msgstr "Skripta '%s' stvorena u Mojim skriptama."
 
-#: plugin/scripting/python_runner_ui.py
-msgid "Execution Error"
-msgstr "Pogreška pri izvršavanju"
-
 #: plugin/scripting/python_runner_ui.py plugin/scripting/python_runner.py
 msgid "Script executed successfully."
 msgstr "Skripta uspješno izvršena."
-
-#: plugin/scripting/python_runner_ui.py
-msgid ""
-"Script executed successfully, but returned no result and produced no output."
-msgstr ""
-"Skripta je uspješno izvršena, ali nije vratila rezultat niti proizvela "
-"izlaz."
 
 #: plugin/scripting/python_runner_ui.py
 msgid "Success"
@@ -2145,6 +2326,41 @@ msgid ""
 msgstr ""
 "Nije pronađena izvršna Python datoteka u konfiguriranom venv-u: {0} "
 "(očekivano bin/python, Scripts/python.exe ili env-root python.exe)."
+
+#: plugin/scripting/editor_host.py
+msgid "The script list update timed out."
+msgstr "Vrijeme za ažuriranje popisa skripti je isteklo."
+
+#: plugin/scripting/editor_host.py
+msgid "Script execution failed."
+msgstr "Izvršavanje skripte nije uspjelo."
+
+#: plugin/scripting/editor_host.py
+msgid "Saving the script timed out."
+msgstr "Vrijeme za spremanje skripte je isteklo."
+
+#: plugin/scripting/editor_host.py
+msgid "the initialization script"
+msgstr "inicijalizacijska skripta"
+
+#: plugin/scripting/editor_host.py
+msgid "the LaTeX formula"
+msgstr "LaTeX formula"
+
+#: plugin/scripting/editor_host.py
+msgid "this editor"
+msgstr "ovaj uređivač"
+
+#: plugin/scripting/editor_host.py
+#, python-brace-format
+msgid ""
+"Save changes to {0}?\n"
+"\n"
+"Yes saves them before switching. No discards them. Cancel keeps the current editor."
+msgstr ""
+"Spremiti promjene u {0}?\n"
+"\n"
+"Da ih sprema prije prebacivanja. Ne ih odbacuje. Odustani zadržava trenutni uređivač."
 
 #: plugin/scripting/editor_host.py
 msgid "Could not start the Python editor."
@@ -2216,6 +2432,22 @@ msgstr ""
 "writeragent_debug.log)."
 
 #: plugin/scripting/venv_diagnostics.py
+msgid "UI / Monaco probe failed (see writeragent_debug.log)."
+msgstr "UI / Monaco provjera nije uspjela (pogledajte writeragent_debug.log)."
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "UI / Monaco probe timed out."
+msgstr "UI / Monaco provjera je istekla."
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "DuckDB probe failed (see writeragent_debug.log)."
+msgstr "DuckDB provjera nije uspjela (pogledajte writeragent_debug.log)."
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "DuckDB probe timed out."
+msgstr "DuckDB provjera je istekla."
+
+#: plugin/scripting/venv_diagnostics.py
 msgid "Audio Recording & Speech"
 msgstr "Snimanje zvuka i govor"
 
@@ -2276,6 +2508,10 @@ msgid "Local TTS engines (optional):"
 msgstr "Lokalni TTS strojevi (izborno):"
 
 #: plugin/scripting/venv_diagnostics.py
+msgid "Local Whisper (optional):"
+msgstr "Lokalni Whisper (izborno):"
+
+#: plugin/scripting/venv_diagnostics.py
 msgid "Starting Python worker..."
 msgstr "Pokretanje Python radnika..."
 
@@ -2284,8 +2520,12 @@ msgid "Reading Python version..."
 msgstr "Čitanje verzije Pythona..."
 
 #: plugin/scripting/venv_diagnostics.py
-msgid "Audio & Speech: checking sounddevice and TTS engines..."
-msgstr "Zvuk i govor: provjera zvučnog uređaja i TTS strojeva..."
+msgid "Audio & Speech: checking sounddevice, TTS, and local Whisper..."
+msgstr "Zvuk i govor: provjera sounddevice, TTS-a i lokalnog Whispera..."
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "UI / Monaco Libraries: checking outside the script worker..."
+msgstr "UI / Monaco biblioteke: provjera izvan skriptnog radnika..."
 
 #: plugin/scripting/venv_diagnostics.py
 msgid "Text / NLP Libraries: loading (first run may take a while)..."
@@ -2457,6 +2697,42 @@ msgstr ""
 msgid "{domain} '{helper}' completed. (took {time})"
 msgstr "{domain} '{helper}' dovršeno. (trajalo {time})"
 
+#: plugin/scripting/domain_registry.py
+msgid "Vision Helpers"
+msgstr "Pomoćnici za vid"
+
+#: plugin/scripting/domain_registry.py
+msgid "Math Helpers"
+msgstr "Pomoćnici za matematiku"
+
+#: plugin/scripting/domain_registry.py
+msgid "Units Helpers"
+msgstr "Pomoćnici za jedinice"
+
+#: plugin/scripting/domain_registry.py
+msgid "Analysis Helpers"
+msgstr "Pomoćnici za analizu"
+
+#: plugin/scripting/domain_registry.py
+msgid "SQL Helpers"
+msgstr "SQL pomoćnici"
+
+#: plugin/scripting/domain_registry.py
+msgid "Viz Helpers"
+msgstr "Pomoćnici za vizualizaciju"
+
+#: plugin/scripting/domain_registry.py
+msgid "Quant Helpers"
+msgstr "Kvantitativni pomoćnici"
+
+#: plugin/scripting/domain_registry.py
+msgid "Optimize Helpers"
+msgstr "Pomoćnici za optimizaciju"
+
+#: plugin/scripting/domain_registry.py
+msgid "Forecast Helpers"
+msgstr "Pomoćnici za predviđanje"
+
 #: plugin/scripting/session_manager.py
 msgid ""
 "Reset Python Session for notebooks applies to LibreOffice Writer. Open a "
@@ -2495,6 +2771,10 @@ msgstr ""
 "tablice. Otvorite Calc radnu knjigu i pokušajte ponovno."
 
 #: plugin/scripting/session_manager.py
+msgid "Could not restore the initialization script."
+msgstr "Nije bilo moguće vratiti inicijalizacijsku skriptu."
+
+#: plugin/scripting/session_manager.py
 msgid "Python session reset for this workbook."
 msgstr "Python sesija ponovno je postavljena za ovu radnu knjigu."
 
@@ -2522,6 +2802,12 @@ msgstr ""
 msgid "Python session reset for this document."
 msgstr "Python sesija za ovaj dokument je poništena."
 
+#: plugin/scripting/session_manager.py
+msgid "Reset Python Session applies to Writer, Calc, and Draw documents."
+msgstr ""
+"Ponovno pokretanje Python sesije primjenjuje se na Writer, Calc i Draw "
+"dokumente."
+
 #: plugin/scripting/units.py
 msgid "Units helper failed."
 msgstr "Pomoćnik za jedinice nije uspio."
@@ -2541,6 +2827,11 @@ msgstr "Neuspjelo umetanje rezultata: {error} (trajalo {time})"
 
 #: plugin/scripting/helper_domain.py
 #, python-brace-format
+msgid "{domain} '{helper}' completed. Inserted: {preview} (took {time})"
+msgstr "{domain} '{helper}' dovršen. Umetnuto: {preview} (trajalo {time})"
+
+#: plugin/scripting/helper_domain.py
+#, python-brace-format
 msgid "Plot inserted ({title}). (took {time})"
 msgstr "Grafikon umetnut ({title}). (trajalo {time})"
 
@@ -2548,21 +2839,6 @@ msgstr "Grafikon umetnut ({title}). (trajalo {time})"
 #, python-brace-format
 msgid "Viz '{helper}' completed. {msg}"
 msgstr "Viz '{helper}' dovršen. {msg}"
-
-#: plugin/scripting/helper_domain.py
-#, python-brace-format
-msgid "Math '{helper}' completed. Inserted: {preview} (took {time})"
-msgstr "Math '{helper}' dovršen. Umetnuto: {preview} (trajalo {time})"
-
-#: plugin/scripting/helper_domain.py
-#, python-brace-format
-msgid "Units '{helper}' completed. Inserted: {preview} (took {time})"
-msgstr "Jedinice '{helper}' dovršene. Umetnuto: {preview} (trajalo {time})"
-
-#: plugin/scripting/python_runner.py
-#, python-format
-msgid "Failed to insert result into Calc: %s"
-msgstr "Umetanje rezultata u Calc nije uspjelo: %s"
 
 #: plugin/scripting/python_runner.py
 msgid "Info"
@@ -2613,6 +2889,10 @@ msgstr "Skripta je uspješno izvršena. (trajalo {time})"
 msgid "Script saved."
 msgstr "Skripta spremljena."
 
+#: plugin/scripting/python_runner.py
+msgid "A script is already running."
+msgstr "Skripta je već pokrenuta."
+
 #: plugin/scripting/python_runner.py plugin/xdl_strings.py
 msgid "Run Python Script"
 msgstr "Pokreni Python skriptu"
@@ -2644,17 +2924,26 @@ msgstr ""
 
 #: plugin/vision/vision_runner.py
 #, python-brace-format
-msgid ""
-"Image '{name}' not found. Use image_list or leave image_name empty and "
-"select the graphic."
-msgstr ""
-"Slika '{name}' nije pronađena. Koristite image_list ili ostavite image_name "
-"praznim i odaberite grafiku."
+msgid "Image '{name}' could not be exported."
+msgstr "Slika '{name}' nije se mogla izvesti."
 
 #: plugin/vision/vision_runner.py
 #, python-brace-format
-msgid "Image '{name}' could not be exported."
-msgstr "Slika '{name}' nije se mogla izvesti."
+msgid ""
+"Image is too large to send to the vision worker ({size} bytes; limit "
+"{limit})."
+msgstr ""
+"Slika je prevelika za slanje vizualnom radniku ({size} bajtova; ograničenje "
+"{limit})."
+
+#: plugin/vision/vision_runner.py
+msgid "Cancelled by user."
+msgstr "Otkazano od strane korisnika."
+
+#: plugin/vision/vision_runner.py
+#, python-brace-format
+msgid "Stopped after {count} of {total} images."
+msgstr "Zaustavljeno nakon {count} od {total} slika."
 
 #: plugin/vision/vision_runner.py
 #, python-brace-format
@@ -3105,10 +3394,6 @@ msgid "Image Model:"
 msgstr "Model slike:"
 
 #: plugin/xdl_strings.py
-msgid "Image Settings"
-msgstr "Postavke slike"
-
-#: plugin/xdl_strings.py
 msgid "In-place replacement"
 msgstr "Zamjena na mjestu"
 
@@ -3360,13 +3645,67 @@ msgstr "Grok izgradnja (ACP)"
 msgid "OpenCode (ACP)"
 msgstr "OpenCode (ACP)"
 
+msgid "Prompt for Agent Permissions"
+msgstr "Upit za dopuštenja agenta"
+
+msgid ""
+"Ask for confirmation before allowing the agent to use tools (read files, "
+"execute commands, etc.)"
+msgstr ""
+"Zatraži potvrdu prije dopuštanja agentu korištenje alata (čitanje datoteka, "
+"izvršavanje naredbi itd.)"
+
+msgid "STT Provider"
+msgstr "STT pružatelj"
+
+msgid ""
+"LLM Endpoint uses Audio Model and POST /v1/audio/transcriptions. Local "
+"Whisper runs faster-whisper in the Settings → Python venv (not LibreOffice's"
+" Python)."
+msgstr ""
+"LLM krajnja točka koristi Audio model i POST /v1/audio/transcriptions. "
+"Lokalni Whisper pokreće faster-whisper u Postavke → Python venv (ne "
+"LibreOfficeov Python)."
+
+msgid "LLM Endpoint"
+msgstr "LLM krajnja točka"
+
+msgid "Local Whisper (faster-whisper)"
+msgstr "Lokalni Whisper (faster-whisper)"
+
 msgid "Audio Model:"
 msgstr "Audio model:"
 
-msgid "Speech-to-text model when the chat model cannot take audio input."
+msgid ""
+"Speech-to-text model when STT Provider is LLM Endpoint and the chat model "
+"cannot take audio input."
 msgstr ""
-"Model pretvorbe govora u tekst kada model za razgovor ne može primiti audio "
-"unos."
+"Model pretvaranja govora u tekst kada je STT pružatelj LLM krajnja točka, a "
+"model za razgovor ne može prihvatiti audio unos."
+
+msgid "Local Model"
+msgstr "Lokalni model"
+
+msgid ""
+"faster-whisper size. The first transcription downloads weights into the "
+"Hugging Face cache (base, the default, is about 150 MB; tiny ~75 MB, small "
+"~500 MB, medium ~1.5 GB)."
+msgstr ""
+"Veličina faster-whisper modela. Prva transkripcija preuzima težine u Hugging"
+" Face predmemoriju (base, zadana vrijednost, je oko 150 MB; tiny ~75 MB, "
+"small ~500 MB, medium ~1.5 GB)."
+
+msgid "tiny (~75 MB)"
+msgstr "tiny (~75 MB)"
+
+msgid "base (~150 MB)"
+msgstr "base (~150 MB)"
+
+msgid "small (~500 MB)"
+msgstr "small (~500 MB)"
+
+msgid "medium (~1.5 GB)"
+msgstr "medium (~1.5 GB)"
 
 msgid "Enable Speech Output (TTS)"
 msgstr "Omogući govorni izlaz (TTS)"
@@ -3416,9 +3755,6 @@ msgstr "Kokoro (lokalna neuronska, ONNX CPU)"
 
 msgid "Piper (Local Fast Neural, CPU)"
 msgstr "Piper (lokalna brza neuronska, CPU)"
-
-msgid "LLM Endpoint"
-msgstr "LLM krajnja točka"
 
 msgid "TTS Model"
 msgstr "TTS model"
@@ -4022,10 +4358,12 @@ msgstr ""
 msgid "OCR confidence threshold"
 msgstr "Prag pouzdanosti OCR-a"
 
-msgid "RapidOCR minimum text score. Raise to reduce garbage text."
+msgid ""
+"RapidOCR minimum text score. 0.0 is a real threshold (not the default). "
+"Raise to reduce garbage text."
 msgstr ""
-"Minimalni rezultat teksta za RapidOCR. Povećajte za smanjenje neželjenog "
-"teksta."
+"Minimalni rezultat teksta za RapidOCR. 0.0 je stvarni prag (nije zadana "
+"vrijednost). Povećajte za smanjenje neželjenog teksta."
 
 msgid "OCR entire image"
 msgstr "OCR cijele slike"
@@ -4076,8 +4414,8 @@ msgstr "Model rasporeda"
 msgid "Heron (default)"
 msgstr "Heron (zadano)"
 
-msgid "Egret large (slower"
-msgstr "Egret large (sporije"
+msgid "Egret large (slower, complex docs)"
+msgstr "Egret large (sporije, složeni dokumenti)"
 
 msgid "Extract formulas (LaTeX)"
 msgstr "Izvuci formule (LaTeX)"

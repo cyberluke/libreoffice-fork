@@ -51,7 +51,7 @@ class AddSlide(ToolBase):
 
     def execute(self, ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
         from plugin.draw.bridge import DrawBridge
-        from plugin.draw.transitions import _LAYOUTS, apply_slide_layout, layout_id
+        from plugin.draw.transitions import apply_slide_layout, available_layout_names, layout_id
 
         bridge = DrawBridge(ctx.doc)
         page_idx = kwargs.get("page")
@@ -68,33 +68,45 @@ class AddSlide(ToolBase):
                 layout_name = str(raw).strip().lower()
             # Validate before insert so a bad name does not leave a stray page.
             if layout_id(layout_name) is None:
-                return self._tool_error("Unknown layout: %s" % layout_name, available=sorted(_LAYOUTS.keys()))
+                return self._tool_error("Unknown layout: %s" % layout_name, available=available_layout_names())
 
-        # create_slide uses this same index; do not trust get_active_page_index
-        # after insert — Impress DrawPage.getNumber() is missing/None, so the
-        # bridge helper falls back to 0 even when the controller switched.
-        insert_at = bridge.get_pages().getCount() if page_idx is None else page_idx
-        new_page = bridge.create_slide(page_idx, switch=switch_view)
-        active_idx = insert_at if switch_view else bridge.get_active_page_index()
+        # Do not trust get_active_page_index after insert — Impress
+        # DrawPage.getNumber() is missing/None, so the bridge helper falls
+        # back to 0 even when the controller switched. create_slide returns
+        # the slot the new page actually occupies.
+        new_page, landed = bridge.create_slide(page_idx, switch=switch_view)
+        active_idx = landed if switch_view else bridge.get_active_page_index()
 
         result = {"status": "ok", "message": "Slide added", "active_page_index": active_idx}
-        # insertNewByIndex can attach factory Default even when the deck already
-        # has a designed master (M1′). Copy the neighbor slide's MasterPage.
-        if is_impress:
-            from plugin.draw.designs import inherit_master_from_neighbor
 
-            inherited = inherit_master_from_neighbor(bridge.get_pages(), new_page, insert_at)
-            if inherited:
-                result["master"] = inherited
-        if is_impress and layout_name is not None:
-            result["placeholders_hint"] = "call list_placeholders on this page"
-            # insertNewByIndex is already empty (Layout=20, 0 shapes). _LAYOUTS
-            # "blank"=11 is a different autolayout that still grows placeholders.
-            # Skip assignment so blank/none keep today's empty-page hatch.
-            if layout_name in ("blank", "none"):
-                result["layout"] = "blank"
-            else:
+        try:
+            # insertNewByIndex can attach factory Default even when the deck already
+            # has a designed master (M1′). Copy the neighbor slide's MasterPage.
+            # Pass the landed index: page=0 used to claim insert_at=0 while the
+            # new page sat at 1, so the "neighbor" was the new page itself.
+            if is_impress:
+                from plugin.draw.designs import inherit_master_from_neighbor
+
+                inherited = inherit_master_from_neighbor(bridge.get_pages(), new_page, landed)
+                if inherited:
+                    result["master"] = inherited
+            if is_impress and layout_name is not None:
+                result["placeholders_hint"] = "call list_placeholders on this page"
+                # blank/none are AUTOLAYOUT_NONE (20). insertNewByIndex already
+                # leaves that id with 0 shapes; assigning it keeps the page empty.
+                # Skipping used to be required because the PowerPoint blank id (11)
+                # is AUTOLAYOUT_OBJ and grew a title plus an OLE placeholder.
                 result["layout"] = apply_slide_layout(new_page, layout_name)
+        except Exception as exc:
+            from plugin.framework.errors import is_disposed_exception
+            if is_disposed_exception(exc):
+                raise
+            try:
+                bridge.get_pages().remove(new_page)
+            except Exception:
+                pass
+            return self._tool_error(f"Failed to set layout or master on new slide: {exc}")
+
         return result
 
 
@@ -113,12 +125,19 @@ class DeleteSlide(ToolBase):
         page_idx = kwargs.get("page")
         if page_idx is None:
             return self._tool_error("page is required.")
+        pages = bridge.get_pages()
+        if page_idx < 0 or page_idx >= pages.getCount():
+            return self._tool_error("Page index %s out of range." % page_idx)
+        # A one-page Draw or Impress document keeps its only slide. An
+        # in-range index is not enough to call bridge.delete_slide.
+        # SlideCommandEngine._delete_slide already refuses that case
+        # before it touches the document. Return the same error and skip
+        # the removal when one page remains.
+        if pages.getCount() <= 1:
+            return self._tool_error("Cannot delete the only slide")
         bridge.delete_slide(page_idx)
 
-        # Resolve active index
-        active_idx = bridge.get_active_page_index()
-
-        return {"status": "ok", "message": "Slide deleted", "active_page_index": active_idx}
+        return {"status": "ok", "message": "Slide deleted", "active_page_index": bridge.get_active_page_index()}
 
 
 class ListPages(ToolBase):
@@ -150,7 +169,8 @@ class ReadSlideText(ToolBase):
     tier: str = "core"
 
     def execute(self, ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
-        from plugin.draw.bridge import DrawBridge
+        from plugin.draw.bridge import DrawBridge, find_notes_shape
+        from plugin.framework.errors import ToolExecutionError, is_disposed_exception
 
         bridge = DrawBridge(ctx.doc)
         idx = kwargs.get("page")
@@ -159,11 +179,9 @@ class ReadSlideText(ToolBase):
             actual_idx = bridge.get_active_page_index()
 
         try:
-            page = DrawBridge.resolve_slide(ctx.doc, actual_idx)
-        except IndexError:
-            return self._tool_error("Invalid page index: %s" % actual_idx)
-        except Exception:
-            return self._tool_error("No draw page available.")
+            page = DrawBridge.get_slide_for_tool(ctx.doc, actual_idx)
+        except ToolExecutionError as exc:
+            return self._tool_error(str(exc))
 
         texts = []
         for i in range(page.getCount()):
@@ -174,21 +192,22 @@ class ReadSlideText(ToolBase):
                     entry = {"index": i, "text": txt}
                     try:
                         entry["shape_name"] = shape.Name
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        if is_disposed_exception(exc):
+                            raise
                     texts.append(entry)
-            except Exception:
-                pass
+            except Exception as exc:
+                if is_disposed_exception(exc):
+                    raise
 
-        # Speaker notes
         notes_text = ""
         try:
-            notes_page = page.getNotesPage()
-            if notes_page and notes_page.getCount() > 1:
-                notes_shape = notes_page.getByIndex(1)
-                notes_text = notes_shape.getString()
-        except Exception:
-            pass
+            notes_shape = find_notes_shape(page.getNotesPage())
+            if notes_shape is not None:
+                notes_text = notes_shape.getString() or ""
+        except Exception as exc:
+            if is_disposed_exception(exc):
+                raise
 
         return {"status": "ok", "page": actual_idx, "texts": texts, "notes": notes_text}
 
@@ -210,13 +229,16 @@ class GetPresentationInfo(ToolBase):
         # Dimensions from first page
         width_mm = 0
         height_mm = 0
+        from plugin.framework.errors import is_disposed_exception
+
         if count > 0:
             p = pages.getByIndex(0)
             try:
                 width_mm = p.Width // 100
                 height_mm = p.Height // 100
-            except Exception:
-                pass
+            except Exception as exc:
+                if is_disposed_exception(exc):
+                    raise
 
         # Master pages
         masters = []
@@ -225,8 +247,9 @@ class GetPresentationInfo(ToolBase):
             for i in range(mp.getCount()):
                 m = mp.getByIndex(i)
                 masters.append(m.Name if hasattr(m, "Name") else "Master_%d" % i)
-        except Exception:
-            pass
+        except Exception as exc:
+            if is_disposed_exception(exc):
+                raise
 
         from plugin.draw.bridge import DrawBridge
 
@@ -234,7 +257,7 @@ class GetPresentationInfo(ToolBase):
         active_idx = ctx.active_page_index
         if active_idx is None:
             active_idx = bridge.get_active_page_index()
-        is_impress = hasattr(doc, "getPresentation")
+        is_impress = _is_impress_doc(doc)
 
         return {"status": "ok", "slide_count": count, "width_mm": width_mm, "height_mm": height_mm, "master_slides": masters, "is_impress": is_impress, "active_page_index": active_idx}
 
@@ -294,7 +317,11 @@ class DuplicateSlide(ToolBase):
         activate = kwargs.get("activate", True)
         switch_view = bool(activate if activate is not None else True)
         bridge.duplicate_slide(page_idx, switch=switch_view)
-        return {"status": "ok", "message": "Slide duplicated", "source_page": page_idx, "active_page_index": bridge.get_active_page_index()}
+        # The copy is inserted immediately after the source. Do not re-read
+        # getNumber() — Impress leaves it missing and the helper used to
+        # report 0 after a successful switch.
+        active_idx = page_idx + 1 if switch_view else bridge.get_active_page_index()
+        return {"status": "ok", "message": "Slide duplicated", "source_page": page_idx, "active_page_index": active_idx}
 
 
 class MoveSlide(ToolBase):

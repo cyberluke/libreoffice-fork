@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from plugin.scripting._lazy_venv import make_getattr
+from plugin.framework.deal_shim import DEAL_MAX_SOURCE, DEAL_MAX_TOKEN, UNDER_CROSSHAIR, deal, str_bounded
+from plugin.scripting._lazy_venv import install_lazy_dir, make_getattr
 from plugin.scripting.helper_domain import HelperScriptMeta, header_prefix, parse_helper_script_header
+from plugin.scripting.venv.duckdb_sql import MAX_TABLE_ROWS
 
 # --- Constants (host) ---
 
@@ -33,7 +35,7 @@ _HELPER_DESCRIPTIONS: dict[str, str] = {
 }
 
 _SQL_ROW_CAP_NOTE = (
-    "Results cap at 200 rows (MAX_TABLE_ROWS). truncated/warning/flags mean "
+    f"Results cap at {MAX_TABLE_ROWS} rows (MAX_TABLE_ROWS). truncated/warning/flags mean "
     "the table is incomplete — add LIMIT or aggregate."
 )
 
@@ -47,20 +49,19 @@ _SQL_VENV_EXPORTS = frozenset(
         "invalidate_session_tables",
         "persistable_duckdb_session_id",
         "GuardedDuckDBConnection",
-        "ReadonlyViolation",
+        "SqlError",
         "MAX_TABLE_ROWS",
     }
 )
 
 __getattr__ = make_getattr("duckdb_sql", _SQL_VENV_EXPORTS)
+install_lazy_dir(globals(), _SQL_VENV_EXPORTS)
 
 
 # --- Templates for Run Python Script (Calc) ---
 
 def _template_body(helper: str, params: dict[str, Any]) -> str:
-    import sys
-
-    if "crosshair" in sys.modules:
+    if UNDER_CROSSHAIR:
         params_json = "{}"
     else:
         params_json = json.dumps(params, separators=(",", ":"))
@@ -93,7 +94,17 @@ def _template_body(helper: str, params: dict[str, Any]) -> str:
     )
 
 
-from plugin.framework.deal_shim import DEAL_MAX_SOURCE, DEAL_MAX_TOKEN, UNDER_CROSSHAIR, str_bounded, deal
+def _deal_sql_code_ok_pytest(code: object) -> bool:
+    # User SQL is longer than DEAL_MAX_SOURCE. The cap raised
+    # PreContractError before the header parser returned None.
+    return isinstance(code, str)
+
+
+def _deal_sql_code_ok_crosshair(code: object) -> bool:
+    return str_bounded(code, DEAL_MAX_SOURCE)
+
+
+_deal_sql_code_ok = _deal_sql_code_ok_crosshair if UNDER_CROSSHAIR else _deal_sql_code_ok_pytest
 
 
 @deal.post(lambda result: isinstance(result, dict) and "query_folder_sql" in result and "query_sheet_sql" in result)
@@ -105,7 +116,7 @@ def get_sql_script_templates() -> dict[str, str]:
 SqlScriptMeta = HelperScriptMeta
 
 
-@deal.pre(lambda code: str_bounded(code, DEAL_MAX_SOURCE))
+@deal.pre(lambda code: _deal_sql_code_ok(code))
 @deal.post(lambda result: result is None or isinstance(result, SqlScriptMeta))
 def parse_sql_script_header(code: str) -> SqlScriptMeta | None:
     """Parse machine header from SQL script template."""
@@ -120,7 +131,14 @@ _DEAL_SQL_RESULT_KEYS = 4 if UNDER_CROSSHAIR else 32
 _DEAL_SQL_RESULT_STR = 8 if UNDER_CROSSHAIR else DEAL_MAX_TOKEN
 
 
-def _deal_sql_result_value_ok(value: object) -> bool:
+def _deal_sql_result_value_ok_pytest(value: object) -> bool:
+    # A SQL error string is longer than a token. The cap raised
+    # PreContractError instead of is_sql_result returning a bool.
+    # ``value`` is unused. CrossHair keeps the short dict.
+    return True
+
+
+def _deal_sql_result_value_ok_crosshair(value: object) -> bool:
     if not isinstance(value, dict):
         return True
     if len(value) > _DEAL_SQL_RESULT_KEYS:
@@ -131,6 +149,11 @@ def _deal_sql_result_value_ok(value: object) -> bool:
         if isinstance(v, str) and not str_bounded(v, _DEAL_SQL_RESULT_STR):
             return False
     return True
+
+
+_deal_sql_result_value_ok = (
+    _deal_sql_result_value_ok_crosshair if UNDER_CROSSHAIR else _deal_sql_result_value_ok_pytest
+)
 
 
 @deal.pre(lambda value: _deal_sql_result_value_ok(value))

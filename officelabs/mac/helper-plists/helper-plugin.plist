@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>OfficeLabs Helper (Plugin)</string>
+	<string>NAI Office Helper (Plugin)</string>
 	<key>CFBundleExecutable</key>
-	<string>OfficeLabs Helper (Plugin)</string>
+	<string>NAI Office Helper (Plugin)</string>
 	<key>CFBundleIdentifier</key>
 	<string>ai.officelabs.helper.plugin</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>OfficeLabs Helper (Plugin)</string>
+	<string>NAI Office Helper (Plugin)</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleSignature</key>

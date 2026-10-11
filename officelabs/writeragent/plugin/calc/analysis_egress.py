@@ -10,23 +10,18 @@ from typing import Any
 
 from plugin.calc.tabular_egress import calc_anchor_from_selection, format_tabular_helper_for_calc, insert_tabular_result_into_calc
 from plugin.scripting.analysis import HELPER_NAMES
+from plugin.scripting.helper_domain import is_status_helper_result
 
 __all__ = ["calc_anchor_from_selection", "format_analysis_for_calc", "insert_analysis_result_into_calc", "is_analysis_result"]
 
 
 def is_analysis_result(value: Any) -> bool:
     """True when *value* matches the compact analysis helper result contract."""
-    if not isinstance(value, dict):
-        return False
-    if "status" not in value:
-        return False
-    helper = value.get("helper")
-    if isinstance(helper, str) and helper in HELPER_NAMES:
-        return True
-    if value.get("status") == "error":
-        code = str(value.get("code") or "")
-        return code == "ANALYSIS_ERROR" or "ANALYSIS" in code or code == "MISSING_PARAM"
-    return False
+    return is_status_helper_result(
+        value,
+        HELPER_NAMES,
+        frozenset({"ANALYSIS_ERROR", "MISSING_PARAM"}),
+    )
 
 
 def format_analysis_for_calc(result: dict[str, Any]) -> list[list[Any]]:
@@ -34,7 +29,9 @@ def format_analysis_for_calc(result: dict[str, Any]) -> list[list[Any]]:
     return format_tabular_helper_for_calc(result, domain_label="Analysis", default_helper="analysis", failed_message="Analysis failed.", metadata_keys=("n_rows", "n_cols", "numeric_cols", "categorical_cols", "datetime_cols"))
 
 
-def insert_analysis_result_into_calc(doc: Any, uno_ctx: Any, result: dict[str, Any], *, start_col: int | None = None, start_row: int | None = None) -> int:
+def insert_analysis_result_into_calc(doc: Any, uno_ctx: Any, result: dict[str, Any], *, sheet_name: str | None = None, start_col: int | None = None, start_row: int | None = None) -> int:
     """Write formatted analysis output starting at *start_col*/*start_row* (or selection). Returns row count."""
+    # Invariant: If Stop happens during a document mutation (inserting a picture, plot, or text),
+    # let that mutation finish. Do not guard right before the write.
     grid = format_analysis_for_calc(result)
-    return insert_tabular_result_into_calc(doc, uno_ctx, grid, start_col=start_col, start_row=start_row)
+    return insert_tabular_result_into_calc(doc, uno_ctx, grid, sheet_name=sheet_name, start_col=start_col, start_row=start_row)

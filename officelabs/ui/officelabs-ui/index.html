@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>OfficeLabs AI</title>
+</head>
+<body style="font-family:Segoe UI, sans-serif; background:#1e1e1e; color:#e8e8e8; padding:16px; margin:0">
+<div style="display:flex; align-items:center; gap:8px; margin-bottom:12px">
+  <img src="assets/ai.svg" width="24" height="24" alt="AI" style="filter:brightness(0) invert(1)"/>
+  <h3 style="margin:0">OfficeLabs AI</h3>
+</div>
+<p>CEF + WebView pipeline verified. The full officelabs-ui bundle is deployed
+from <code>officelabs/ui/officelabs-ui/</code>; AI actions use the TDesign AI
+icon set (<code>assets/ai-*.svg</code>).</p>
+<div style="display:flex; gap:8px; margin:12px 0; flex-wrap:wrap">
+  <button data-ai="ai-edit" style="display:flex; align-items:center; gap:6px; background:#2a2a2a; color:#e8e8e8; border:1px solid #444; border-radius:4px; padding:6px 10px; cursor:pointer">
+    <img src="assets/ai-edit.svg" width="16" height="16" alt=""/><span>Edit selection</span>
+  </button>
+  <button data-ai="ai-search" style="display:flex; align-items:center; gap:6px; background:#2a2a2a; color:#e8e8e8; border:1px solid #444; border-radius:4px; padding:6px 10px; cursor:pointer">
+    <img src="assets/ai-search.svg" width="16" height="16" alt=""/><span>Search</span>
+  </button>
+  <button data-ai="ai-terminal" style="display:flex; align-items:center; gap:6px; background:#2a2a2a; color:#e8e8e8; border:1px solid #444; border-radius:4px; padding:6px 10px; cursor:pointer">
+    <img src="assets/ai-terminal.svg" width="16" height="16" alt=""/><span>Terminal</span>
+  </button>
+  <button data-ai="robot" style="display:flex; align-items:center; gap:6px; background:#2a2a2a; color:#e8e8e8; border:1px solid #444; border-radius:4px; padding:6px 10px; cursor:pointer">
+    <img src="assets/robot.svg" width="16" height="16" alt=""/><span>Assistant</span>
+  </button>
+</div>
+<p id="status" style="color:#8ab4f8">Waiting for bridge messages…</p>
+<script>
+  window.officelabs = {
+    __onMessage: function (msg) {
+      var s = document.getElementById('status');
+      if (s) s.textContent = 'bridge message: ' + JSON.stringify(msg);
+    }
+  };
+  document.querySelectorAll('button[data-ai]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var s = document.getElementById('status');
+      if (s) s.textContent = 'AI action: ' + btn.getAttribute('data-ai');
+    });
+  });
+</script>
+</body>
+</html>

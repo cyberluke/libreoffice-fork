@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugin.scripting._lazy_venv import make_getattr, venv_attr
+from plugin.scripting._lazy_venv import install_lazy_dir, make_getattr, venv_attr
 from plugin.scripting.helper_domain import (
     DomainFacadeConfig,
     header_prefix,
@@ -31,8 +31,8 @@ _DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
     "kpi_summary": {"metrics": ["Column1"]},
     "detect_outliers": {},
     "quick_stats": {},
-    "format_currency": {"values": "data", "symbol": "$", "decimals": 2},
-    "format_percent": {"values": "data", "decimals": 1},
+    "format_currency": {"symbol": "$", "decimals": 2},
+    "format_percent": {"decimals": 1},
     "clean_and_prepare": {},
     "pivot_aggregate": {"index": "Category", "values": "Amount"},
     "group_summary": {"by": "Region", "metrics": ["Sales"]},
@@ -76,11 +76,9 @@ _ANALYSIS_VENV_EXPORTS = frozenset(
         "kpi_summary",
         "monte_carlo",
         "pivot_aggregate",
+        "quick_stats",
         "run_analysis",
         "run_regression",
-        "CoerceResult",
-        "coerce_to_dataframe",
-        "grid_to_dataframe",
     }
 )
 
@@ -91,7 +89,14 @@ def _analysis_venv_extra(name: str) -> Any:
     raise AttributeError(f"module 'plugin.scripting.analysis' has no attribute {name!r}")
 
 
-__getattr__ = make_getattr("analysis", _ANALYSIS_VENV_EXPORTS - frozenset({"CoerceResult", "coerce_to_dataframe", "grid_to_dataframe"}), fallback=_analysis_venv_extra)
+__getattr__ = make_getattr("analysis", _ANALYSIS_VENV_EXPORTS, fallback=_analysis_venv_extra)
+install_lazy_dir(
+    globals(),
+    _ANALYSIS_VENV_EXPORTS,
+    "CoerceResult",
+    "coerce_to_dataframe",
+    "grid_to_dataframe",
+)
 
 
 # --- Templates ---
@@ -106,13 +111,9 @@ _API = make_template_api(
         import_module="writeragent.scripting.analysis",
         run_name="run_analysis",
         data_expr="data",
-        positional_args={
-            "format_currency": ("values", "symbol", "decimals"),
-            "format_percent": ("values", "decimals"),
-        },
+        leading_data=True,
     )
 )
 
-_template_body = _API.template_body
 get_analysis_script_templates = _API.get_templates
 parse_analysis_script_header = _API.parse_header

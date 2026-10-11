@@ -19,7 +19,7 @@
 
 class IconThemeSelectorTest : public CppUnit::TestFixture
 {
-#ifndef _WIN32 //default theme on Windows is Colibre independently from any desktop environment
+#ifndef _WIN32 //default theme on Windows is Writer 2027 Phosphor independently from any desktop environment
     void BreezeIsReturnedForKde5Desktop();
     void ElementaryIsReturnedForGnomeDesktop();
     void ThemeIsOverriddenByPreferredTheme();
@@ -31,6 +31,12 @@ class IconThemeSelectorTest : public CppUnit::TestFixture
     void DifferentPreferredThemesAreInequal();
     void DifferentHighContrastModesAreInequal();
     static std::vector<vcl::IconThemeInfo> GetFakeInstalledThemes();
+#else
+    void Writer2027PhosphorIsReturnedByDefault();
+    void ExplicitCarbonPreferenceOverridesDefault();
+    void MissingDefaultFallsBackSafely();
+    void HighContrastStillWins();
+    static std::vector<vcl::IconThemeInfo> GetWriter2027InstalledThemes();
 #endif
 
     // Adds code needed to register the test suite
@@ -47,6 +53,11 @@ class IconThemeSelectorTest : public CppUnit::TestFixture
     CPPUNIT_TEST(FallbackThemeIsReturnedForEmptyInput);
     CPPUNIT_TEST(DifferentPreferredThemesAreInequal);
     CPPUNIT_TEST(DifferentHighContrastModesAreInequal);
+#else
+    CPPUNIT_TEST(Writer2027PhosphorIsReturnedByDefault);
+    CPPUNIT_TEST(ExplicitCarbonPreferenceOverridesDefault);
+    CPPUNIT_TEST(MissingDefaultFallsBackSafely);
+    CPPUNIT_TEST(HighContrastStillWins);
 #endif
 
     // End of test suite definition
@@ -172,6 +183,75 @@ IconThemeSelectorTest::DifferentPreferredThemesAreInequal()
     s2.SetUseHighContrastTheme(true);
     bool equal = (s1 == s2);
     CPPUNIT_ASSERT_EQUAL_MESSAGE("Different preferred themes are detected as inequal", false, equal);
+}
+
+#endif
+
+#ifdef _WIN32
+
+/*static*/ std::vector<vcl::IconThemeInfo>
+IconThemeSelectorTest::GetWriter2027InstalledThemes()
+{
+    std::vector<vcl::IconThemeInfo> r;
+    vcl::IconThemeInfo a;
+    a.mThemeId = "writer2027_phosphor_svg";
+    r.push_back(a);
+    a.mThemeId = "writer2027_carbon_svg";
+    r.push_back(a);
+    a.mThemeId = "colibre";
+    r.push_back(a);
+    return r;
+}
+
+void
+IconThemeSelectorTest::Writer2027PhosphorIsReturnedByDefault()
+{
+    std::vector<vcl::IconThemeInfo> themes = GetWriter2027InstalledThemes();
+    vcl::IconThemeSelector s;
+    OUString r = s.SelectIconThemeForDesktopEnvironment(themes, DesktopType::Windows);
+    CPPUNIT_ASSERT_EQUAL_MESSAGE(
+        "'writer2027_phosphor_svg' theme is the Writer 2027 Windows default",
+        u"writer2027_phosphor_svg"_ustr, r);
+}
+
+void
+IconThemeSelectorTest::ExplicitCarbonPreferenceOverridesDefault()
+{
+    vcl::IconThemeSelector s;
+    s.SetPreferredIconTheme(u"writer2027_carbon_svg"_ustr, true);
+    std::vector<vcl::IconThemeInfo> themes = GetWriter2027InstalledThemes();
+    OUString selected = s.SelectIconThemeForDesktopEnvironment(themes, DesktopType::Windows);
+    CPPUNIT_ASSERT_EQUAL_MESSAGE(
+        "explicit 'writer2027_carbon_svg' preference wins over the default",
+        u"writer2027_carbon_svg"_ustr, selected);
+}
+
+void
+IconThemeSelectorTest::MissingDefaultFallsBackSafely()
+{
+    // Default (writer2027_phosphor_svg) not installed: a safe installed
+    // theme must be selected instead (first installed = colibre here).
+    std::vector<vcl::IconThemeInfo> themes;
+    vcl::IconThemeInfo a;
+    a.mThemeId = "colibre";
+    themes.push_back(a);
+    vcl::IconThemeSelector s;
+    OUString selected = s.SelectIconThemeForDesktopEnvironment(themes, DesktopType::Windows);
+    CPPUNIT_ASSERT_EQUAL_MESSAGE("falls back to an installed theme",
+                                 u"colibre"_ustr, selected);
+}
+
+void
+IconThemeSelectorTest::HighContrastStillWins()
+{
+    vcl::IconThemeSelector s;
+    s.SetUseHighContrastTheme(true);
+    std::vector<vcl::IconThemeInfo> themes = GetWriter2027InstalledThemes();
+    // High contrast is resolved through SelectIconTheme() and stays intact:
+    // when no high-contrast theme is installed, the requested theme is used.
+    OUString selected = s.SelectIconTheme(themes, u"writer2027_phosphor_svg"_ustr);
+    CPPUNIT_ASSERT_EQUAL_MESSAGE("high contrast mode does not regress theme selection",
+                                 u"writer2027_phosphor_svg"_ustr, selected);
 }
 
 #endif

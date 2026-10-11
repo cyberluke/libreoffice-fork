@@ -529,7 +529,10 @@ clean-native:
 	$(RM_RF) native/writeragent_vec/src/writeragent_vec/*.c
 
 proxy-stubs:
-	"$(PYTHON)" scripts/generate_tool_proxies.py > plugin/scripting/writeragent_api.py
+	# Write to a temp file first: a failed run used to leave writeragent_api.py empty.
+	"$(PYTHON)" scripts/generate_tool_proxies.py > plugin/scripting/writeragent_api.py.tmp \
+		&& mv plugin/scripting/writeragent_api.py.tmp plugin/scripting/writeragent_api.py \
+		|| { rm -f plugin/scripting/writeragent_api.py.tmp; exit 1; }
 
 xcu: manifest
 
@@ -628,7 +631,7 @@ nuke-cache-force:
 extract-strings:
 	@if command -v xgettext >/dev/null 2>&1; then \
 		"$(PYTHON)" scripts/extract_xdl_strings.py; \
-		xgettext --add-location=file -d writeragent -o locales/writeragent.pot $$(find plugin -name "*.py"); \
+		xgettext --add-location=file --keyword=N_ -d writeragent -o locales/writeragent.pot $$(find plugin -name "*.py"); \
 		"$(PYTHON)" scripts/merge_module_yaml_into_pot.py locales/writeragent.pot; \
 		rm -f plugin/xdl_strings.py; \
 		$(MAKE) merge-translations; \
@@ -811,7 +814,9 @@ _check-lo-python:
 
 test-uno: _check-lo-python
 	@$(MAKE) -C "$(PROJECT_ROOT)" lo-kill
-	PYTHONUNBUFFERED=1 $(LO_PYTHON_UNSET) $(LO_PYTHON_ENV) "$(LO_PYTHON)" -u -m plugin.testing_runner $(FILTER); EXIT_CODE=$$?; $(MAKE) -C "$(PROJECT_ROOT)" lo-kill; exit $$EXIT_CODE
+	# Release runs this from a /tmp tree with no .venv. The spill UNO test
+	# needs the checkout interpreter (matplotlib); VIRTUAL_ENV is stripped below.
+	PYTHONUNBUFFERED=1 WRITERAGENT_PROJECT_ROOT="$(PROJECT_ROOT)" $(LO_PYTHON_UNSET) $(LO_PYTHON_ENV) "$(LO_PYTHON)" -u -m plugin.testing_runner $(FILTER); EXIT_CODE=$$?; $(MAKE) -C "$(PROJECT_ROOT)" lo-kill; exit $$EXIT_CODE
 
 # Same office process, N times: stress Draw factory-open / close (URP DisposedException flakes).
 # FILTER defaults to the Draw native suite. PAIR=tree-math | dup-move expands --pair.

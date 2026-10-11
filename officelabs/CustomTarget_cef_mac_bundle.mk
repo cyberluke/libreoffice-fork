@@ -57,11 +57,11 @@ $(officelabs_cef_mac_WORKDIR)/cef_mac_bundle.done : \
 	ln -sfn "Versions/Current/Resources" "$${fw}/Resources"
 	set -e; \
 	for entry in \
-	"OfficeLabs Helper|helper.plist" \
-	"OfficeLabs Helper (GPU)|helper-gpu.plist" \
-	"OfficeLabs Helper (Renderer)|helper-renderer.plist" \
-	"OfficeLabs Helper (Plugin)|helper-plugin.plist" \
-	"OfficeLabs Helper (Alerts)|helper-alerts.plist"; do \
+	"NAI Office Helper|helper.plist" \
+	"NAI Office Helper (GPU)|helper-gpu.plist" \
+	"NAI Office Helper (Renderer)|helper-renderer.plist" \
+	"NAI Office Helper (Plugin)|helper-plugin.plist" \
+	"NAI Office Helper (Alerts)|helper-alerts.plist"; do \
 	    name="$${entry%%|*}"; plist="$${entry##*|}"; \
 	    app="$(officelabs_cef_mac_STAGE)/Contents/Frameworks/$${name}.app"; \
 	    mkdir -p "$${app}/Contents/MacOS"; \
@@ -73,11 +73,11 @@ $(officelabs_cef_mac_WORKDIR)/cef_mac_bundle.done : \
 	set -e; \
 	for item in \
 	"Chromium Embedded Framework.framework" \
-	"OfficeLabs Helper.app" \
-	"OfficeLabs Helper (GPU).app" \
-	"OfficeLabs Helper (Renderer).app" \
-	"OfficeLabs Helper (Plugin).app" \
-	"OfficeLabs Helper (Alerts).app"; do \
+	"NAI Office Helper.app" \
+	"NAI Office Helper (GPU).app" \
+	"NAI Office Helper (Renderer).app" \
+	"NAI Office Helper (Plugin).app" \
+	"NAI Office Helper (Alerts).app"; do \
 	    rm -rf "$(officelabs_cef_mac_INSTDIR)/$${item}"; \
 	    ditto "$(officelabs_cef_mac_STAGE)/Contents/Frameworks/$${item}" "$(officelabs_cef_mac_INSTDIR)/$${item}"; \
 	done

@@ -16,6 +16,26 @@ if TYPE_CHECKING:
 from plugin.framework.url_utils import get_url_path_and_query
 from .base_provider_shim import BaseProviderShim, canonical_aspect_ratio, canonical_resolution, coerce_image_data_url, coerce_raw_b64
 
+# api.openai.com o-series and gpt-5 reject max_tokens. Dated snapshots
+# (o3-mini-2025-01-31, gpt-5-2025-08-07) and ft:gpt-5-... share the family prefix.
+_OPENAI_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+# Chat Completions default. These models reject every other temperature.
+_OPENAI_DEFAULT_TEMPERATURE = 1
+
+
+def _openai_reasoning_model(model_name: str | None) -> bool:
+    """True for OpenAI model families that reject ``max_tokens``."""
+    name = str(model_name or "").strip().lower()
+    if not name:
+        return False
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    if name.startswith("ft:"):
+        parts = name.split(":")
+        if len(parts) > 1 and parts[1]:
+            name = parts[1]
+    return name.startswith(_OPENAI_REASONING_PREFIXES)
+
 
 class OpenAIShim(BaseProviderShim):
     """Shim for standard OpenAI-compatible providers.
@@ -25,6 +45,25 @@ class OpenAIShim(BaseProviderShim):
     (https://developers.openai.com/api/reference/resources/images/methods/edit).
     Other hosts keep the generic OpenAI-compat body in ``BaseProviderShim``.
     """
+
+    def build_chat_request(
+        self, messages: list[dict[str, Any]], max_tokens: int, temperature: float | None, tools: list[dict[str, Any]] | None, stream: bool, model_name: str | None, response_format: dict[str, Any] | None, chat_extra: dict[str, Any] | None = None
+    ) -> tuple[str, str, bytes, dict[str, str]]:
+        method, path, body, headers = super().build_chat_request(messages, max_tokens, temperature, tools, stream, model_name, response_format, chat_extra)
+        # api.openai.com o1/o3/o4 and gpt-5 reject max_tokens and any
+        # temperature other than the default (1), which is HTTP 400. Only
+        # provider openai and those families; Groq, OpenRouter, and every
+        # other host keep max_tokens. The documented replacement is
+        # max_completion_tokens.
+        if self.client._get_provider() != "openai" or not _openai_reasoning_model(model_name):
+            return method, path, body, headers
+        data = json.loads(body.decode("utf-8"))
+        if "max_tokens" in data:
+            data["max_completion_tokens"] = data.pop("max_tokens")
+        temp = data.get("temperature")
+        if temp is not None and temp != _OPENAI_DEFAULT_TEMPERATURE:
+            data.pop("temperature", None)
+        return method, path, json.dumps(data).encode("utf-8"), headers
 
     def build_image_request(self, prompt: str, model: str | None, width: int, height: int, steps: int | None = None, source_image: str | None = None, image_url: str | None = None) -> tuple[str, str, bytes, dict[str, str]]:
         if self.client._get_provider() != "openai":
@@ -43,6 +82,34 @@ class OpenAIShim(BaseProviderShim):
         data: dict[str, Any] = {"prompt": prompt, "n": 1, "size": f"{width}x{height}", "response_format": "b64_json"}
         if model:
             data["model"] = model
+
+        lower_model = str(model).lower() if model else ""
+        if lower_model.startswith("gpt-image"):
+            data.pop("response_format", None)
+            ratio = width / height if height else 1.0
+            if ratio > 1.2:
+                data["size"] = "1536x1024"
+            elif ratio < 0.8:
+                data["size"] = "1024x1536"
+            else:
+                data["size"] = "1024x1024"
+        elif lower_model.startswith("dall-e-3"):
+            ratio = width / height if height else 1.0
+            if ratio > 1.2:
+                data["size"] = "1792x1024"
+            elif ratio < 0.8:
+                data["size"] = "1024x1792"
+            else:
+                data["size"] = "1024x1024"
+        elif lower_model.startswith("dall-e"):
+            edge = max(width, height)
+            if edge <= 256:
+                data["size"] = "256x256"
+            elif edge <= 512:
+                data["size"] = "512x512"
+            else:
+                data["size"] = "1024x1024"
+
         if ref:
             data["images"] = [{"image_url": ref}]
         path = get_url_path_and_query(url)
@@ -88,19 +155,21 @@ class OpenRouterShim(BaseProviderShim):
         endpoint = self.client._endpoint()
         api_path = self.client._api_path()
         url = endpoint + api_path + "/images"
-        # What was wrong: output_format was hardcoded to webp. Models such as
-        # black-forest-labs/flux.2-klein-4b only accept png/jpeg and return HTTP 400.
-        # png is the Images API default and is accepted by webp-capable models too.
-        data: dict[str, Any] = {"prompt": prompt, "model": model, "n": 1, "output_format": "png"}
+        # png is the Images API default and is accepted by models that reject
+        # webp (black-forest-labs/flux.2-klein-4b returns HTTP 400 for webp).
+        # Include "model" only when set; OpenRouter's /images endpoint rejects
+        # "model": null with HTTP 400.
+        data: dict[str, Any] = {"prompt": prompt, "n": 1, "output_format": "png"}
+        if model:
+            data["model"] = model
         if width and height:
-            # What was wrong: we sent explicit pixel size (512x512) and omitted
-            # aspect_ratio. OpenRouter treats size as authoritative and 400s a
-            # paired aspect_ratio it considers mismatched, so Flux kept working
-            # with size-only. Gemini image models (and the Image API catalog for
-            # gemini-*-flash-lite-image) ignore pixel size and honor aspect_ratio
-            # / resolution instead, so Square still came back 4:3.
-            # Hint with aspect_ratio when WxH maps to a standard ratio; do not
-            # also send size (HTTP 400). Fall back to size for odd dimensions.
+            # OpenRouter treats size as authoritative and 400s a paired
+            # aspect_ratio it considers mismatched, so Flux works with size
+            # alone. Gemini image models ignore pixel size and honor
+            # aspect_ratio / resolution, so Square still comes back 4:3 when
+            # only 512x512 is sent. Hint with aspect_ratio when WxH maps to a
+            # standard ratio; do not also send size (HTTP 400). Fall back to
+            # size for odd dimensions.
             ratio = canonical_aspect_ratio(width, height)
             if ratio:
                 data["aspect_ratio"] = ratio
@@ -113,10 +182,10 @@ class OpenRouterShim(BaseProviderShim):
             else:
                 data["size"] = f"{width}x{height}"
 
-        # What was wrong: img2img sent a top-level image_url. OpenRouter's
-        # /api/v1/images API ignores that field (HTTP 200, prompt_tokens stay
-        # text-only), so a selected graphic was never used and Flux generated
-        # a new image from the prompt. The documented field is input_references
+        # OpenRouter's /api/v1/images ignores a top-level image_url (HTTP 200,
+        # prompt_tokens stay text-only), so a selected graphic is never used
+        # and Flux generates a new image from the prompt. The documented field
+        # is input_references
         # (https://openrouter.ai/docs/guides/overview/multimodal/image-generation);
         # flux.2-klein-4b advertises 0–4 references in supported_parameters.
         ref = coerce_image_data_url(image_url, source_image)
@@ -133,10 +202,10 @@ class TogetherShim(OpenAIShim):
     def build_image_request(self, prompt: str, model: str | None, width: int, height: int, steps: int | None = None, source_image: str | None = None, image_url: str | None = None) -> tuple[str, str, bytes, dict[str, str]]:
         method, path, body, headers = super().build_image_request(prompt, model, width, height, steps=steps, source_image=source_image, image_url=image_url)
         data = json.loads(body.decode("utf-8"))
-        # What was wrong: BaseProviderShim sends OpenAI size="WxH". Together
-        # documents width/height integers (Flash Image, FLUX.2) or aspect_ratio
-        # (Kontext). Unknown size is ignored, so Square/16:9 never reached the
-        # model. https://docs.together.ai/docs/inference/images/parameters
+        # Together documents width/height integers (Flash Image, FLUX.2) or
+        # aspect_ratio (Kontext), not OpenAI size="WxH". Unknown size is
+        # ignored, so Square/16:9 never reach the model.
+        # https://docs.together.ai/docs/inference/images/parameters
         data.pop("size", None)
         is_kontext = bool(model and "kontext" in model.lower())
         if is_kontext:
@@ -150,11 +219,10 @@ class TogetherShim(OpenAIShim):
                 data["width"] = width
             if height:
                 data["height"] = height
-        # What was wrong: the OpenAI-compat default sent top-level image_url.
         # Together's default image model (black-forest-labs/FLUX.2-dev) and
-        # other non-Kontext models (e.g. google/flash-image-2.5) only accept
-        # reference_images[]; image_url is ignored or rejected — same silent
-        # create-instead-of-edit as OpenRouter's old image_url field.
+        # other non-Kontext models only accept reference_images[]. A top-level
+        # image_url is ignored or rejected — the same silent create-instead-of-edit
+        # as OpenRouter's old image_url field. Kontext uses image_url.
         # https://docs.together.ai/docs/inference/images/reference-images
         ref = coerce_image_data_url(image_url, source_image)
         if ref:
@@ -184,10 +252,11 @@ def _load_google() -> type[BaseProviderShim]:
     return GoogleShim
 
 
-_SHIM_REGISTRY: dict[str, Callable[[], type[BaseProviderShim]]] = {"anthropic": _load_anthropic, "google": _load_google, "xai": _load_grok, "grok": _load_grok, "ollama": lambda: OllamaShim, "openrouter": lambda: OpenRouterShim, "together": lambda: TogetherShim}
+# ``grok`` duplicated ``xai``. Detection returns ``xai``; nothing reads ``grok``.
+_SHIM_REGISTRY: dict[str, Callable[[], type[BaseProviderShim]]] = {"anthropic": _load_anthropic, "google": _load_google, "xai": _load_grok, "ollama": lambda: OllamaShim, "openrouter": lambda: OpenRouterShim, "together": lambda: TogetherShim}
 
 
-def get_provider_shim_class(provider: str, endpoint: str | None = None) -> type[BaseProviderShim]:
+def get_provider_shim_class(provider: str) -> type[BaseProviderShim]:
     """Return the provider shim class matching the provider name, defaulting to OpenAIShim.
 
     Standard OpenAI-compatible providers (DeepSeek, Mistral, Cerebras, Groq, NVIDIA NIM, Z.ai)

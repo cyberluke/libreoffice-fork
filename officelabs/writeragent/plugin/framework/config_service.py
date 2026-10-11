@@ -19,9 +19,13 @@ from plugin.framework.service import ServiceBase
 from plugin.framework.event_bus import global_event_bus
 from plugin.framework.errors import ConfigError, ConfigValidationError
 
-from plugin.framework.config import get_config, set_config, remove_config, get_config_dict, get_current_endpoint, set_api_key_for_endpoint, parse_config_json_text, _load_config_dict, _write_config_file, AI_SIMPLE_FIELDS
-from plugin.framework.config_schema import WriterAgentConfig
-from plugin.framework.client.model_fetcher import get_stt_model, set_image_model, set_text_model
+from plugin.framework.config import get_config, set_config, remove_config, get_config_dict, get_current_endpoint, set_api_key_for_endpoint, parse_config_json_text, _config_store, AI_SIMPLE_FIELDS
+from plugin.framework.config_schema import get_manifest_modules
+
+# get_stt_model / set_image_model / set_text_model stay inside the ai.* branches.
+# Importing them here pulls model_fetcher whenever ConfigService is imported.
+# LibrePy must not gain that edge, and model_fetcher must not import
+# ConfigService the other way.
 
 _unohelper_mod: Any
 try:
@@ -77,6 +81,28 @@ def _uno_service_implementation_decorator() -> Callable[..., Any]:
 _implementation: Callable[..., Any] = _uno_service_implementation_decorator()
 
 
+def _modules_to_manifest(modules: Any) -> dict[str, Any]:
+    """Turn ``get_manifest_modules()`` into the dict ``set_manifest`` already walks.
+
+    The manifest list is ``{"name", "config"}`` records. ``set_manifest`` expects
+    ``{name: {"config": {field: schema}}}``.
+    """
+    manifest: dict[str, Any] = {}
+    if not isinstance(modules, list):
+        return manifest
+    for mod in modules:
+        if not isinstance(mod, dict):
+            continue
+        name = mod.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        config = mod.get("config")
+        if not isinstance(config, dict):
+            config = {}
+        manifest[name] = {"config": config}
+    return manifest
+
+
 @_implementation("org.extension.writeragent.ConfigService")
 class ConfigService(ServiceBase):
     name: str | None = "config"
@@ -95,7 +121,17 @@ class ConfigService(ServiceBase):
         self._config_path = None  # For testing
 
     def initialize(self, ctx: Any) -> None:
-        pass
+        """Load module.yaml defaults and public flags once.
+
+        Bootstrap registers this service and set_events, not set_manifest.
+        Build the dict set_manifest already expects from get_manifest_modules()
+        or _defaults and _manifest stay empty and module.yaml public flags
+        never apply. ctx is not used for I/O; init_config already ran.
+        """
+        del ctx
+        if self._manifest:
+            return
+        self.set_manifest(_modules_to_manifest(get_manifest_modules()))
 
     def set_events(self, events: Any) -> None:
         """Wire the event bus."""
@@ -134,6 +170,8 @@ class ConfigService(ServiceBase):
                 if field == "endpoint":
                     return str(get_config("endpoint") or "").strip()
                 if field == "stt_model":
+                    from plugin.framework.client.model_fetcher import get_stt_model
+
                     return get_stt_model()
 
                 return get_config(field)
@@ -154,14 +192,21 @@ class ConfigService(ServiceBase):
 
         try:
             val = get_config(key)
-            if val is not None and val != "":
+            # Only None is missing. A stored empty string, False, and 0 are
+            # real values; treating "" as missing returned the caller default.
+            if val is not None:
                 return val
         except ConfigError:
-            pass
+            val = None
 
-        if key not in self._defaults:
+        # A caller-supplied default wins over a registered None default.
+        # Otherwise get("mcp.tool_exposure_mode", "delegate") returned None
+        # when the key was registered with default None.
+        if default is not None:
             return default
-        return self._defaults[key]
+        if key in self._defaults:
+            return self._defaults[key]
+        return default
 
     def set(self, key: str, value: Any, caller_module: str | None = None) -> None:
         """Set a config value."""
@@ -184,15 +229,22 @@ class ConfigService(ServiceBase):
                 if field == "endpoint":
                     from plugin.chatbot.config_ui_helpers import endpoint_from_selector_text
 
-                    resolved = endpoint_from_selector_text(str(value))
-                    # What was wrong: an empty resolve returned without writing,
-                    # and the caller treated set() as success.
+                    # str(None) is the literal "None". That is not an endpoint,
+                    # and set_config would store it. An empty string fails below.
+                    endpoint_text = "" if value is None else str(value)
+                    resolved = endpoint_from_selector_text(endpoint_text)
+                    # An empty resolve is a failure. Returning without writing
+                    # looks like success to the caller.
                     if not resolved:
                         raise ConfigError("Endpoint text did not resolve to a URL", "CONFIG_INVALID_ENDPOINT", details={"value": value})
                     set_config("endpoint", resolved, event_key=key)
                 elif field == "image_model":
+                    from plugin.framework.client.model_fetcher import set_image_model
+
                     set_image_model(value or "", update_lru=True, event_key=key)
                 elif field == "text_model":
+                    from plugin.framework.client.model_fetcher import set_text_model
+
                     set_text_model(value or "", update_lru=True, event_key=key)
                 elif field == "stt_model":
                     # Speech tab canonical key. Do not write legacy stt_model.
@@ -202,65 +254,50 @@ class ConfigService(ServiceBase):
                     set_config(field, value, event_key=key)
                 return
 
-        # Test fallback
+        # Test fallback. The store patches this file under the same lock as
+        # production set_config, so a second writer cannot drop keys the way
+        # a load-the-whole-JSON-and-write-it-back did. emit=False because
+        # this method emits the one event below (old_value is the manifest
+        # default, not the store's missing-key None).
         if self._config_path:
-            if os.path.exists(self._config_path):
-                data = _load_config_dict(self._config_path, allow_repair=True, persist_repair=False)
-            else:
-                data = {}
-            test_data = dict(data)
-            test_data[key] = value
-            try:
-                test_config = WriterAgentConfig.from_dict(test_data)
-                test_config.validate()
-                data = test_config.to_dict()
-            except ConfigValidationError as e:
-                raise e
-            except Exception as e:
-                raise ConfigValidationError(f"Invalid configuration value for {key}: {e}") from e
+
+            def _replace(_current: Any) -> Any:
+                return value
 
             try:
-                _write_config_file(self._config_path, data)
-            except OSError:
-                log.exception("ConfigService.set config file save failed")
+                changed = _config_store.apply(
+                    self._config_path,
+                    [(key, _replace)],
+                    emit=False,
+                    fail_on_unrepairable=False,
+                )
+            except ConfigValidationError:
+                raise
+            except ConfigError:
+                raise
 
-            ctx = None  # No UNO context in file-based test mode
-        else:
-            # set_config emits the one config:changed for this write.
-            set_config(key, value)
+            if changed:
+                bus = self._events or global_event_bus
+                bus.emit("config:changed", key=key, value=value, old_value=old_value, ctx=None)
             return
 
-        if value != old_value:
-            bus = self._events or global_event_bus
-            bus.emit("config:changed", key=key, value=value, old_value=old_value, ctx=ctx)
-
-    def set_batch(self, changes: Any, old_values: Any = None) -> dict[str, Any]:
-        """Set multiple config values at once. Returns dict of changed keys.
-
-        Used by the generic Options handler; delegates to set() so that
-        ai.<field> keys are also mapped through the simple AI settings layer.
-        """
-        diffs = {}
-        for key, value in (changes or {}).items():
-            before = self.get(key)
-            if value == before:
-                continue
-            self.set(key, value)
-            diffs[key] = (before, value)
-        return diffs
+        # set_config emits the one config:changed for this write.
+        set_config(key, value)
 
     def remove(self, key: str, caller_module: str | None = None) -> None:
         """Reset a config key."""
         self._check_write_access(key, caller_module)
-        if self._config_path and os.path.exists(self._config_path):
+        if self._config_path:
+            # Same store as production remove_config. emit=False so this
+            # method emits the one event (test files have no UNO ctx).
             try:
-                with open(self._config_path, "r", encoding="utf-8") as f:
-                    data = parse_config_json_text(f.read())
-                if isinstance(data, dict) and key in data:
-                    del data[key]
-                    _write_config_file(self._config_path, data)
-            except OSError as e:
+                changed = _config_store.remove(self._config_path, key, emit=False)
+            except ConfigError as e:
                 log.warning("ConfigService.remove config file error for key %s: %s", key, e)
+                return
+            if changed:
+                bus = self._events or global_event_bus
+                bus.emit("config:changed", key=key, value=None, old_value=None, ctx=None)
         else:
             remove_config(key)
 

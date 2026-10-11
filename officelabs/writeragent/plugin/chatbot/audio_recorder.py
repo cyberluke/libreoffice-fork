@@ -44,7 +44,6 @@ from plugin.chatbot.audio_recorder_state import (
 )
 from plugin.scripting.audio_recorder_service import (
     RecordingStopHandoff,
-    ensure_downloaded_audio_on_path,
     make_temp_wav_path,
     monitor_recording_stdout,
     resolve_recording_python,
@@ -53,6 +52,7 @@ from plugin.scripting.audio_recorder_service import (
     terminate_recording_process,
     wait_for_recording_ready,
 )
+from plugin.scripting.native_binaries import ensure_native_binaries_on_path
 from plugin.scripting.audio_silence_detector import SilenceDetector, load_silence_detector_config
 
 log = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ def _wav_file_has_bytes(path: str | None) -> bool:
     if not path:
         return False
     try:
-        return os.path.isfile(path) and os.path.getsize(path) > 0
+        return os.path.isfile(path) and os.path.getsize(path) > 44
     except OSError:
         return False
 
@@ -111,6 +111,7 @@ class AudioRecorder:
     channels: int = 1
     ctx: Any
     _auto_stop_lock: threading.Lock
+    _wav_lock: threading.Lock
     state: AudioRecorderState
     _test_skip_spawn: bool
     _test_missing_wav: bool
@@ -125,11 +126,15 @@ class AudioRecorder:
         self._stop_handoff: RecordingStopHandoff | None = None
         self._auto_stopped_path: str | None = None
         self._auto_stop_lock = threading.Lock()
+        # Held across host writeframes so Stop can close the WAV only after
+        # that callback has dropped the file.
+        self._wav_lock = threading.Lock()
         self.stream: Any = None
         self.wav_file: Any = None
         self._silence_detector: SilenceDetector | None = None
         self._on_auto_stop: Callable[[], None] | None = None
         self._on_silence_progress: Callable[[int], None] | None = None
+        self._on_recording_error: Callable[[str], None] | None = None
         self.state = AudioRecorderState(status="idle")
         # Packet G native tests: skip venv/PortAudio spawn and use inject_wav.
         self._test_skip_spawn = False
@@ -144,10 +149,12 @@ class AudioRecorder:
         *,
         on_auto_stop: Callable[[], None] | None = None,
         on_silence_progress: Callable[[int], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
     ) -> None:
-        """Register UI hooks for silence-based auto-stop (venv and host capture)."""
+        """Register UI hooks for silence-based auto-stop and child errors."""
         self._on_auto_stop = on_auto_stop
         self._on_silence_progress = on_silence_progress
+        self._on_recording_error = on_error
 
     def _notify_auto_stop(self, path: str | None = None) -> None:
         with self._auto_stop_lock:
@@ -161,6 +168,30 @@ class AudioRecorder:
             callback()
         except Exception as exc:
             log.debug("Failed to dispatch audio auto-stop callback: %s", exc)
+
+    def _notify_recording_error(self, msg: str) -> None:
+        """Stdout-monitor hook. Must not raise (ReportErrorEffect raises).
+
+        A child ``error`` after ready used to call ``_apply_event`` on the
+        monitor thread. That raised, and StopRecordingEffect then deleted a
+        non-empty WAV because status was already ``error``. The panel posts
+        ``on_error`` onto the UI thread, the same way silence auto-stop does.
+        """
+        callback = self._on_recording_error
+        if callback is not None:
+            try:
+                callback(msg)
+            except Exception as exc:
+                log.debug("Failed to dispatch audio error callback: %s", exc)
+            return
+        self.apply_stdout_error(msg)
+
+    def apply_stdout_error(self, msg: str) -> None:
+        """Apply a post-ready child error without escaping ReportErrorEffect."""
+        try:
+            self._apply_event(ErrorOccurredEvent(msg))
+        except RuntimeError:
+            log.warning("audio recorder: %s", msg)
 
     def _notify_silence_progress(self, ms: int) -> None:
         if self._on_silence_progress is None:
@@ -182,7 +213,7 @@ class AudioRecorder:
             proc,
             on_auto_stopped=lambda path: self._notify_auto_stop(path),
             on_silence_progress=self._notify_silence_progress,
-            on_error=lambda msg: self._apply_event(ErrorOccurredEvent(msg)),
+            on_error=self._notify_recording_error,
             handoff=handoff,
         )
 
@@ -209,12 +240,7 @@ class AudioRecorder:
             except Exception:
                 pass
             self.wav_file = None
-        if self.temp_filename:
-            try:
-                os.remove(self.temp_filename)
-            except OSError as exc:
-                log.debug("Failed to remove temp_filename during cleanup: %s", exc)
-            self.temp_filename = None
+        self._delete_wav()
 
     def _keep_recorded_wav_or_cleanup(
         self,
@@ -224,13 +250,12 @@ class AudioRecorder:
     ) -> None:
         """Prefer an on-disk WAV over deleting it when stop's handshake fails.
 
-        What was wrong: a lost ``ok`` line raised here, ``_cleanup_failed_start``
-        deleted ``temp_filename``, and Stop Rec sent nothing.
-        How: the stdout monitor and ``stop_recording_process`` both read the
-        child pipe, and the monitor ignored ``ok``.
-        Why this keeps the file: the child has already been writing that path,
-        so a non-empty WAV is still the recording. ``auto_path`` is the same
-        idea for silence auto-stop, which publishes the path before ``ok``.
+        A lost ``ok`` must not delete the WAV. The stdout monitor and
+        ``stop_recording_process`` both read the child pipe, and the monitor
+        ignores ``ok``, so the handshake can fail after the child has already
+        written the path. A non-empty file is still the recording.
+        ``auto_path`` is the same idea for silence auto-stop, which publishes
+        the path before ``ok``.
         """
         if auto_path:
             self.temp_filename = auto_path
@@ -304,9 +329,23 @@ class AudioRecorder:
                 self._apply_event(DeviceReadyEvent())
                 if ctrl.get("auto_stop"):
                     self._write_injected_wav()
-                    self._notify_auto_stop(self.temp_filename)
                     # One-shot: G4 must not leave auto_stop for G5–G15.
                     write_stub_recorder_control(auto_stop=False)
+                    # Report auto-stop from a worker, matching the real silence
+                    # detector's stdout monitor thread. Firing it inside Record's
+                    # start transition posts STOP_REC_CLICKED inline under
+                    # WRITERAGENT_TESTING, so the send drain re-enters this
+                    # recorder mid-start on the URP Record click and wedges
+                    # soffice. The worker post lands on a later VCL tick after
+                    # Record has returned.
+                    from plugin.framework.worker_pool import run_in_background
+
+                    run_in_background(
+                        self._notify_auto_stop,
+                        self.temp_filename,
+                        name="audio-rec-stub-auto-stop",
+                        dedicated=True,
+                    )
                 return
             silence_config = load_silence_detector_config()
             self._auto_stopped_path = None
@@ -329,7 +368,7 @@ class AudioRecorder:
             else:
                 # Host-side capture via downloaded sounddevice binaries (no venv).
                 try:
-                    ensure_downloaded_audio_on_path()
+                    ensure_native_binaries_on_path()
                     import sounddevice as sd
 
                     self.temp_filename = make_temp_wav_path()
@@ -346,10 +385,23 @@ class AudioRecorder:
                     def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
                         if status:
                             print(status, file=sys.stderr)
-                        if self.state.status != "recording" or not self.wav_file:
-                            return
                         pcm = bytes(indata)
-                        self.wav_file.writeframes(pcm)
+                        with self._wav_lock:
+                            wav = self.wav_file
+                            # Status and the file are read together. Stop nulls
+                            # wav_file under the same lock before close, so a
+                            # chunk cannot pass this check and then write a
+                            # closed file.
+                            if self.state.status != "recording" or wav is None:
+                                return
+                            try:
+                                wav.writeframes(pcm)
+                            except Exception:
+                                # Stop may already have closed the WAV.
+                                # Swallow the write so the exception does not
+                                # abort the PortAudio thread and drop later chunks.
+                                log.debug("host recording writeframes failed", exc_info=True)
+                                return
                         detector = self._silence_detector
                         if detector is None or not silence_config.enabled:
                             return
@@ -405,12 +457,9 @@ class AudioRecorder:
                     log.debug("Failed to close stream on StopRecordingEffect: %s", e)
                 self.stream = None
 
-            if self.wav_file is not None:
-                try:
-                    self.wav_file.close()
-                except Exception as e:
-                    log.debug("Failed to close wav_file on StopRecordingEffect: %s", e)
-                self.wav_file = None
+            # stream.stop() returns only after the current callback does, and
+            # that callback no longer holds _wav_lock. Close after that.
+            self._close_host_wav()
             self._silence_detector = None
 
             proc = self._proc
@@ -424,11 +473,17 @@ class AudioRecorder:
             if proc is not None and self.temp_filename and self.state.status != "error":
                 try:
                     if auto_path and proc.poll() is not None:
+                        # The child has already exited after auto-stop.
+                        # Reap it and drop the stderr drain; updating
+                        # temp_filename alone leaves that thread in
+                        # _recording_stderr_drains.
+                        terminate_recording_process(proc)
                         self.temp_filename = auto_path
                     elif proc.poll() is None:
                         path = stop_recording_process(proc, fallback_path=auto_path, handoff=handoff)
                         self.temp_filename = path
                     else:
+                        terminate_recording_process(proc)
                         self.temp_filename = auto_path or self.temp_filename
                 except Exception as exc:
                     self._keep_recorded_wav_or_cleanup(proc, auto_path, exc)
@@ -436,7 +491,11 @@ class AudioRecorder:
                 terminate_recording_process(proc)
 
             if self.state.status == "error":
-                self._cleanup_failed_start()
+                # Failed start still deletes an empty file. A child error
+                # after ready hits this same branch, and _cleanup_failed_start
+                # used to unlink the WAV the child had already written.
+                if not _wav_file_has_bytes(self.temp_filename):
+                    self._cleanup_failed_start()
 
         elif isinstance(effect, ReportErrorEffect):
             raise RuntimeError(effect.error_message)
@@ -452,7 +511,27 @@ class AudioRecorder:
 
     def stop_recording(self) -> str | None:
         self._apply_event(StopRequestedEvent())
-        return self.temp_filename
+        path = self.temp_filename
+        self.temp_filename = None
+        return path
+
+    def _close_host_wav(self) -> None:
+        """Close the host WAV after the capture callback has dropped it.
+
+        Stop must not close wav_file while the PortAudio callback can
+        still be inside writeframes, and cleanup's failure path must close
+        the file or the mic handle stays open. This waits for _wav_lock,
+        clears the attribute the callback checks, then closes.
+        """
+        with self._wav_lock:
+            wav = self.wav_file
+            self.wav_file = None
+            if wav is None:
+                return
+            try:
+                wav.close()
+            except Exception as e:
+                log.debug("Failed to close wav_file: %s", e)
 
     def cleanup(self) -> None:
         """Terminate an in-flight recording child (panel teardown)."""
@@ -460,6 +539,9 @@ class AudioRecorder:
             try:
                 self._apply_event(StopRequestedEvent())
             except Exception:
+                # A failed Stop must not leave the host WAV open. The
+                # callback can still be inside writeframes, so stop the
+                # stream first (that waits for the callback) and close after.
                 terminate_recording_process(self._proc)
                 self._proc = None
                 self._stdout_monitor = None
@@ -474,3 +556,14 @@ class AudioRecorder:
                     except Exception:
                         pass
                     self.stream = None
+                self._close_host_wav()
+                self._silence_detector = None
+        self._delete_wav()
+
+    def _delete_wav(self) -> None:
+        if self.temp_filename:
+            try:
+                os.remove(self.temp_filename)
+            except OSError as exc:
+                log.debug("Failed to remove temp_filename: %s", exc)
+            self.temp_filename = None

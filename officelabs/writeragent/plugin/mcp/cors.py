@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 log = logging.getLogger("writeragent.mcp.cors")
 
-from plugin.framework.deal_shim import DEAL_MAX_CMD_ARGS, DEAL_MAX_ORIGIN, ascii_bounded, deal, inverse_ensure
+from plugin.framework.deal_shim import DEAL_MAX_CMD_ARGS, DEAL_MAX_ORIGIN, UNDER_CROSSHAIR, ascii_bounded, deal, inverse_ensure
 
 MCP_CORS_ORIGINS_KEY = "mcp.cors_allowed_origins"
 
@@ -53,18 +53,63 @@ _HEADER_LIST_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV
 PREFLIGHT_MAX_AGE = "86400"
 
 
-def _deal_origin_ok(origin: object) -> bool:
+def _deal_origin_ok_pytest(origin: object) -> bool:
+    # Browser Origin headers are not limited to DEAL_MAX_ORIGIN or the
+    # URL-safe alphabet. A junk or huge Origin used to raise
+    # PreContractError out of send_cors_headers (HTTP 500). The body
+    # returns False / None. CrossHair keeps the closed alphabet.
+    return isinstance(origin, str)
+
+
+def _deal_origin_ok_crosshair(origin: object) -> bool:
     """Closed Origin domain: URL-safe alphabet, DEAL_MAX_ORIGIN length."""
     return isinstance(origin, str) and len(origin) <= DEAL_MAX_ORIGIN and all(c in _ORIGIN_CHARS for c in origin)
 
 
-def _deal_allow_headers_ok(value: object) -> bool:
+_deal_origin_ok = _deal_origin_ok_crosshair if UNDER_CROSSHAIR else _deal_origin_ok_pytest
+
+
+def _deal_allow_headers_ok_pytest(value: object) -> bool:
+    # Access-Control-Request-Headers from a browser can be long and can
+    # contain characters outside the token alphabet. The body unions them.
+    return isinstance(value, str)
+
+
+def _deal_allow_headers_ok_crosshair(value: object) -> bool:
     """Preflight header-list domain: ascii tokens, few commas (not 32-char junk)."""
     if not isinstance(value, str) or not ascii_bounded(value, DEAL_MAX_ORIGIN):
         return False
     if value.count(",") > DEAL_MAX_CMD_ARGS:
         return False
     return all(c in _HEADER_LIST_CHARS for c in value)
+
+
+_deal_allow_headers_ok = (
+    _deal_allow_headers_ok_crosshair if UNDER_CROSSHAIR else _deal_allow_headers_ok_pytest
+)
+
+
+def _deal_origins_config_ok_pytest(value: object) -> bool:
+    # User config may list more than DEAL_MAX_CMD_ARGS origins. The body
+    # drops entries it cannot normalize.
+    return value is None or isinstance(value, (str, list))
+
+
+def _deal_origins_config_ok_crosshair(value: object) -> bool:
+    return (
+        value is None
+        or (isinstance(value, str) and _deal_origin_ok(value))
+        or (
+            isinstance(value, list)
+            and len(value) <= DEAL_MAX_CMD_ARGS
+            and all(_deal_origin_ok(item) for item in value)
+        )
+    )
+
+
+_deal_origins_config_ok = (
+    _deal_origins_config_ok_crosshair if UNDER_CROSSHAIR else _deal_origins_config_ok_pytest
+)
 
 
 @deal.pre(lambda value: value is None or _deal_origin_ok(value))
@@ -78,18 +123,36 @@ def normalize_cors_origin(value: str | None) -> str | None:
     origin = str(value).strip()
     if not origin:
         return None
-    if origin.endswith("/"):
-        origin = origin.rstrip("/")
-    lower = origin.lower()
-    if not (lower.startswith("http://") or lower.startswith("https://")):
+    # Origins are compared after parsing, not as exact strings.
+    # https://App.Example.com and http://host:80 must match the canonical
+    # scheme://host[:port] with scheme and host lowercased.
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
         return None
-    return origin
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        return None
+    host = parsed.hostname
+    if not host:
+        return None
+    host = host.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = parsed.port
+    if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
+        port = None
+    if port is not None:
+        netloc = f"{host}:{port}"
+    else:
+        netloc = host
+    return f"{scheme}://{netloc}"
 
 
 # Deep check-all run 32840960268 hung here at the 360-minute job wall (Prev 9:51
 # on the unique-length post, then the runner was still on this FQN at cancel).
 # Nested unique-length ensure is skipped under CrossHair; cheap list/str posts stay.
-@deal.pre(lambda value: value is None or (isinstance(value, str) and _deal_origin_ok(value)) or (isinstance(value, list) and len(value) <= DEAL_MAX_CMD_ARGS and all(_deal_origin_ok(item) for item in value)))
+@deal.pre(lambda value: _deal_origins_config_ok(value))
 @deal.post(lambda result: isinstance(result, list) and all(isinstance(x, str) for x in result))
 @inverse_ensure(lambda value, result: len(result) == len(set(result)))
 def normalize_origins_list(value: Any) -> list[str]:
@@ -141,7 +204,7 @@ def is_private_browser_origin(origin: str) -> bool:
     return ip.is_private or ip.is_loopback or ip.is_link_local
 
 
-@deal.pre(lambda origins: origins is None or (isinstance(origins, str) and _deal_origin_ok(origins)) or (isinstance(origins, list) and len(origins) <= DEAL_MAX_CMD_ARGS and all(_deal_origin_ok(x) for x in origins)))
+@deal.pre(lambda origins: _deal_origins_config_ok(origins))
 def set_extra_allowed_origins(origins: Any) -> None:
     # crosshair: off  # frozenset(normalize_origins_list) leftover (cover-all 33569420452: ~4419s est / 6120 ex). Doable later.
     """Update explicit-origin cache used by is_safe_origin (HTTP threads, no ctx)."""
@@ -256,6 +319,85 @@ def reject_forbidden_origin(handler: Any) -> bool:
 
     log_forbidden_origin(handler)
     # No Access-Control-* — a reflected ACAO would let the browser read the 403.
+    handler._response_started = True
+    handler.send_response(403)
+    handler.send_header("Content-Length", "0")
+    handler.end_headers()
+    return True
+
+
+def get_configured_tunnel_host() -> str | None:
+    """Hostname of the running MCP tunnel's public URL, if any."""
+    try:
+        from plugin.mcp import _shared_tunnel
+
+        pub_url = _shared_tunnel.public_url if _shared_tunnel is not None else None
+    except Exception:
+        log.debug("tunnel host lookup for Host check failed", exc_info=True)
+        return None
+    if not pub_url:
+        return None
+    return urlparse(pub_url if "://" in pub_url else f"https://{pub_url}").hostname
+
+
+def _is_specific_bind_host(bind_host: str | None) -> bool:
+    """True when *bind_host* names one host (not empty and not a wildcard address)."""
+    name = (bind_host or "").strip().strip("[]")
+    if not name:
+        return False
+    try:
+        return not ipaddress.ip_address(name).is_unspecified
+    except ValueError:
+        return True
+
+
+def is_safe_host(host_header: str | None, tunnel_host: str | None = None, bind_host: str | None = None) -> bool:
+    """DNS-rebinding protection: True when Host is localhost / 127.0.0.1 / [::1] (optional port) or tunnel host."""
+    if not host_header:
+        return False
+    raw = host_header.strip()
+    if not raw:
+        return False
+    if raw.startswith("["):
+        closing = raw.find("]")
+        if closing == -1:
+            return False
+        host = raw[: closing + 1].lower()
+        rest = raw[closing + 1 :]
+        if rest and (not rest.startswith(":") or not rest[1:].isdigit()):
+            return False
+    elif ":" in raw:
+        host, rest = raw.split(":", 1)
+        if not rest.isdigit():
+            return False
+        host = host.lower()
+    else:
+        host = raw.lower()
+
+    if host in _SAFE_LOOPBACK_HOSTS or (host.startswith("[") and host[1:-1] in _SAFE_LOOPBACK_HOSTS):
+        return True
+    if _is_specific_bind_host(bind_host) and host.strip("[]") == str(bind_host).strip().strip("[]").lower():
+        return True
+
+    active_tunnel = tunnel_host or get_configured_tunnel_host()
+    if active_tunnel:
+        th = active_tunnel.strip()
+        if "://" in th:
+            th = urlparse(th).hostname or th
+        elif ":" in th and not th.startswith("["):
+            th = th.split(":", 1)[0]
+        if host == th.lower():
+            return True
+    return False
+
+
+def reject_forbidden_host(handler: Any) -> bool:
+    """If Host header is missing or unsafe (DNS rebinding), write 403 and return True."""
+    host_header = handler.headers.get("Host") if hasattr(handler, "headers") and handler.headers else None
+    if is_safe_host(host_header, bind_host=getattr(getattr(handler, "server", None), "bind_host", None)):
+        return False
+    log.warning("Rejecting request with forbidden Host header: %r", host_header)
+    handler._response_started = True
     handler.send_response(403)
     handler.send_header("Content-Length", "0")
     handler.end_headers()

@@ -1,0 +1,8 @@
+cd D:/_SATIN_AI/LibreOffice/sw && make -j 24 -rs
+[build LOC] top level modules: sw
+[build DEP] LNK:Library/swlo.dll.d
+[build LNK] Library/swlo.dll
+[build CMP] sw/util/sw
+[build BIN] top level modules: sw
+[build ALL] top level modules: build-non-l10n-only build-l10n-only
+SW_EXIT=0

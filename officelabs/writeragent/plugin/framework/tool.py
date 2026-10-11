@@ -23,9 +23,12 @@ the ``_tools`` dict — do not register from a worker. Synchronous tools
 that touch the document are marshaled onto the LibreOffice UI thread
 before they run. If a tool declares a timeout, ``execute`` starts a
 **dedicated** background thread and ``join``s it; when the timer fires
-that thread is **abandoned** (it may still finish, but the result is
-dropped). Python cannot kill a thread cleanly. Cooperative cancel is
-``SendCancellation`` (Stop sets a flag / closes HTTP), not
+that thread is **abandoned** if it has not queued a result (it may
+still finish, and that late result is dropped). A result already on
+the queue is returned — the thread can still be alive while it
+unwinds. A worker that dies without queuing a result returns an error
+instead of blocking. Python cannot kill a thread cleanly. Cooperative
+cancel is ``SendCancellation`` (Stop sets a flag / closes HTTP), not
 ``thread.kill``.
 """
 
@@ -36,13 +39,22 @@ import queue
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, cast
 
-from plugin.framework.errors import make_tool_error
+from plugin.framework.errors import (
+    WriterAgentException,
+    format_error_payload,
+    is_document_disposed,
+    is_tool_document_disposed,
+    make_tool_error,
+)
 from plugin.framework.worker_pool import run_in_background
 from plugin.framework.thread_guard import assert_main_thread
 from plugin.framework.queue_executor import execute_on_main_thread
 
 from plugin.framework.deal_shim import DEAL_MAX_TOKEN, ascii_bounded, deal
-from plugin.framework.tool_schema import _normalize_schema_for_strict_providers as _normalize_schema_for_strict_providers, to_mcp_schema as to_mcp_schema, to_openai_schema as to_openai_schema
+from plugin.framework.tool_schema import _normalize_schema_for_strict_providers as _normalize_schema_for_strict_providers, call_properties as call_properties, coerce_call_args as coerce_call_args, to_mcp_schema as to_mcp_schema, to_openai_schema as to_openai_schema, without_unknown_kwargs as without_unknown_kwargs
+
+_log = logging.getLogger(__name__)
+log = logging.getLogger("writeragent.tools")
 
 
 def _doc_type_str_from_doc(doc: Any) -> str | None:
@@ -57,12 +69,9 @@ def _doc_type_str_from_doc(doc: Any) -> str | None:
         label = doc_type_label_for_enum(dt, impress_as_draw=True)
         return None if label == "unknown" else label
     except Exception:
-        pass
+        _log.exception("doc_type probe failed")
     return None
 
-
-_log = logging.getLogger(__name__)
-log = logging.getLogger("writeragent.tools")
 
 # verb_noun tools (legacy/core): name starts with a read verb.
 _READ_PREFIXES = ("get_", "read_", "list_", "find_", "search_", "count_")
@@ -89,6 +98,9 @@ class ToolContext:
         doc_type:  Detected document type ("writer", "calc", "draw").
         services:  ServiceRegistry — access to all services.
         caller:    Who triggered the call ("chatbot", "mcp", "menu").
+        active_page_index: Optional current page index in the view.
+        active_domain: Optional domain string restricting tool access.
+        python_tool_domain: Optional domain string for Python execution scopes.
         status_callback: Optional callback for status updates (Writer tools).
         append_thinking_callback: Optional callback for thinking text (Writer tools).
         stop_checker: Optional callable () -> bool; if present and returns True, tool should stop.
@@ -187,6 +199,34 @@ class ToolContext:
             self.stop_checker = send_cancellation.is_cancelled
 
 
+def _tool_arg_matches_type(value: Any, schema_type: Any) -> bool:
+    """True when *value* fits a JSON Schema ``type`` (string or union list).
+
+    A missing type is accepted. An unknown name such as ``"str"`` matches
+    nothing. Unions accept any listed JSON Schema member.
+    """
+    if schema_type is None:
+        return True
+    types = schema_type if isinstance(schema_type, list) else [schema_type]
+    for one in types:
+        if one == "string" and isinstance(value, str):
+            return True
+        if one == "integer" and type(value) is int:
+            return True
+        if one == "number" and type(value) in (int, float):
+            return True
+        if one == "boolean" and type(value) is bool:
+            return True
+        if one == "array" and isinstance(value, list):
+            return True
+        if one == "object" and isinstance(value, dict):
+            return True
+        if one == "null" and value is None:
+            return True
+        # Unknown names (``"str"``) used to accept any value. They match nothing.
+    return False
+
+
 class ToolBase(ABC):
     """Abstract base for every tool exposed to LLM agents and MCP clients.
 
@@ -207,7 +247,9 @@ class ToolBase(ABC):
         intent:      Optional group label (e.g. "navigate", "edit", "review",
                      "media") for ``get_tools(intent=...)`` filtering.
         is_mutation:  Whether the tool mutates the document.  ``None``
-                     means auto-detect from name prefix.
+                     means auto-detect from a read prefix (``get_``,
+                     ``list_``, …) or a later domain-verb token
+                     (``image_list``, ``style_get_info``).
         long_running: Hint that the tool may take a while (e.g. image gen).
     """
 
@@ -273,11 +315,22 @@ class ToolBase(ABC):
         for key in required:
             if key not in kwargs:
                 return False, f"Missing required parameter: {key}"
-        props = schema.get("properties", {})
         extra_ok = getattr(self, "scripting_only_parameters", None) or frozenset()
+        # Same allow-list as execute and the pre-shim check. Empty
+        # properties {} is a closed schema, not "accept any kwargs".
+        props_dict = call_properties(schema)
         for key in kwargs:
-            if props and key not in props and key not in extra_ok:
+            if props_dict is not None and key not in props_dict and key not in extra_ok:
                 return False, f"Unknown parameter: {key}"
+        for key, value in kwargs.items():
+            prop = props_dict.get(key) if props_dict is not None else None
+            if not isinstance(prop, dict) or key in extra_ok:
+                continue
+            enum = prop.get("enum")
+            if isinstance(enum, list) and enum and value not in enum:
+                return False, f"Invalid value for {key}: {value!r}"
+            if not _tool_arg_matches_type(value, prop.get("type")):
+                return False, f"Invalid type for {key}: expected {prop.get('type')}, got {type(value).__name__}"
         return True, None
 
     @abstractmethod
@@ -303,12 +356,11 @@ class ToolBase(ABC):
         try:
             # Defense in depth: ToolRegistry.execute marshals sync tools to the main thread;
             # this assert still catches direct execute_safe calls from background workers.
-            # bypass_thread_guard is honored at the call site in ToolRegistry.execute (it calls .execute directly).
+            # Only ToolRegistry.execute_unguarded skips this method. A model
+            # argument named bypass_thread_guard is dropped by execute().
             if not self.is_async():
                 assert_main_thread(self.name or "synchronous tool")
                 if self.requires_document and ctx is not None and getattr(ctx, "doc", None) is not None:
-                    from plugin.framework.errors import is_document_disposed
-
                     if is_document_disposed(ctx.doc):
                         return self._tool_error("Document was closed or disposed by LibreOffice", code="DOCUMENT_DISPOSED")
             # Async / review-wait tools skip this probe so wait can run off the main thread.
@@ -318,12 +370,15 @@ class ToolBase(ABC):
             return self.execute(ctx, **kwargs)
 
         except Exception as e:
-            from plugin.framework.errors import is_tool_document_disposed
-
             _log.exception("Tool '%s' execution failed", self.name if self.name else "<unknown>")
             doc = getattr(ctx, "doc", None) if ctx is not None else None
             if is_tool_document_disposed(e, doc):
                 return self._tool_error("Document was closed or disposed by LibreOffice", code="DOCUMENT_DISPOSED", original_error=str(e), error_type=type(e).__name__)
+            # Returning _tool_error() already keeps the code. Raising
+            # ToolPermissionError / ConfigError used to be rewritten as
+            # TOOL_EXECUTION_ERROR and lose details.
+            if isinstance(e, WriterAgentException):
+                return format_error_payload(e)
             # Bare RuntimeException often has an empty message; fall back to the type name.
             err_msg = str(e).strip() or type(e).__name__
             return self._tool_error(f"Tool execution failed: {err_msg}", code="TOOL_EXECUTION_ERROR", original_error=str(e), error_type=type(e).__name__)
@@ -383,9 +438,8 @@ class ToolBaseDummy:
     def _tool_error(self, message: str, code: str = "TOOL_EXECUTION_ERROR", **details: Any) -> dict[str, Any]:
         """Standardized JSON payload for tool errors.
 
-        Delegates to the central make_tool_error (see the real ToolBase
-        implementation and errors.make_tool_error). This removes the
-        previous near-duplicate.
+        We keep _tool_error on the dummy base, not a bare marker, because
+        disabled tools still call self._tool_error and pyright checks them.
         """
         return make_tool_error(message, code=code, **details)
 
@@ -416,8 +470,9 @@ def _is_specialized_domain_tool(t: Any, active_domain: str) -> bool:
 
 # Hidden from default chat/MCP tool lists; exposed via delegate_to_specialized_writer_toolset.
 _DEFAULT_EXCLUDE_TIERS = frozenset({"specialized", "specialized_control", "mcp"})
+# Sync tools that declare timeout= cannot enforce it. Warn once per name.
+_sync_timeout_warned: set[str] = set()
 _UNSET_EXCLUDE_TIERS = object()
-
 
 def tool_supports_document(tool: ToolBase, *, doc_type: str | None, uno_services_supported: frozenset[str] | None) -> bool:
     """Return True when *tool* is allowed on a document with the cached type/services."""
@@ -427,7 +482,6 @@ def tool_supports_document(tool: ToolBase, *, doc_type: str | None, uno_services
     services = uno_services_supported
     if not services and doc_type:
         from plugin.doc.doc_type import uno_services_for_doc_type_label
-
         services = uno_services_for_doc_type_label(doc_type)
 
     if tool.uno_services is not None and services:
@@ -455,6 +509,10 @@ class ToolRegistry:
     def __init__(self, services: Any) -> None:
         self._services = services
         self._tools: dict[str, ToolBase] = {}  # name -> ToolBase instance
+        # Shared names (shape_upsert / manage_charts) last-wins the instance but
+        # must keep the union of required_core_tools. ClassVar cannot be set on
+        # the instance, so store the merge here.
+        self._required_core_union: dict[str, frozenset[str]] = {}
         self.batch_mode = False  # suppress per-tool cache invalidation
 
     # ── Registration ──────────────────────────────────────────────────
@@ -483,6 +541,15 @@ class ToolRegistry:
             # wrappers for shape_upsert / manage_charts) — log so registration order is visible.
             if type(existing_tool).__name__ != type(tool).__name__ or type(existing_tool).__module__ != type(tool).__module__:
                 log.warning("Tool '%s' already registered (class %s from %s), replacing with class %s from %s", tool.name, type(existing_tool).__name__, type(existing_tool).__module__, type(tool).__name__, type(tool).__module__)
+            # Shared names replace the instance (Writer loads last). Union both
+            # required_core_tools sets, plus any prior merge, or Calc
+            # shapes/charts never request get_sheet_summary / read_cell_range.
+            # get_tools still drops cores that fail tool_supports_document
+            # for the active doc.
+            prev = self._required_core_union.get(tool.name) or getattr(existing_tool, "required_core_tools", None)
+            nxt = getattr(tool, "required_core_tools", None)
+            if prev or nxt:
+                self._required_core_union[tool.name] = frozenset(prev or ()) | frozenset(nxt or ())
         self._tools[tool.name] = tool
 
     def auto_discover_package(self, package_name: str) -> None:
@@ -531,11 +598,14 @@ class ToolRegistry:
             uno_services_supported: Cached UNO service names from sidebar/MCP (no live doc probe).
             tier: Optional string; main chat tools use ``"core"``.
             intent: Optional string filtering by tool intent.
-            names: Optional list of specific tool names to include.
+            names: Optional collection of exact tool names. ``None`` applies
+                no name filter. An empty collection matches nothing. A bare
+                string is that one name, not a substring.
             filter_doc_type: If True, filters by doc model services or doc_type. Defaults to True.
             exclude_tiers: Tiers to omit from the result. If omitted, excludes
-                ``specialized`` and ``specialized_control`` so nested Writer tools
-                stay off the main tool list. Pass ``()`` or ``frozenset()`` to include all tiers.
+                ``specialized``, ``specialized_control``, and ``mcp`` so nested
+                Writer tools and MCP-only helpers stay off the main tool list.
+                Pass ``()`` or ``frozenset()`` to include all tiers.
             active_domain: If provided, dynamically includes specialized tools for this domain
                 and the specialized_workflow_finished tool.
         """
@@ -565,9 +635,7 @@ class ToolRegistry:
         if exclude_tiers is _UNSET_EXCLUDE_TIERS:
             to_exclude = _DEFAULT_EXCLUDE_TIERS
         else:
-            import typing
-
-            to_exclude = frozenset(cast("typing.Iterable[typing.Any]", exclude_tiers)) if exclude_tiers else frozenset()
+            to_exclude = frozenset(exclude_tiers) if exclude_tiers else frozenset()
 
         if active_domain:
             # If an active domain is set, restrict the list ONLY to the specialized tools
@@ -575,10 +643,10 @@ class ToolRegistry:
             # However, we also include any core tools explicitly requested by the domain.
 
             # First, find which core tools are required by any tool in this domain
-            required_core = set()
+            required_core: set[str] = set()
             for t in tools:
                 if _is_specialized_domain_tool(t, active_domain):
-                    req = getattr(t, "required_core_tools", None)
+                    req = (self._required_core_union.get(t.name) if t.name else None) or getattr(t, "required_core_tools", None)
                     if req:
                         required_core.update(req)
 
@@ -608,8 +676,17 @@ class ToolRegistry:
             tools = [t for t in tools if t.tier == tier]
         if intent:
             tools = [t for t in tools if t.intent == intent]
-        if names:
-            tools = [t for t in tools if t.name in names]
+        # Only None skips the filter. Callers pass tool names, not a substring
+        # to search. ``if names`` treats ``[]`` and ``""`` as no filter and
+        # returns every tool. A bare string is iterable, so ``t.name in
+        # "target"`` matches the tool named ``get``. A str is one exact name;
+        # any other collection becomes a set, and an empty set matches nothing.
+        if names is not None:
+            if isinstance(names, str):
+                name_set = frozenset((names,))
+            else:
+                name_set = frozenset(names)
+            tools = [t for t in tools if t.name in name_set]
         ctx = kwargs.get("ctx")
         if ctx is not None:
             from plugin.vision.vision_availability import filter_vision_specialized_tools
@@ -631,7 +708,7 @@ class ToolRegistry:
         if protocol == "openai":
             # get_image is only useful to a vision-capable text model on the chat path; hide it from
             # text-only models. The MCP path (below) always keeps it (client assumed vision-capable).
-            from plugin.vision.vision_availability import filter_get_image_for_text_only_model
+            from plugin.vision.image_filter import filter_get_image_for_text_only_model
 
             tools = filter_get_image_for_text_only_model(tools)
             schemas = [to_openai_schema(t, doc_type=doc_type) for t in tools]
@@ -669,16 +746,22 @@ class ToolRegistry:
         Sync tools are marshaled to the main thread by ``ToolRegistry.execute`` before this runs.
 
         Timeout **abandons** the worker; it does not kill the dedicated thread.
-        The thread may run to completion with its result dropped. If *kwargs*
-        include a ``ToolContext`` with ``send_cancellation``, that flag is set
-        so cooperative tools can stop at the next ``stop_checker`` poll.
+        The thread may run to completion with its result dropped when nothing
+        was queued yet. A result already queued is kept. This method does not
+        cancel the send: the caller still has to deliver the ``TOOL_TIMEOUT``
+        dict (the drain turns that into ``TOOL_DONE``).
         """
         # crosshair: off
         if timeout <= 0:
             return func(**kwargs)
 
         if not run_threaded:
-            log.warning("Tool '%s' declares timeout=%s but is synchronous; timeout is ignored. Set is_async() to True to enable timeout enforcement.", tool_name, timeout)
+            # The timeout needs a thread, and execute hits this path on each
+            # run. One line per tool name is enough; warning every call
+            # floods the log for a sync tool with timeout=.
+            if tool_name not in _sync_timeout_warned:
+                _sync_timeout_warned.add(tool_name)
+                log.warning("Tool '%s' declares timeout=%s but is synchronous; timeout is ignored. Set is_async() to True to enable timeout enforcement.", tool_name, timeout)
             return func(**kwargs)
 
         result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
@@ -688,41 +771,94 @@ class ToolRegistry:
                 result_queue.put(("success", func(**kwargs)))
             except Exception as e:
                 result_queue.put(("error", e))
+            except BaseException as exc:
+                # Queue the error before unwinding. ``except Exception`` leaves
+                # KeyboardInterrupt, SystemExit, and GeneratorExit off the
+                # queue. ``run_in_background`` lets BaseException unwind, the
+                # dedicated thread dies, ``join`` returns, ``is_alive()`` is
+                # false, and ``result_queue.get()`` blocks the send forever.
+                result_queue.put(("error", exc))
+                log.exception("Tool '%s' worker exited", tool_name)
+                raise
 
         worker_thread = run_in_background(worker, name=f"tool-timeout-{tool_name}", dedicated=True)
         worker_thread.join(timeout=timeout)
 
-        if worker_thread.is_alive():
-            ctx = kwargs.get("ctx")
-            cancel = getattr(ctx, "send_cancellation", None) if ctx is not None else None
-            if cancel is not None and hasattr(cancel, "cancel"):
-                try:
-                    cancel.cancel()
-                except Exception:
-                    log.debug("tool timeout: send_cancellation.cancel failed", exc_info=True)
-            return make_tool_error(f"Tool timed out after {timeout} seconds", code="TOOL_TIMEOUT", tool_name=tool_name)
+        def _queued() -> tuple[str, Any] | None:
+            try:
+                return result_queue.get_nowait()
+            except queue.Empty:
+                return None
 
-        result_type, result = result_queue.get()
+        # A queued result wins. The worker can ``put`` a success and still be
+        # alive while ``run_in_background`` logs and clears the thread-guard
+        # tag. Treating timeout as only ``is_alive()`` after ``join`` reports
+        # that finished mutation as TOOL_TIMEOUT, and a retry can apply it
+        # again. A live thread with an empty queue is still a timeout — the
+        # wait is not extended.
+        if worker_thread.is_alive():
+            queued = _queued()
+            if queued is None:
+                # The worker is already abandoned. Return the timeout dict and let
+                # the caller decide whether the send should stop. Calling
+                # ``send_cancellation.cancel()`` as well sets the drain stop
+                # checker, which treats the send as Stop and discards the
+                # error dict before ``TOOL_DONE`` is applied. The tool loop
+                # then waits forever for that event.
+                return make_tool_error(f"Tool timed out after {timeout} seconds", code="TOOL_TIMEOUT", tool_name=tool_name)
+        else:
+            queued = _queued()
+            if queued is None:
+                # Dead with nothing queued (the put itself failed, or the
+                # thread exited before the handler ran). Do not block on get().
+                return make_tool_error(
+                    f"Tool '{tool_name}' worker exited without a result",
+                    code="TOOL_WORKER_EXIT",
+                    tool_name=tool_name,
+                )
+
+        result_type, result = queued
         if result_type == "error":
+            if not isinstance(result, Exception):
+                # Re-raising BaseException would skip the send worker's
+                # ``except Exception`` and leave the turn waiting for TOOL_DONE.
+                return make_tool_error(
+                    f"Tool '{tool_name}' worker exited: {type(result).__name__}: {result}",
+                    code="TOOL_WORKER_EXIT",
+                    tool_name=tool_name,
+                    error_type=type(result).__name__,
+                )
             raise result  # Will be caught by outer try/except
 
         return result
 
-    def execute(self, tool_name: str, ctx: ToolContext, *, bypass_thread_guard: bool = False, **kwargs: Any) -> dict[str, Any]:
+    def execute(self, tool_name: str, ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
         """Execute a tool by name.
 
         Args:
             tool_name: Registered tool name.
             ctx:       ToolContext for this invocation.
-            bypass_thread_guard: If True, call ``tool.execute`` directly (no main-thread check).
-                Used only by ``scripts/prompt_optimization/tools_lo`` where UNO runs on a dedicated
-                LibreOffice worker thread (not Python's ``main_thread()``).
             **kwargs:  Tool arguments.
 
         Returns:
-            dict: Result from the tool execution (typically a ToolResult).
+            dict: Result from the tool execution (status ``ok`` or ``error``).
         """
         # crosshair: off
+        # A model could send an argument named bypass_thread_guard. Drop it so
+        # only execute_unguarded() can skip the main-thread marshal.
+        kwargs.pop("bypass_thread_guard", None)
+        return self._execute_impl(tool_name, ctx, False, **kwargs)
+
+    def execute_unguarded(self, tool_name: str, ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
+        """Execute a tool by name, bypassing the main-thread check.
+
+        Used only by ``scripts/prompt_optimization/tools_lo`` where UNO runs on a dedicated
+        LibreOffice worker thread (not Python's ``main_thread()``).
+        """
+        # crosshair: off
+        return self._execute_impl(tool_name, ctx, True, **kwargs)
+
+    def _execute_impl(self, tool_name: str, ctx: ToolContext, bypass_thread_guard: bool, **kwargs: Any) -> dict[str, Any]:
         try:
             tool = self._tools.get(tool_name)
             if tool is None:
@@ -735,10 +871,15 @@ class ToolRegistry:
 
             # Check document compatibility using cached doc_type / UNO services (no live doc probe).
             if not tool_supports_document(tool, doc_type=ctx.doc_type, uno_services_supported=getattr(ctx, "uno_services_supported", None)):
-                # Schema/registry bug: this tool should not have been advertised for
-                # this document. Raise (not UNKNOWN_TOOL) so callers see a programmer
-                # error. Hallucinated names already return make_tool_error(..., UNKNOWN_TOOL).
-                raise ValueError(f"Tool {tool_name} does not support the current document")
+                # A registered tool whose uno_services/doc_types miss this document
+                # used to raise ValueError, and ``except ValueError`` re-raised it
+                # into the model as a traceback. Unknown names stay UNKNOWN_TOOL.
+                # This path is a stable tool error the model can read.
+                return make_tool_error(
+                    f"Tool '{tool_name}' does not support the current document.",
+                    code="UNSUPPORTED_DOCUMENT",
+                    tool_name=tool_name,
+                )
 
             # Restrict kwargs to this tool's schema so extra keys (e.g. image_model
             # from API/LLM) do not cause "Unknown parameter" validation errors.
@@ -747,16 +888,26 @@ class ToolRegistry:
             # from training memory when the property was removed from the schema
             # (see docs/calc/date-time-handling.md S26).
             schema = tool.get_parameters(ctx.doc_type) or {}
-            props = (schema or {}).get("properties", {})
+            props = call_properties(schema) or {}
             extra_ok = (getattr(tool, "scripting_only_parameters", None) or frozenset()) if ctx.caller == "script" else frozenset()
-            if props:
-                kwargs = {k: v for k, v in kwargs.items() if k in props or k in extra_ok}
+            # One allow-list (including properties {}). The outbound check
+            # uses the same helper before any provider shim.
+            kept = without_unknown_kwargs(schema, kwargs, extra_ok)
+            # Keep the names that were dropped: they are reported back as ignored_parameters.
+            ignored: list[str] = sorted(k for k in kwargs if k not in kept)
+            kwargs = kept
 
-            # MCP widens array ``range`` to string|array. Several Calc tools index
-            # ``[0]``, so a bare string would become its first character.
-            if isinstance(kwargs.get("range"), str):
-                kwargs = dict(kwargs)
-                kwargs["range"] = [kwargs["range"]]
+            required = schema.get("required") or []
+            required_names = set(required) if isinstance(required, list) else set()
+            if any(v is None and k not in required_names for k, v in kwargs.items()):
+                # Advertised schemas allow JSON null on optional scalars. Models
+                # send null for an omitted optional, and validate() uses the
+                # source schema, which rejects None. Drop those keys so the
+                # tool sees the argument as omitted. A required null still
+                # fails validation.
+                kwargs = {k: v for k, v in kwargs.items() if v is not None or k in required_names}
+
+            kwargs = coerce_call_args(tool.name, props, kwargs)
 
             # Common context for all error details
             common_details = {"tool_name": tool_name}
@@ -768,7 +919,10 @@ class ToolRegistry:
             # Validate parameters
             ok, err = tool.validate(doc_type=ctx.doc_type, **kwargs)
             if not ok:
-                return make_tool_error(err, code="VALIDATION_ERROR", **common_details)
+                # "Missing required parameter: index" is exactly when the agent sent the value
+                # under another name (paragraph_index): show which names were dropped.
+                extra = {"ignored_parameters": ignored} if ignored else {}
+                return make_tool_error(err, code="VALIDATION_ERROR", **common_details, **extra)
 
             if getattr(ctx, "read_only_target", False) and tool.detects_mutation():
                 # Use the central factory (all tool errors now go through make_tool_error).
@@ -788,6 +942,10 @@ class ToolRegistry:
             if bypass_thread_guard or tool.is_async():
                 result = _invoke()
             else:
+                # We let the marshal TimeoutError become TOOL_REGISTRY_ERROR, not a
+                # TOOL_TIMEOUT/cancel path, because QueueExecutor raises it only for
+                # work that never started (started work is waited out), so nothing
+                # lands late and a retry is safe.
                 result = execute_on_main_thread(_invoke)
 
             # Ensure any returned dict with status='error' includes full context details
@@ -801,10 +959,14 @@ class ToolRegistry:
                             merged[k] = v
                     cast("dict[str, Any]", result)["details"] = merged
 
+            # The dropped keys used to vanish silently: image_insert(paragraph_index=70) -- the
+            # name image_list reports -- dropped the index and put the image at the view cursor
+            # with status ok (relato #25). Say which arguments were not used.
+            if ignored and isinstance(result, dict):
+                cast("dict[str, Any]", result).setdefault("ignored_parameters", ignored)
+
             return result
 
-        except ValueError:
-            raise
         except Exception as e:
             log.exception("Tool execution failed: %s", tool_name)
             return make_tool_error(f"Failed to execute tool '{tool_name}'", code="TOOL_REGISTRY_ERROR", tool_name=tool_name, error=str(e), type=type(e).__name__)

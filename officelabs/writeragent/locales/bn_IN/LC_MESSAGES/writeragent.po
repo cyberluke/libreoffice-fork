@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-26 14:02-0400\n"
+"POT-Creation-Date: 2026-10-07 23:17-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: Bengali <LL@li.org>\n"
@@ -193,17 +193,17 @@ msgstr "পুনর্নির্মাণ ব্যর্থ হয়েছ�
 msgid "TLS/SSL Error: {0}"
 msgstr "TLS/SSL ত্রুটি: {0}"
 
-#: plugin/framework/errors.py
+#: plugin/framework/errors.py plugin/framework/client/errors.py
 msgid "Invalid API Key. Please check your settings."
 msgstr "অবৈধ API কী। অনুগ্রহ করে আপনার সেটিংস চেক করুন।"
 
-#: plugin/framework/errors.py
+#: plugin/framework/errors.py plugin/framework/client/errors.py
 msgid "API access Forbidden. Your key may lack permissions for this model."
 msgstr ""
 "API অ্যাক্সেস নিষিদ্ধ। আপনার কী-তে সম্ভবত এই মডেলের জন্য অনুমতির অভাব "
 "রয়েছে।"
 
-#: plugin/framework/errors.py
+#: plugin/framework/errors.py plugin/framework/client/errors.py
 msgid "Endpoint not found (404). Check your URL and Model name."
 msgstr "এন্ডপয়েন্ট পাওয়া যায়নি (404)। আপনার URL এবং মডেলের নাম চেক করুন।"
 
@@ -287,17 +287,9 @@ msgstr "AI প্রোভাইডার একটি ত্রুটির র
 msgid "{resource_type} not found: {identifier}"
 msgstr "{resource_type} পাওয়া যায়নি: {identifier}"
 
-#: plugin/framework/config_schema.py
-msgid "Chat max tokens must be >= 0"
-msgstr "চ্যাট সর্বোচ্চ টোকেন অবশ্যই >= ০ হতে হবে"
-
-#: plugin/framework/config_schema.py
-msgid "Request timeout must be > 0"
-msgstr "অনুরোধের সময়সীমা অবশ্যই > ০ হতে হবে"
-
-#: plugin/framework/config_schema.py
-msgid "Temperature must be <= 1.0"
-msgstr "তাপমাত্রা অবশ্যই <= ১.০ হতে হবে"
+#: plugin/framework/queue_executor.py
+msgid "Waiting for another document's reply..."
+msgstr "অন্য নথির উত্তরের জন্য অপেক্ষা করা হচ্ছে..."
 
 #: plugin/framework/thread_guard.py
 msgid "UNO Thread Violation"
@@ -370,6 +362,7 @@ msgid "Error: {0}"
 msgstr "ত্রুটি: {0}"
 
 #: plugin/framework/client/llm_client.py
+#: plugin/framework/client/base_provider_shim.py
 msgid "Stream ended with finish_reason=error"
 msgstr "স্ট্রিমটি finish_reason=error দিয়ে শেষ হয়েছে"
 
@@ -407,55 +400,131 @@ msgstr "অনুগ্রহ করে সেটিংস-এ মডেল স�
 msgid "Please select a valid model in Settings (not a placeholder)."
 msgstr "অনুগ্রহ করে সেটিংস-এ একটি বৈধ মডেল নির্বাচন করুন (প্লেসহোল্ডার নয়)।"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_voices.py
 msgid "Hello, I'm your LibreOffice WriterAgent."
 msgstr "হ্যালো, আমি আপনার LibreOffice WriterAgent।"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
 #, python-brace-format
-msgid "Speech request failed ({0}): {1}"
-msgstr "স্পিচ অনুরোধ ব্যর্থ হয়েছে ({0}): {1}"
+msgid "Transcribing with local Whisper ({0})…"
+msgstr "স্থানীয় Whisper ({0}) দিয়ে প্রতিলিপি করা হচ্ছে…"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
 #, python-brace-format
-msgid "Speech request failed: {0}"
-msgstr "স্পিচ অনুরোধ ব্যর্থ হয়েছে: {0}"
+msgid ""
+"Transcribing with local Whisper ({0})… The first run downloads the model."
+msgstr ""
+"স্থানীয় Whisper ({0}) দিয়ে প্রতিলিপি করা হচ্ছে… প্রথমবার চালানোর সময় মডেলটি "
+"ডাউনলোড হবে।"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
+msgid "Transcribing audio..."
+msgstr "অডিও ট্রান্সক্রাইব করা হচ্ছে..."
+
+#: plugin/audio/stt_service.py
 #, python-brace-format
-msgid "Speech request failed ({0})."
-msgstr "স্পিচ অনুরোধ ব্যর্থ হয়েছে ({0})।"
+msgid "Local Whisper failed: {0}"
+msgstr "স্থানীয় Whisper ব্যর্থ হয়েছে: {0}"
 
-#: plugin/audio/tts_service.py
-msgid "Speech request failed."
-msgstr "স্পিচ অনুরোধ ব্যর্থ হয়েছে।"
+#: plugin/audio/stt_service.py
+msgid "Local Whisper did not return a transcript."
+msgstr "স্থানীয় Whisper কোনো প্রতিলিপি প্রদান করেনি।"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
+#, python-brace-format
+msgid ""
+"Local Whisper runs in the Settings → Python venv, not LibreOffice's Python. "
+"Set the venv, then install with: {0}"
+msgstr ""
+"স্থানীয় Whisper LibreOffice-এর Python-এ নয়, বরং Settings → Python venv-এ "
+"চলে। venv সেট করুন, তারপর এটি দিয়ে ইনস্টল করুন: {0}"
+
+#: plugin/audio/stt_service.py
+#, python-brace-format
+msgid ""
+"faster-whisper is not installed in the Settings → Python venv. Install with:"
+" {0}. Settings → Python Test lists it under Audio optional packages."
+msgstr ""
+"faster-whisper, Settings → Python venv-এ ইনস্টল করা নেই। এটি দিয়ে ইনস্টল "
+"করুন: {0}। Settings → Python Test-এ অডিও ঐচ্ছিক প্যাকেজের অধীনে এটি "
+"তালিকাভুক্ত থাকে।"
+
+#: plugin/audio/stt_service.py
+msgid "Local Whisper script is missing from the extension."
+msgstr "এক্সটেনশনটিতে স্থানীয় Whisper স্ক্রিপ্টটি অনুপস্থিত।"
+
+#: plugin/audio/stt_service.py
+msgid ""
+"Local Whisper timed out or could not start. Try again, or pick a smaller "
+"Local Model in Settings → Speech."
+msgstr ""
+"স্থানীয় Whisper-এর সময় শেষ হয়েছে বা শুরু হতে পারেনি। আবার চেষ্টা করুন, অথবা "
+"Settings → Speech-এ একটি ছোট স্থানীয় মডেল নির্বাচন করুন।"
+
+#: plugin/audio/stt_service.py
+msgid ""
+"Local Whisper timed out or could not start. The first run downloads model "
+"weights; try again, or pick a smaller Local Model in Settings → Speech."
+msgstr ""
+"স্থানীয় Whisper-এর সময় শেষ হয়েছে বা শুরু হতে পারেনি। প্রথমবার চালানোর সময় "
+"মডেলের ওয়েট (weights) ডাউনলোড হয়; আবার চেষ্টা করুন, অথবা Settings → Speech-এ"
+" একটি ছোট স্থানীয় মডেল নির্বাচন করুন।"
+
+#: plugin/audio/stt_service.py
+msgid "No language-model client is available for endpoint speech-to-text."
+msgstr ""
+"স্পিচ-টু-টেক্সট এন্ডপয়েন্টের জন্য কোনো ল্যাঙ্গুয়েজ-মডেল ক্লায়েন্ট উপলব্ধ "
+"নেই।"
+
+#: plugin/audio/tts_models.py
 msgid "Downloading Kokoro voice model…"
 msgstr "Kokoro ভয়েস মডেল ডাউনলোড হচ্ছে…"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 msgid "Couldn't download Kokoro; using OS speech"
 msgstr "Kokoro ডাউনলোড করা যায়নি; OS স্পিচ ব্যবহার করা হচ্ছে"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 #, python-brace-format
 msgid "Downloading Piper voice {0}…"
 msgstr "Piper ভয়েস {0} ডাউনলোড হচ্ছে…"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 #, python-brace-format
 msgid "Couldn't download {0}; using Lessac"
 msgstr "{0} ডাউনলোড করা যায়নি; Lessac ব্যবহার করা হচ্ছে"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 #, python-brace-format
 msgid "Couldn't download {0}; using OS speech"
 msgstr "{0} ডাউনলোড করা যায়নি; OS স্পিচ ব্যবহার করা হচ্ছে"
 
+#: plugin/audio/tts_endpoint.py
+#, python-brace-format
+msgid "Speech request failed ({0}): {1}"
+msgstr "স্পিচ অনুরোধ ব্যর্থ হয়েছে ({0}): {1}"
+
+#: plugin/audio/tts_endpoint.py
+#, python-brace-format
+msgid "Speech request failed: {0}"
+msgstr "স্পিচ অনুরোধ ব্যর্থ হয়েছে: {0}"
+
+#: plugin/audio/tts_endpoint.py
+#, python-brace-format
+msgid "Speech request failed ({0})."
+msgstr "স্পিচ অনুরোধ ব্যর্থ হয়েছে ({0})।"
+
+#: plugin/audio/tts_endpoint.py
+msgid "Speech request failed."
+msgstr "স্পিচ অনুরোধ ব্যর্থ হয়েছে।"
+
 #: plugin/audio/tts_service.py
-msgid "Kokoro phonemizer failed; this language may be misread."
-msgstr "Kokoro ফোনেমাইজার ব্যর্থ হয়েছে; এই ভাষাটি ভুলভাবে পড়া হতে পারে।"
+msgid "Misaki not found; Kokoro used English phonemes"
+msgstr "Misaki খুঁজে পাওয়া যায়নি; Kokoro ইংরেজি ধ্বনি ব্যবহার করা হয়েছে"
+
+#: plugin/audio/tts_service.py
+msgid "Kokoro used English phonemes for non-English voice"
+msgstr "অ-ইংরেজি কণ্ঠস্বরের জন্য Kokoro ইংরেজি ধ্বনি ব্যবহার করা হয়েছে"
 
 #: plugin/audio/kokoro_g2p.py
 msgid "Installing Kokoro phonemizer…"
@@ -505,6 +574,7 @@ msgid "Cannot import webview (pywebview) in the configured venv."
 msgstr "কনফিগার করা venv-এ ওয়েবভিউ (pywebview) ইমপোর্ট করা যাচ্ছে না।"
 
 #: plugin/calc/python/init_script_editor.py
+#: plugin/scripting/editor_ui_strings.py
 msgid "Initialization script saved."
 msgstr "ইনিশিয়ালাইজেশন স্ক্রিপ্ট সংরক্ষিত হয়েছে।"
 
@@ -517,8 +587,7 @@ msgid "Status:"
 msgstr "অবস্থা:"
 
 #: plugin/calc/python/cell_editor_ui.py plugin/chatbot/panel_wiring.py
-#: plugin/chatbot/panel.py plugin/scripting/editor_ui_strings.py
-#: plugin/xdl_strings.py
+#: plugin/scripting/editor_ui_strings.py plugin/xdl_strings.py
 msgid "Ready"
 msgstr "প্রস্তুত"
 
@@ -658,7 +727,7 @@ msgstr "ছবি সন্নিবেশিত হয়েছে"
 msgid "Images inserted"
 msgstr "ছবিগুলি সন্নিবেশিত হয়েছে"
 
-#: plugin/calc/python/geometric_recalc.py
+#: plugin/calc/python/geometric_recalc_core.py
 #, python-format
 msgid ""
 "Geometric Recalc Order skipped sheet '%(sheet)s': found %(cap)s or more "
@@ -693,6 +762,15 @@ msgstr "WriterAgent: নির্বাচন সম্পাদনা করু
 #: plugin/calc/editselection.py
 msgid "WriterAgent: Extend Selection (Calc)"
 msgstr "WriterAgent: নির্বাচন প্রসারিত করুন (Calc)"
+
+#: plugin/calc/vision_egress.py plugin/vision/vision_runner.py
+#, python-brace-format
+msgid ""
+"Image '{name}' not found. Use image_list or leave image_name empty and "
+"select the graphic."
+msgstr ""
+"'{name}' ছবিটি পাওয়া যায়নি। image_list ব্যবহার করুন অথবা image_name খালি "
+"রেখে গ্রাফিকটি নির্বাচন করুন।"
 
 #: plugin/calc/vision_egress.py
 msgid "Select an embedded image, then Run again."
@@ -849,6 +927,45 @@ msgstr "এই পরিবর্তন গ্রহণ করুন"
 msgid "Reject this change"
 msgstr "এই পরিবর্তন প্রত্যাখ্যান করুন"
 
+#: plugin/writer/edit_review.py
+#, python-brace-format
+msgid "Failed to write streamed text to the document: {0}"
+msgstr "ডকুমেন্টে স্ট্রিম করা টেক্সট লিখতে ব্যর্থ হয়েছে: {0}"
+
+#: plugin/writer/edit_review.py
+#, python-brace-format
+msgid ""
+"Failed to finalize the tracked edit and preserve the generated text: {0}"
+msgstr ""
+"ট্র্যাক করা সম্পাদনা চূড়ান্ত করতে এবং তৈরি করা পাঠ্য সংরক্ষণ করতে ব্যর্থ: "
+"{0}"
+
+#: plugin/writer/edit_review.py
+msgid ""
+"Failed to collapse the streamed edit into a single tracked change. The "
+"generated text was kept, but it may still appear as multiple tracked "
+"changes."
+msgstr ""
+"স্ট্রিম করা সম্পাদনাকে একটি একক ট্র্যাক করা পরিবর্তনে সংকুচিত করতে ব্যর্থ। "
+"তৈরি করা পাঠ্যটি রাখা হয়েছে, তবে এটি এখনও একাধিক ট্র্যাক করা পরিবর্তন হিসেবে"
+" প্রদর্শিত হতে পারে।"
+
+#: plugin/writer/edit_review.py
+msgid ""
+"Failed to collapse the streamed continuation into a single tracked change. "
+"The text was kept, but may not be reviewable."
+msgstr ""
+"স্ট্রিম করা ধারাবাহিকতাকে একটি একক ট্র্যাক করা পরিবর্তনে সংকুচিত করতে "
+"ব্যর্থ। পাঠ্যটি রাখা হয়েছে, তবে তা পর্যালোচনাযোগ্য নাও হতে পারে।"
+
+#: plugin/writer/editselection.py
+msgid ""
+"This selection contains tracked insertions or deletions. Accept or reject "
+"those changes first. The selection was not modified."
+msgstr ""
+"এই নির্বাচনে ট্র্যাক করা সন্নিবেশ বা মুছে ফেলা অংশ রয়েছে। প্রথমে সেই "
+"পরিবর্তনগুলি গ্রহণ বা প্রত্যাখ্যান করুন। নির্বাচনটি পরিবর্তন করা হয়নি।"
+
 #: plugin/writer/editselection.py
 msgid "WriterAgent: Extend Selection"
 msgstr "WriterAgent: নির্বাচন প্রসারিত করুন"
@@ -973,10 +1090,6 @@ msgid "any"
 msgstr "যেকোনো"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "awards"
-msgstr "পুরস্কার"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "best"
 msgstr "সেরা"
 
@@ -1001,10 +1114,6 @@ msgid "concise"
 msgstr "সংক্ষিপ্ত"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "depth"
-msgstr "গভীরতা"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "description"
 msgstr "বিবরণ"
 
@@ -1023,10 +1132,6 @@ msgstr "প্রদর্শন"
 #: plugin/chatbot/research_cache_fluff.py
 msgid "each"
 msgstr "প্রতিটি"
-
-#: plugin/chatbot/research_cache_fluff.py
-msgid "features"
-msgstr "বৈশিষ্ট্য"
 
 #: plugin/chatbot/research_cache_fluff.py
 msgid "find"
@@ -1081,10 +1186,6 @@ msgid "me"
 msgstr "আমি"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "notable"
-msgstr "উল্লেখযোগ্য"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "overall"
 msgstr "সামগ্রিক"
 
@@ -1117,10 +1218,6 @@ msgid "question"
 msgstr "প্রশ্ন"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "ratings"
-msgstr "রেটিং"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "recommendation"
 msgstr "সুপারিশ"
 
@@ -1133,10 +1230,6 @@ msgid "research"
 msgstr "গবেষণা"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "reviews"
-msgstr "পর্যালোচনা"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "search"
 msgstr "অনুসন্ধান"
 
@@ -1147,10 +1240,6 @@ msgstr "সংক্ষিপ্ত"
 #: plugin/chatbot/research_cache_fluff.py
 msgid "show"
 msgstr "প্রদর্শন"
-
-#: plugin/chatbot/research_cache_fluff.py
-msgid "signature"
-msgstr "স্বাক্ষর"
 
 #: plugin/chatbot/research_cache_fluff.py
 msgid "source"
@@ -1189,10 +1278,6 @@ msgid "top"
 msgstr "শীর্ষ"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "trends"
-msgstr "প্রবণতা"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "types"
 msgstr "ধরন"
 
@@ -1219,6 +1304,10 @@ msgstr "কেন"
 #: plugin/chatbot/research_cache_fluff.py
 msgid "you"
 msgstr "আপনি"
+
+#: plugin/chatbot/module_config_dialog.py plugin/chatbot/dialog_views.py
+msgid "Invalid Setting"
+msgstr "অবৈধ সেটিং"
 
 #: plugin/chatbot/dialogs.py
 msgid "Agent requests approval"
@@ -1295,8 +1384,8 @@ msgid "Debug"
 msgstr "ডিবাগ"
 
 #: plugin/chatbot/tool_loop.py plugin/chatbot/panel.py
-msgid "[No speech detected.]"
-msgstr "[কোনো স্পিচ শনাক্ত হয়নি।]"
+msgid "[Voice message]"
+msgstr "[ভয়েস বার্তা]"
 
 #: plugin/chatbot/tool_loop.py
 msgid "Error: Toolkit unavailable"
@@ -1306,7 +1395,7 @@ msgstr "ত্রুটি: টুলকিট উপলব্ধ নেই"
 msgid "Chat"
 msgstr "চ্যাট"
 
-#: plugin/chatbot/chat_sidebar_mode.py
+#: plugin/chatbot/chat_sidebar_mode.py plugin/xdl_strings.py
 msgid "Image"
 msgstr "চিত্র"
 
@@ -1366,6 +1455,10 @@ msgstr "মডেল পরিবর্তন করুন (মক)"
 msgid "Slash commands:"
 msgstr "স্ল্যাশ কমান্ড:"
 
+#: plugin/chatbot/panel.py plugin/xdl_strings.py
+msgid "Send"
+msgstr "পাঠান"
+
 #: plugin/chatbot/panel.py
 msgid "Accept"
 msgstr "স্বীকার করুন"
@@ -1383,6 +1476,10 @@ msgid "Waiting for approval…"
 msgstr "অনুমোদনের অপেক্ষায়…"
 
 #: plugin/chatbot/panel.py
+msgid "Hands-free off"
+msgstr "হ্যান্ডস-ফ্রি বন্ধ"
+
+#: plugin/chatbot/panel.py
 #, python-format
 msgid "Recording audio… (%d ms silence)"
 msgstr "অডিও রেকর্ড করা হচ্ছে… (%d মি.সে. নীরবতা)"
@@ -1391,13 +1488,9 @@ msgstr "অডিও রেকর্ড করা হচ্ছে… (%d মি.
 msgid "Record"
 msgstr "রেকর্ড"
 
-#: plugin/chatbot/panel.py
+#: plugin/chatbot/panel.py plugin/chatbot/sidebar_test_hooks.py
 msgid "Stop Rec"
 msgstr "রেকর্ড বন্ধ করুন"
-
-#: plugin/chatbot/panel.py plugin/xdl_strings.py
-msgid "Send"
-msgstr "পাঠান"
 
 #: plugin/chatbot/panel.py
 msgid "Starting..."
@@ -1425,6 +1518,18 @@ msgstr ""
 "করে এটি রিপোর্ট করুন!]"
 
 #: plugin/chatbot/panel.py
+msgid "[Audio error: recording stopped without a sound file.]"
+msgstr "[অডিও ত্রুটি: সাউন্ড ফাইল ছাড়াই রেকর্ডিং বন্ধ হয়ে গেছে।]"
+
+#: plugin/chatbot/panel.py plugin/scripting/audio_recorder_service.py
+msgid "[No speech detected.]"
+msgstr "[কোনো স্পিচ শনাক্ত হয়নি।]"
+
+#: plugin/chatbot/panel.py
+msgid "[Hands-free off: no speech heard.]"
+msgstr "[হ্যান্ডস-ফ্রি বন্ধ: কোনো কথা শোনা যায়নি।]"
+
+#: plugin/chatbot/panel.py
 #, python-brace-format
 msgid ""
 "[Model {0} does not support native audio. Please select an STT Model in "
@@ -1434,8 +1539,22 @@ msgstr ""
 "নির্বাচন করুন।]"
 
 #: plugin/chatbot/panel.py
+#, python-brace-format
+msgid "[Agent backend error: {0}]"
+msgstr "[এজেন্ট ব্যাকএন্ড ত্রুটি: {0}]"
+
+#: plugin/chatbot/panel.py
 msgid "[Peer send requires Chat mode on this sidebar.]"
 msgstr "[পিয়ার সেন্ডের জন্য এই সাইডবারে চ্যাট মোড প্রয়োজন।]"
+
+#: plugin/chatbot/record_gesture.py
+msgid "Hands-free recording..."
+msgstr "হ্যান্ডস-ফ্রি রেকর্ডিং..."
+
+#: plugin/chatbot/record_gesture.py
+#, python-format
+msgid "Hands-free… (%d ms silence)"
+msgstr "হ্যান্ডস-ফ্রি… (%d মি.সে. নীরবতা)"
 
 #: plugin/chatbot/settings_dialog.py plugin/xdl_strings.py
 msgid "Square"
@@ -1495,7 +1614,7 @@ msgstr "গবেষণা ক্যাশে সংরক্ষিত (কী: 
 msgid "Opening '%s' for read-only access."
 msgstr "'%s' ফাইলটি শুধুমাত্র পড়ার (read-only) জন্য খোলা হচ্ছে।"
 
-#: plugin/chatbot/web_research.py
+#: plugin/chatbot/web_research.py plugin/chatbot/web_research_deep.py
 msgid "Web research completed."
 msgstr "ওয়েব গবেষণা সম্পন্ন হয়েছে।"
 
@@ -1528,10 +1647,6 @@ msgid "Could not start editor: {0}"
 msgstr "এডিটর শুরু করা যায়নি: {0}"
 
 #: plugin/chatbot/send_handlers.py
-msgid "Transcribing audio..."
-msgstr "অডিও ট্রান্সক্রাইব করা হচ্ছে..."
-
-#: plugin/chatbot/send_handlers.py
 #, python-brace-format
 msgid "[Transcription error: {0}]"
 msgstr "[ট্রান্সক্রিপশন ত্রুটি: {0}]"
@@ -1552,6 +1667,10 @@ msgid ""
 "[Agent backend '{0}' is not available. Check Settings (path, install).]"
 msgstr ""
 "[এজেন্ট ব্যাকএন্ড '{0}' উপলব্ধ নেই। সেটিংস পরীক্ষা করুন (পাথ, ইনস্টল)।]"
+
+#: plugin/chatbot/send_handlers.py
+msgid "Thinking..."
+msgstr "ভাবছি..."
 
 #: plugin/chatbot/send_handlers.py
 msgid "Perfect! I'm switching you to the main assistant now."
@@ -1637,7 +1756,6 @@ msgid "Web research collected no usable evidence."
 msgstr "ওয়েব গবেষণা কোনো ব্যবহারযোগ্য প্রমাণ সংগ্রহ করতে পারেনি।"
 
 #: plugin/chatbot/rich_text_paste.py plugin/chatbot/rich_text.py
-#: plugin/chatbot/panel_factory.py
 msgid "Assistant:"
 msgstr "সহকারী:"
 
@@ -1678,10 +1796,6 @@ msgid ""
 msgstr ""
 "একটি নতুন %(name)s (%(version)s) উপলব্ধ আছে। আপডেট চেক করতে এবং সর্বশেষ "
 "এক্সটেনশনটি ইনস্টল করতে টুলস → এক্সটেনশন ম্যানেজার ব্যবহার করুন।"
-
-#: plugin/chatbot/dialog_views.py
-msgid "Invalid Setting"
-msgstr "অবৈধ সেটিং"
 
 #: plugin/chatbot/dialog_views.py
 #, python-brace-format
@@ -1795,6 +1909,24 @@ msgid "Width:"
 msgstr "প্রস্থ:"
 
 #: plugin/chatbot/panel_factory.py
+msgid ""
+"Send. Record: click to record one message, hold 2 seconds for hands-free. "
+"Stop Rec: send the recording (hands-free keeps listening)."
+msgstr ""
+"পাঠান। রেকর্ড: একটি বার্তা রেকর্ড করতে ক্লিক করুন, হ্যান্ডস-ফ্রি মোডের জন্য "
+"২ সেকেন্ড চেপে ধরে রাখুন। রেকর্ডিং বন্ধ করুন: রেকর্ডিং পাঠান (হ্যান্ডস-ফ্রি "
+"মোড চালু থাকলে শুনতে থাকবে)।"
+
+#: plugin/chatbot/panel_factory.py
+msgid ""
+"Stop the reply or speech (also ends hands-free). While recording: the first "
+"click leaves hands-free, the next click cancels the recording."
+msgstr ""
+"উত্তর বা কথা বলা বন্ধ করুন (হ্যান্ডস-ফ্রি মোডও বন্ধ হয়ে যাবে)। রেকর্ডিং "
+"চলাকালীন: প্রথম ক্লিকে হ্যান্ডস-ফ্রি মোড থেকে বেরিয়ে আসা যায়, পরের ক্লিকে "
+"রেকর্ডিং বাতিল হয়।"
+
+#: plugin/chatbot/panel_factory.py
 msgid "Speak responses aloud (TTS)"
 msgstr "প্রতিক্রিয়াগুলো জোরে পড়ুন (TTS)"
 
@@ -1807,6 +1939,10 @@ msgstr "নতুন পাইথন স্ক্রিপ্ট"
 #: plugin/xdl_strings.py
 msgid "Script name:"
 msgstr "স্ক্রিপ্টের নাম:"
+
+#: plugin/scripting/script_dialogs.py
+msgid "Script name cannot start with a reserved prefix."
+msgstr "স্ক্রিপ্টের নাম সংরক্ষিত প্রিফিক্স দিয়ে শুরু হতে পারবে না।"
 
 #: plugin/scripting/script_dialogs.py plugin/scripting/editor_ui_strings.py
 #: plugin/xdl_strings.py
@@ -1883,13 +2019,14 @@ msgstr "স্ক্রিপ্ট"
 msgid "My Scripts"
 msgstr "আমার স্ক্রিপ্টসমূহ"
 
-#: plugin/scripting/editor_ui_strings.py
+#: plugin/scripting/editor_ui_strings.py plugin/scripting/document_scripts.py
+#: plugin/scripting/python_runner_ui.py
 msgid "Built-in helpers are read-only. Use Copy to My Scripts to customize."
 msgstr ""
 "বিল্ট-ইন হেল্পারগুলি শুধুমাত্র পঠনযোগ্য। কাস্টমাইজ করতে 'আমার স্ক্রিপ্টে "
 "অনুলিপি করুন' ব্যবহার করুন।"
 
-#: plugin/scripting/editor_ui_strings.py
+#: plugin/scripting/editor_ui_strings.py plugin/scripting/document_scripts.py
 msgid ""
 "Document changed — close and reopen Run Python Script to edit document "
 "scripts."
@@ -1976,12 +2113,26 @@ msgid "No document is open to save scripts."
 msgstr "স্ক্রিপ্ট সংরক্ষণ করার জন্য কোনো ডকুমেন্ট খোলা নেই।"
 
 #: plugin/scripting/document_scripts.py
+msgid "Document is read-only or properties cannot be written."
+msgstr "ডকুমেন্টটি রিড-অনলি বা বৈশিষ্ট্যগুলি লেখা সম্ভব নয়।"
+
+#: plugin/scripting/document_scripts.py
 msgid ""
-"Document is read-only or properties cannot be written. Script saved to your "
-"personal library instead."
+"Document properties cannot be written (missing or unwriteable "
+"UserDefinedProperties)."
 msgstr ""
-"ডকুমেন্টটি শুধুমাত্র-পঠনযোগ্য (read-only) অথবা বৈশিষ্ট্যগুলি লেখা সম্ভব নয়।"
-" পরিবর্তে আপনার ব্যক্তিগত লাইব্রেরিতে স্ক্রিপ্টটি সংরক্ষণ করা হয়েছে।"
+"ডকুমেন্টের বৈশিষ্ট্য লেখা যাচ্ছে না (UserDefinedProperties অনুপস্থিত বা লেখা"
+" যাচ্ছে না)।"
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "'{0}' starts with a reserved prefix."
+msgstr "'{0}' একটি সংরক্ষিত প্রিফিক্স দিয়ে শুরু হয়েছে।"
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "'{0}' is reserved for the workbook init script."
+msgstr "'{0}' ওয়ার্কবুক ইনিট স্ক্রিপ্টের জন্য সংরক্ষিত।"
 
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
@@ -1989,13 +2140,39 @@ msgid "A script named '{0}' already exists in this document."
 msgstr "এই ডকুমেন্টে '{0}' নামের একটি স্ক্রিপ্ট ইতিমধ্যেই বিদ্যমান।"
 
 #: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "Script '{0}' does not exist in this document."
+msgstr "এই ডকুমেন্টে '{0}' স্ক্রিপ্টটি নেই।"
+
+#: plugin/scripting/document_scripts.py
 msgid "This Document"
 msgstr "এই ডকুমেন্ট"
 
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
-msgid "Saved script '{0}' to My Scripts."
-msgstr "'{0}' স্ক্রিপ্টটি 'আমার স্ক্রিপ্টসমূহ'-এ সংরক্ষণ করা হয়েছে।"
+msgid "Script '{0}' does not exist in My Scripts."
+msgstr "আমার স্ক্রিপ্ট (My Scripts)-এ '{0}' স্ক্রিপ্টটি নেই।"
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid ""
+"Script '{0}' is not in My Scripts or this document, so it was not saved."
+msgstr ""
+"'{0}' স্ক্রিপ্টটি 'My Scripts' বা এই নথিতে নেই, তাই এটি সংরক্ষণ করা হয়নি।"
+
+#: plugin/scripting/document_scripts.py plugin/scripting/python_runner_ui.py
+msgid "No document is open."
+msgstr "কোনো নথি খোলা নেই।"
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "A script named '{0}' already exists in My Scripts. {1}"
+msgstr "My Scripts-এ '{0}' নামের একটি স্ক্রিপ্ট ইতিমধ্যেই বিদ্যমান। {1}"
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "Saved script '{0}' to My Scripts. {1}"
+msgstr "'{0}' স্ক্রিপ্টটি My Scripts-এ সংরক্ষণ করা হয়েছে। {1}"
 
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
@@ -2022,10 +2199,6 @@ msgstr "My Scripts-এ '{0}' নামের একটি স্ক্রিপ�
 msgid "Copied script '{0}' to My Scripts."
 msgstr "My Scripts-এ '{0}' স্ক্রিপ্টটি অনুলিপি করা হয়েছে।"
 
-#: plugin/scripting/document_scripts.py plugin/scripting/python_runner_ui.py
-msgid "No document is open."
-msgstr "কোনো নথি খোলা নেই।"
-
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
 msgid "Deleted document script '{0}'."
@@ -2036,9 +2209,24 @@ msgstr "নথির স্ক্রিপ্ট '{0}' মুছে ফেলা
 msgid "Deleted script '{0}'."
 msgstr "স্ক্রিপ্ট '{0}' মুছে ফেলা হয়েছে।"
 
+#: plugin/scripting/document_scripts.py
+msgid "The document was closed."
+msgstr "ডকুমেন্টটি বন্ধ করা হয়েছে।"
+
+#: plugin/scripting/python_runner_ui.py
+msgid "The document is no longer open."
+msgstr "নথিটি আর খোলা নেই।"
+
 #: plugin/scripting/python_runner_ui.py
 msgid "PythonScriptDialog could not be loaded from the extension."
 msgstr "PythonScriptDialog এক্সটেনশন থেকে লোড করা যায়নি।"
+
+#: plugin/scripting/python_runner_ui.py
+#, python-format
+msgid "Cannot save to My Scripts: a script named '%s' already exists."
+msgstr ""
+"My Scripts-এ সংরক্ষণ করা যাচ্ছে না: '%s' নামের একটি স্ক্রিপ্ট ইতিমধ্যেই "
+"বিদ্যমান।"
 
 #: plugin/scripting/python_runner_ui.py
 #, python-format
@@ -2054,6 +2242,14 @@ msgstr "স্ক্রিপ্ট '%s' এই নথিতে সংরক্�
 #, python-format
 msgid "Script '%s' saved successfully."
 msgstr "'%s' স্ক্রিপ্ট সফলভাবে সংরক্ষিত হয়েছে।"
+
+#: plugin/scripting/python_runner_ui.py
+msgid "Running..."
+msgstr "চলছে..."
+
+#: plugin/scripting/python_runner_ui.py
+msgid "Execution Error"
+msgstr "এক্সিকিউশন ত্রুটি"
 
 #: plugin/scripting/python_runner_ui.py
 #, python-format
@@ -2088,19 +2284,9 @@ msgstr "স্ক্রিপ্ট '%s' এই নথিতে তৈরি ক
 msgid "Script '%s' created in My Scripts."
 msgstr "স্ক্রিপ্ট '%s' আমার স্ক্রিপ্টগুলিতে তৈরি করা হয়েছে।"
 
-#: plugin/scripting/python_runner_ui.py
-msgid "Execution Error"
-msgstr "এক্সিকিউশন ত্রুটি"
-
 #: plugin/scripting/python_runner_ui.py plugin/scripting/python_runner.py
 msgid "Script executed successfully."
 msgstr "স্ক্রিপ্ট সফলভাবে কার্যকর হয়েছে।"
-
-#: plugin/scripting/python_runner_ui.py
-msgid ""
-"Script executed successfully, but returned no result and produced no output."
-msgstr ""
-"স্ক্রিপ্ট সফলভাবে কার্যকর হয়েছে, কিন্তু কোনো ফলাফল বা আউটপুট প্রদান করেনি।"
 
 #: plugin/scripting/python_runner_ui.py
 msgid "Success"
@@ -2144,6 +2330,41 @@ msgid ""
 msgstr ""
 "কনফিগার করা venv-এর অধীনে কোনো python এক্সিকিউটেবল পাওয়া যায়নি: {0} "
 "(bin/python, Scripts/python.exe, অথবা env-root python.exe প্রত্যাশিত)।"
+
+#: plugin/scripting/editor_host.py
+msgid "The script list update timed out."
+msgstr "স্ক্রিপ্ট তালিকা আপডেট করার সময় শেষ হয়ে গেছে।"
+
+#: plugin/scripting/editor_host.py
+msgid "Script execution failed."
+msgstr "স্ক্রিপ্ট কার্যকর করতে ব্যর্থ হয়েছে।"
+
+#: plugin/scripting/editor_host.py
+msgid "Saving the script timed out."
+msgstr "স্ক্রিপ্ট সংরক্ষণ করার সময় শেষ হয়ে গেছে।"
+
+#: plugin/scripting/editor_host.py
+msgid "the initialization script"
+msgstr "ইনিশিয়ালাইজেশন স্ক্রিপ্ট"
+
+#: plugin/scripting/editor_host.py
+msgid "the LaTeX formula"
+msgstr "LaTeX সূত্র"
+
+#: plugin/scripting/editor_host.py
+msgid "this editor"
+msgstr "এই এডিটর"
+
+#: plugin/scripting/editor_host.py
+#, python-brace-format
+msgid ""
+"Save changes to {0}?\n"
+"\n"
+"Yes saves them before switching. No discards them. Cancel keeps the current editor."
+msgstr ""
+"{0}-এ পরিবর্তনগুলি সংরক্ষণ করবেন?\n"
+"\n"
+"হ্যাঁ নির্বাচন করলে পরিবর্তনগুলি সংরক্ষণ করে সুইচ করা হবে। না নির্বাচন করলে সেগুলি বাতিল করা হবে। বাতিল নির্বাচন করলে বর্তমান এডিটরটিই রাখা হবে।"
 
 #: plugin/scripting/editor_host.py
 msgid "Could not start the Python editor."
@@ -2211,6 +2432,22 @@ msgid "Vector Search probe failed (see writeragent_debug.log)."
 msgstr "ভেক্টর সার্চ প্রোব ব্যর্থ হয়েছে (writeragent_debug.log দেখুন)।"
 
 #: plugin/scripting/venv_diagnostics.py
+msgid "UI / Monaco probe failed (see writeragent_debug.log)."
+msgstr "UI / Monaco প্রোব ব্যর্থ হয়েছে (writeragent_debug.log দেখুন)।"
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "UI / Monaco probe timed out."
+msgstr "UI / Monaco প্রোবের সময় শেষ হয়েছে।"
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "DuckDB probe failed (see writeragent_debug.log)."
+msgstr "DuckDB প্রোব ব্যর্থ হয়েছে (writeragent_debug.log দেখুন)।"
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "DuckDB probe timed out."
+msgstr "DuckDB প্রোবের সময় শেষ হয়েছে।"
+
+#: plugin/scripting/venv_diagnostics.py
 msgid "Audio Recording & Speech"
 msgstr "অডিও রেকর্ডিং ও স্পিচ"
 
@@ -2271,6 +2508,10 @@ msgid "Local TTS engines (optional):"
 msgstr "স্থানীয় TTS ইঞ্জিন (ঐচ্ছিক):"
 
 #: plugin/scripting/venv_diagnostics.py
+msgid "Local Whisper (optional):"
+msgstr "স্থানীয় হুইস্পার (ঐচ্ছিক):"
+
+#: plugin/scripting/venv_diagnostics.py
 msgid "Starting Python worker..."
 msgstr "পাইথন ওয়ার্কার শুরু হচ্ছে..."
 
@@ -2279,8 +2520,14 @@ msgid "Reading Python version..."
 msgstr "পাইথন সংস্করণ পড়া হচ্ছে..."
 
 #: plugin/scripting/venv_diagnostics.py
-msgid "Audio & Speech: checking sounddevice and TTS engines..."
-msgstr "অডিও ও স্পিচ: sounddevice এবং TTS ইঞ্জিন পরীক্ষা করা হচ্ছে..."
+msgid "Audio & Speech: checking sounddevice, TTS, and local Whisper..."
+msgstr ""
+"অডিও ও স্পিচ: sounddevice, TTS এবং স্থানীয় হুইস্পার পরীক্ষা করা হচ্ছে..."
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "UI / Monaco Libraries: checking outside the script worker..."
+msgstr ""
+"UI / Monaco লাইব্রেরি: স্ক্রিপ্ট ওয়ার্কারের বাইরে পরীক্ষা করা হচ্ছে..."
 
 #: plugin/scripting/venv_diagnostics.py
 msgid "Text / NLP Libraries: loading (first run may take a while)..."
@@ -2455,6 +2702,42 @@ msgstr ""
 msgid "{domain} '{helper}' completed. (took {time})"
 msgstr "{domain} '{helper}' সম্পন্ন হয়েছে। ({time} সময় লেগেছে)"
 
+#: plugin/scripting/domain_registry.py
+msgid "Vision Helpers"
+msgstr "ভিশন হেল্পারস"
+
+#: plugin/scripting/domain_registry.py
+msgid "Math Helpers"
+msgstr "ম্যাথ হেল্পারস"
+
+#: plugin/scripting/domain_registry.py
+msgid "Units Helpers"
+msgstr "ইউনিট হেল্পার"
+
+#: plugin/scripting/domain_registry.py
+msgid "Analysis Helpers"
+msgstr "বিশ্লেষণ হেল্পার"
+
+#: plugin/scripting/domain_registry.py
+msgid "SQL Helpers"
+msgstr "SQL হেল্পার"
+
+#: plugin/scripting/domain_registry.py
+msgid "Viz Helpers"
+msgstr "ভিজ্যুয়ালাইজেশন হেল্পার"
+
+#: plugin/scripting/domain_registry.py
+msgid "Quant Helpers"
+msgstr "কোয়ান্ট হেল্পার"
+
+#: plugin/scripting/domain_registry.py
+msgid "Optimize Helpers"
+msgstr "অপ্টিমাইজ হেল্পার"
+
+#: plugin/scripting/domain_registry.py
+msgid "Forecast Helpers"
+msgstr "পূর্বাভাস হেল্পার"
+
 #: plugin/scripting/session_manager.py
 msgid ""
 "Reset Python Session for notebooks applies to LibreOffice Writer. Open a "
@@ -2493,6 +2776,10 @@ msgstr ""
 "ওয়ার্কবুক খুলুন এবং পুনরায় চেষ্টা করুন।"
 
 #: plugin/scripting/session_manager.py
+msgid "Could not restore the initialization script."
+msgstr "ইনিশিয়ালাইজেশন স্ক্রিপ্ট পুনরুদ্ধার করা যায়নি।"
+
+#: plugin/scripting/session_manager.py
 msgid "Python session reset for this workbook."
 msgstr "এই ওয়ার্কবুকের জন্য Python সেশন রিসেট করা হয়েছে।"
 
@@ -2520,6 +2807,10 @@ msgstr ""
 msgid "Python session reset for this document."
 msgstr "এই নথির জন্য পাইথন সেশন রিসেট করা হয়েছে।"
 
+#: plugin/scripting/session_manager.py
+msgid "Reset Python Session applies to Writer, Calc, and Draw documents."
+msgstr "পাইথন সেশন রিসেট Writer, Calc এবং Draw নথিতে প্রযোজ্য।"
+
 #: plugin/scripting/units.py
 msgid "Units helper failed."
 msgstr "Units helper ব্যর্থ হয়েছে।"
@@ -2539,6 +2830,12 @@ msgstr "ফলাফল সন্নিবেশ করতে ব্যর্থ
 
 #: plugin/scripting/helper_domain.py
 #, python-brace-format
+msgid "{domain} '{helper}' completed. Inserted: {preview} (took {time})"
+msgstr ""
+"{domain} '{helper}' সম্পন্ন হয়েছে। সন্নিবেশিত: {preview} ({time} সময় লেগেছে)"
+
+#: plugin/scripting/helper_domain.py
+#, python-brace-format
 msgid "Plot inserted ({title}). (took {time})"
 msgstr "প্লট ইনসার্ট করা হয়েছে ({title})। ({time} সময় লেগেছে)"
 
@@ -2546,24 +2843,6 @@ msgstr "প্লট ইনসার্ট করা হয়েছে ({title}
 #, python-brace-format
 msgid "Viz '{helper}' completed. {msg}"
 msgstr "'{helper}' সম্পন্ন হয়েছে। {msg}"
-
-#: plugin/scripting/helper_domain.py
-#, python-brace-format
-msgid "Math '{helper}' completed. Inserted: {preview} (took {time})"
-msgstr ""
-"Math '{helper}' সম্পন্ন হয়েছে। সন্নিবেশিত: {preview} ({time} সময় লেগেছে)"
-
-#: plugin/scripting/helper_domain.py
-#, python-brace-format
-msgid "Units '{helper}' completed. Inserted: {preview} (took {time})"
-msgstr ""
-"Units '{helper}' সম্পন্ন হয়েছে। ইনসার্ট করা হয়েছে: {preview} ({time} সময় "
-"লেগেছে)"
-
-#: plugin/scripting/python_runner.py
-#, python-format
-msgid "Failed to insert result into Calc: %s"
-msgstr "Calc-এ ফলাফল সন্নিবেশ করতে ব্যর্থ: %s"
 
 #: plugin/scripting/python_runner.py
 msgid "Info"
@@ -2613,6 +2892,10 @@ msgstr "স্ক্রিপ্ট সফলভাবে কার্যকর 
 msgid "Script saved."
 msgstr "স্ক্রিপ্ট সংরক্ষিত হয়েছে।"
 
+#: plugin/scripting/python_runner.py
+msgid "A script is already running."
+msgstr "একটি স্ক্রিপ্ট ইতিমধ্যে চলছে।"
+
 #: plugin/scripting/python_runner.py plugin/xdl_strings.py
 msgid "Run Python Script"
 msgstr "পাইথন স্ক্রিপ্ট চালান"
@@ -2642,17 +2925,24 @@ msgstr ""
 
 #: plugin/vision/vision_runner.py
 #, python-brace-format
-msgid ""
-"Image '{name}' not found. Use image_list or leave image_name empty and "
-"select the graphic."
-msgstr ""
-"'{name}' ছবিটি পাওয়া যায়নি। image_list ব্যবহার করুন অথবা image_name খালি "
-"রেখে গ্রাফিকটি নির্বাচন করুন।"
+msgid "Image '{name}' could not be exported."
+msgstr "ইমেজ '{name}' এক্সপোর্ট করা সম্ভব হয়নি।"
 
 #: plugin/vision/vision_runner.py
 #, python-brace-format
-msgid "Image '{name}' could not be exported."
-msgstr "ইমেজ '{name}' এক্সপোর্ট করা সম্ভব হয়নি।"
+msgid ""
+"Image is too large to send to the vision worker ({size} bytes; limit "
+"{limit})."
+msgstr "ছবিটি ভিশন ওয়ার্কারে পাঠানোর জন্য খুব বড় ({size} বাইট; সীমা {limit})।"
+
+#: plugin/vision/vision_runner.py
+msgid "Cancelled by user."
+msgstr "ব্যবহারকারী দ্বারা বাতিল করা হয়েছে।"
+
+#: plugin/vision/vision_runner.py
+#, python-brace-format
+msgid "Stopped after {count} of {total} images."
+msgstr "{total}-এর মধ্যে {count}টি ছবি পরে থামানো হয়েছে।"
 
 #: plugin/vision/vision_runner.py
 #, python-brace-format
@@ -3099,10 +3389,6 @@ msgid "Image Model:"
 msgstr "ইমেজ মডেল:"
 
 #: plugin/xdl_strings.py
-msgid "Image Settings"
-msgstr "ইমেজ সেটিংস"
-
-#: plugin/xdl_strings.py
 msgid "In-place replacement"
 msgstr "ইন-প্লেস প্রতিস্থাপন"
 
@@ -3354,11 +3640,67 @@ msgstr "Grok Build (ACP)"
 msgid "OpenCode (ACP)"
 msgstr "OpenCode (ACP)"
 
+msgid "Prompt for Agent Permissions"
+msgstr "এজেন্ট অনুমতির জন্য প্রম্পট"
+
+msgid ""
+"Ask for confirmation before allowing the agent to use tools (read files, "
+"execute commands, etc.)"
+msgstr ""
+"এজেন্টকে টুল ব্যবহার করার (ফাইল পড়া, কমান্ড চালানো ইত্যাদি) অনুমতি দেওয়ার "
+"আগে নিশ্চিতকরণ জিজ্ঞাসা করুন"
+
+msgid "STT Provider"
+msgstr "STT প্রদানকারী"
+
+msgid ""
+"LLM Endpoint uses Audio Model and POST /v1/audio/transcriptions. Local "
+"Whisper runs faster-whisper in the Settings → Python venv (not LibreOffice's"
+" Python)."
+msgstr ""
+"LLM এন্ডপয়েন্ট অডিও মডেল এবং POST /v1/audio/transcriptions ব্যবহার করে। "
+"লোকাল হুইস্পার (Local Whisper) সেটিংস → Python venv-এ faster-whisper চালায় "
+"(LibreOffice-এর Python নয়)।"
+
+msgid "LLM Endpoint"
+msgstr "LLM Endpoint"
+
+msgid "Local Whisper (faster-whisper)"
+msgstr "লোকাল হুইস্পার (faster-whisper)"
+
 msgid "Audio Model:"
 msgstr "অডিও মডেল:"
 
-msgid "Speech-to-text model when the chat model cannot take audio input."
-msgstr "চ্যাট মডেল অডিও ইনপুট নিতে না পারলে স্পিচ-টু-টেক্সট মডেল।"
+msgid ""
+"Speech-to-text model when STT Provider is LLM Endpoint and the chat model "
+"cannot take audio input."
+msgstr ""
+"STT প্রদানকারী যখন LLM এন্ডপয়েন্ট হয় এবং চ্যাট মডেল অডিও ইনপুট নিতে পারে না,"
+" তখন স্পিচ-টু-টেক্সট মডেল।"
+
+msgid "Local Model"
+msgstr "লোকাল মডেল"
+
+msgid ""
+"faster-whisper size. The first transcription downloads weights into the "
+"Hugging Face cache (base, the default, is about 150 MB; tiny ~75 MB, small "
+"~500 MB, medium ~1.5 GB)."
+msgstr ""
+"faster-whisper সাইজ। প্রথম ট্রান্সক্রিপশনটি Hugging Face ক্যাশে ওয়েট ডাউনলোড"
+" করে (base, যা ডিফল্ট, প্রায় ১৫০ MB; tiny ~৭৫ MB, small ~৫০০ MB, medium ~১.৫"
+" GB)।"
+
+msgid "tiny (~75 MB)"
+msgstr "tiny (~৭৫ MB)"
+
+msgid "base (~150 MB)"
+msgstr "base (~১৫০ MB)"
+
+msgid "small (~500 MB)"
+msgstr "small (~৫০০ MB)"
+
+msgid "medium (~1.5 GB)"
+msgstr "medium (~১.৫ GB)"
 
 msgid "Enable Speech Output (TTS)"
 msgstr "স্পিচ আউটপুট (TTS) সক্রিয় করুন"
@@ -3406,9 +3748,6 @@ msgstr "Kokoro (Local Neural, ONNX CPU)"
 
 msgid "Piper (Local Fast Neural, CPU)"
 msgstr "Piper (Local Fast Neural, CPU)"
-
-msgid "LLM Endpoint"
-msgstr "LLM Endpoint"
 
 msgid "TTS Model"
 msgstr "TTS Model"
@@ -4005,10 +4344,12 @@ msgstr "docling-tools ମଡେଲ ଡାଉନଲୋଡ୍ ପାଇଁ ବୈ�
 msgid "OCR confidence threshold"
 msgstr "OCR କନଫିଡେନ୍ସ ଥ୍ରେସହୋଲ୍ଡ"
 
-msgid "RapidOCR minimum text score. Raise to reduce garbage text."
+msgid ""
+"RapidOCR minimum text score. 0.0 is a real threshold (not the default). "
+"Raise to reduce garbage text."
 msgstr ""
-"RapidOCR ସର୍ବନିମ୍ନ ଟେକ୍ସଟ୍ ସ୍କୋର୍। ଅଦରକାରୀ ଟେକ୍ସଟ୍ କମାଇବା ପାଇଁ ଏହାକୁ "
-"ବଢ଼ାନ୍ତୁ।"
+"RapidOCR সর্বনিম্ন টেক্সট স্কোর। ০.০ একটি বাস্তব থ্রেশহোল্ড (ডিফল্ট নয়)। "
+"অপ্রয়োজনীয় টেক্সট কমাতে এটি বাড়ান।"
 
 msgid "OCR entire image"
 msgstr "ସମଗ୍ର ଚିତ୍ରକୁ OCR କରନ୍ତୁ"
@@ -4062,8 +4403,8 @@ msgstr "লেআউট মডেল"
 msgid "Heron (default)"
 msgstr "হেরন (ডিফল্ট)"
 
-msgid "Egret large (slower"
-msgstr "এগ্রেট লার্জ (ধীর"
+msgid "Egret large (slower, complex docs)"
+msgstr "Egret large (ধীরগতির, জটিল নথির জন্য)"
 
 msgid "Extract formulas (LaTeX)"
 msgstr "সূত্রগুলো বের করুন (LaTeX)"

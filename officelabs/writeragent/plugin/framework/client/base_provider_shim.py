@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from plugin.framework.url_utils import get_url_path_and_query
@@ -93,6 +94,59 @@ def canonical_resolution(width: int | None = None, height: int | None = None, *,
     return tier
 
 
+def adjust_image_body_for_rejection(body: bytes, error_text: str) -> bytes | None:
+    """
+    Parse provider errors (like OpenRouter 'not supported. Accepted: <v1>') and adjust the requested params.
+    Returns the new body bytes, or None if no changes were made.
+    """
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+
+    changed = False
+    # Example text: "resolution: not supported. Accepted: 1K | Google AI Studio: resolution: not supported. Accepted: 1K"
+    # or "aspect_ratio: not supported."
+    for param in ("resolution", "aspect_ratio", "size", "output_format"):
+        if param not in data:
+            continue
+
+        pattern = rf"\b{param}\b: not supported\.(?: Accepted: ([^|}}\n\"]+))?"
+        matches = list(re.finditer(pattern, error_text))
+        if matches:
+            # all providers rejecting this param must agree on the accepted values
+            accepted_sets = []
+            for m in matches:
+                accepted_str = m.group(1)
+                if accepted_str:
+                    accepted_sets.append([x.strip() for x in accepted_str.split(",")])
+                else:
+                    accepted_sets.append([])
+
+            # find intersection of all non-empty accepted sets
+            # if they disagree, or no accepted values provided, delete the param
+            valid_accepted = [s for s in accepted_sets if s]
+            if valid_accepted:
+                common = set(valid_accepted[0])
+                for s in valid_accepted[1:]:
+                    common.intersection_update(s)
+                if common:
+                    # Just take the first one from the first set that is in common to preserve order preference
+                    new_val = next(x for x in valid_accepted[0] if x in common)
+                    data[param] = new_val
+                    changed = True
+                else:
+                    del data[param]
+                    changed = True
+            else:
+                del data[param]
+                changed = True
+
+    if changed:
+        return json.dumps(data).encode("utf-8")
+    return None
+
+
 def coerce_image_data_url(image_url: str | None = None, source_image: str | None = None) -> str | None:
     """Normalize a source image to a data URL or http(s) URL for JSON image APIs."""
     ref = image_url or source_image
@@ -140,7 +194,10 @@ class BaseProviderShim:
         api_path = self.client._api_path()
         url = endpoint + api_path + "/chat/completions"
 
-        data: dict[str, Any] = {"messages": messages, "max_tokens": max_tokens, "top_p": 0.9, "stream": stream}
+        # top_p used to be hardcoded to 0.9 on every OpenAI-compatible chat.
+        # Models that reject temperature and top_p together returned HTTP 400,
+        # and there is no top_p setting. Omit it, same as a missing temperature.
+        data: dict[str, Any] = {"messages": messages, "max_tokens": max_tokens, "stream": stream}
         if temperature is not None:
             data["temperature"] = temperature
         if model_name:
@@ -148,6 +205,8 @@ class BaseProviderShim:
         if tools:
             data["tools"] = tools
             data["tool_choice"] = "auto"
+            # Always false until the tool loop can apply parallel calls. The
+            # config key is stored but not read here; do not send True.
             data["parallel_tool_calls"] = False
         if response_format:
             data["response_format"] = response_format
@@ -163,7 +222,7 @@ class BaseProviderShim:
         path = get_url_path_and_query(url)
         return "POST", path, json_data, self.client._headers()
 
-    def parse_response_chunk(self, chunk: dict[str, Any]) -> tuple[str, str | None, str | None, dict[str, Any]]:
+    def parse_response_chunk(self, chunk: dict[str, Any], stream_state: dict[str, Any] | None = None) -> tuple[str, str | None, str | None, dict[str, Any]]:
         from .stream_normalizer import _extract_thinking_from_delta
 
         choices = chunk.get("choices", [])
@@ -190,10 +249,9 @@ class BaseProviderShim:
     def parse_sync_response(self, response_data: dict[str, Any]) -> tuple[str, str | None, list[dict[str, Any]] | None, dict[str, Any], list[str], dict[str, Any]]:
         from .stream_normalizer import _normalize_delta, _normalize_message_content
 
-        # OpenAI-compatible / local models response parsing
-        # What was wrong: Local models (e.g. Ollama) returning {"done_reason": "stop", "message": ...}
-        # without a top-level "choices" list fell through to chunk parsing and lost done_reason and content.
-        # This change handles choices[0] if present while falling back to top-level message/done_reason.
+        # Local models (Ollama) can return {"done_reason": "stop", "message": ...}
+        # with no top-level "choices". Prefer choices[0] when present, and fall
+        # back to the top-level message / done_reason so content is kept.
         choices = response_data.get("choices")
         choice = choices[0] if (isinstance(choices, list) and choices and isinstance(choices[0], dict)) else {}
         message = choice.get("message") or response_data.get("message") or {}
@@ -201,12 +259,30 @@ class BaseProviderShim:
             message = {}
         _normalize_delta(message)
         finish_reason = choice.get("finish_reason") or response_data.get("finish_reason") or response_data.get("done_reason")
+        err_obj = choice.get("error") or response_data.get("error")
+        if finish_reason == "error" or err_obj:
+            from plugin.framework.errors import NetworkError
+            from plugin.framework.i18n import _
+
+            err_msg = ""
+            if isinstance(err_obj, dict):
+                err_msg = str(err_obj.get("message") or err_obj.get("type") or "").strip()
+            elif isinstance(err_obj, str):
+                err_msg = err_obj.strip()
+            if not err_msg:
+                err_msg = _("Stream ended with finish_reason=error")
+            # The streaming loop raises NetworkError on finish_reason == 'error'
+            # and choices[0].error. The sync path must do the same, or an empty
+            # body looks like a successful reply and the caller burns turns.
+            raise NetworkError(err_msg, code="STREAM_ERROR")
 
         raw_content = message.get("content")
         content = _normalize_message_content(raw_content) or ""
         images = message.get("images") or []
         tool_calls = message.get("tool_calls")
-        usage = response_data.get("usage", {})
+        # JSON "usage": null makes .get("usage", {}) return None, because the
+        # key is present. ``or {}`` normalizes that to a dict.
+        usage = response_data.get("usage") or {}
 
         return content, finish_reason, tool_calls, usage, images, message
 
@@ -231,8 +307,11 @@ class BaseProviderShim:
     def parse_image_responses(self, response_data: dict[str, Any]) -> list[str]:
         """Extract list of base64 image data from response (standard OpenAI format)."""
         items = response_data.get("data", [])
+        # A null or non-object entry used to raise AttributeError on .get.
+        if not isinstance(items, list):
+            return []
         out = []
         for it in items:
-            if b64 := it.get("b64_json"):
+            if isinstance(it, dict) and (b64 := it.get("b64_json")):
                 out.append(b64)
         return out

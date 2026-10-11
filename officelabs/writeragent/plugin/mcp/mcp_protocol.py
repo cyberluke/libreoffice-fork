@@ -38,19 +38,23 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
 from plugin.framework.uno_context import get_runtime_uid, normalize_doc_url
+from plugin.framework.tool import ToolContext
 from plugin.framework.queue_executor import QueueExecutor
-from plugin.framework.errors import WriterAgentException, _resolve_exception_message, format_error_payload, make_tool_error, safe_json_loads
+from plugin.framework.errors import WriterAgentException, resolve_exception_message, format_error_payload, make_tool_error
 from plugin.mcp.cors import send_cors_headers
 from plugin.mcp.http_trace import log_mcp_transport_entry, log_unsupported_protocol_version
-from plugin.mcp.server import write_http_empty, write_http_json
+from plugin.mcp.server import forget_sse_keepalive, note_sse_keepalive, read_json_body, write_http_empty, write_http_json
 from plugin.mcp.mcp_state import MCPState, MCPStateStr, EventKind, MCPEvent, ParseRequestEffect, ExecuteToolEffect, StreamResponseEffect, SendErrorEffect, next_state
 from plugin.mcp import wire_types
 
 log = logging.getLogger("writeragent.mcp.protocol")
 
+# Longest an SSE keepalive wait goes without checking HttpServer.stop's flag.
+_SSE_STOP_POLL_SEC = 0.5
+
 # Local binding for headers/handlers; canonical constant is wire_types.MCP_PROTOCOL_VERSION.
 MCP_PROTOCOL_VERSION = wire_types.MCP_PROTOCOL_VERSION
-_SUPPORTED_HTTP_PROTOCOL_VERSIONS = frozenset({MCP_PROTOCOL_VERSION, "2024-11-05"})
+_SUPPORTED_HTTP_PROTOCOL_VERSIONS = frozenset({MCP_PROTOCOL_VERSION, "2024-11-05", "2025-06-18", "2025-03-26"})
 
 
 def _document_echo_payload(doc: Any) -> dict[str, Any] | None:
@@ -106,7 +110,7 @@ class _PreparedMcpCall:
     """Main-thread document resolve + ToolContext. Safe to hand to a worker with precomputed echo."""
 
     tool: object
-    context: object
+    context: ToolContext
     doc: object
     doc_key: str
     needs_gate: bool
@@ -178,18 +182,16 @@ def build_initialize_instructions(mode: str, *, now: datetime.datetime | None = 
 
 
 def _get_request_protocol_version(handler: Any) -> str | None:
-    for name in ("Mcp-Protocol-Version", "mcp-protocol-version", "MCP-Protocol-Version"):
-        value = handler.headers.get(name)
-        if value:
-            return value.strip()
+    value = handler.headers.get("Mcp-Protocol-Version")
+    if value:
+        return value.strip()
     return None
 
 
 def _get_request_session_id(handler: Any) -> str | None:
-    for name in ("Mcp-Session-Id", "mcp-session-id", "MCP-Session-Id"):
-        value = handler.headers.get(name)
-        if value:
-            return value.strip()
+    value = handler.headers.get("Mcp-Session-Id")
+    if value:
+        return value.strip()
     return None
 
 
@@ -210,13 +212,18 @@ def _send_mcp_response_headers(handler: Any, *, session_id: str | None = None) -
         handler.send_header("Mcp-Session-Id", session_id)
 
 
-# Backpressure — one fast MCP tool at a time on the main thread (_execute_with_backpressure).
-# Long-running tools skip this; see docs/framework/threading.md § MCP tool execution paths.
+# Backpressure — one fast MCP tool at a time (_execute_with_backpressure).
+# The semaphore and the per-document gate are taken on the HTTP worker; only
+# document resolve and the tool body are marshalled to the main thread.
+# Long-running tools skip the semaphore; see docs/framework/threading.md § MCP tool execution paths.
 _tool_semaphore = threading.Semaphore(1)
 _WAIT_TIMEOUT = 5.0
 _PROCESS_TIMEOUT = 60.0
 
 _ACTIVE_DOCUMENT_SENTINEL = "__active_document__"
+# Omitted means "read the caller's ambient send". An explicit None means the
+# worker had no scope; do not substitute the main thread's contextvar after marshal.
+_SEND_CANCELLATION_UNSET = object()
 
 _doc_gates: dict[str, threading.Lock] = {}
 _doc_gates_guard = threading.Lock()
@@ -282,6 +289,23 @@ def _resolve_mcp_doc_key(document_url: str | None, doc: Any) -> str:
     if document_url:
         return "url:%s" % normalize_doc_url(document_url)
     return _ACTIVE_DOCUMENT_SENTINEL
+
+
+def _arguments_without_thread_guard_bypass(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Copy client arguments and drop ``bypass_thread_guard``.
+
+    ``tools/call`` and the localhost ``/debug`` ``call_tool`` action spread
+    arguments into ``ToolRegistry.execute``. ``bypass_thread_guard`` is
+    keyword-only, so a client value bound to it. The registry then called
+    ``tool.execute`` instead of ``execute_safe`` (no disposed-document check)
+    and, for a sync long-running tool, ran UNO on the HTTP worker. The flag
+    is an internal eval-harness switch. Drop the key and do not pass the
+    keyword at all. The registry then keeps ``execute_safe``. A long-running
+    tool is ``is_async`` with a positive timeout and takes that same path.
+    """
+    cleaned = dict(arguments)
+    cleaned.pop("bypass_thread_guard", None)
+    return cleaned
 
 
 def _get_document_mutation_gate(doc_key: str) -> threading.Lock:
@@ -377,6 +401,11 @@ class MCPProtocolHandler:
         self.queue_executor = services.get("main_thread") or QueueExecutor(ctx=services.get("uno") if services else None)
         self.tool_registry = services.tools
         self.event_bus = getattr(services, "events", None)
+        self._cancelled_requests: set[tuple[Any, str | int]] = set()
+        self._in_flight_requests: dict[tuple[Any, str | int], int] = {}
+        self._requests_lock: threading.Lock = threading.Lock()
+        # EXTENSION_VERSION import can fail. Leave "unknown" so
+        # _mcp_initialize does not AttributeError on an unassigned version.
         self.version = "unknown"
         try:
             from plugin.version import EXTENSION_VERSION
@@ -387,9 +416,22 @@ class MCPProtocolHandler:
 
     # ── Raw handlers (receive GenericRequestHandler) ─────────────────
 
-    def handle_mcp_post(self, handler: Any) -> None:
+    def _extract_session(self, handler: Any) -> Any:
+        """Extract a client session key from headers or peer address for cancellation isolation."""
+        if handler is None:
+            return None
+        session_id = _get_request_session_id(handler)
+        if not session_id and hasattr(handler, "headers") and handler.headers:
+            session_id = handler.headers.get("X-Session-Id") or handler.headers.get("X-Session-ID")
+        addr = getattr(handler, "client_address", None)
+        peer = addr[0] if isinstance(addr, tuple) and addr else addr
+        if session_id and peer:
+            return f"{session_id}@{peer}"
+        return session_id or peer
+
+    def handle_mcp_post(self, handler: Any, transport: str = "mcp") -> None:
         """POST /mcp — MCP streamable-http (JSON-RPC 2.0)."""
-        log_mcp_transport_entry(handler, "mcp")
+        log_mcp_transport_entry(handler, transport)
         version_error = _validate_http_protocol_version(handler)
         if version_error is not None:
             status, response = version_error
@@ -399,6 +441,12 @@ class MCPProtocolHandler:
         if body is None:
             return
         document_url = handler.headers.get("X-Document-URL") or None
+
+        # POST threads are short-lived daemons. Registering them via
+        # note_sse_keepalive makes HttpServer.stop() join them. A POST waiting
+        # on the main-thread queue while stop() runs on the main thread can
+        # stall or deadlock. Only long-lived SSE streams need keepalive
+        # tracking and shutdown.
         self._handle_mcp(body, handler, document_url=document_url)
 
     def handle_mcp_sse(self, handler: Any) -> None:
@@ -419,12 +467,12 @@ class MCPProtocolHandler:
 
     def handle_mcp_delete(self, handler: Any) -> None:
         """DELETE /mcp — not supported: one process-wide session must stay alive."""
-        # Bugfix: Nelson a3d69e68 / GitHub #38. Streamable HTTP lets a client
-        # DELETE the session URL to end it. WriterAgent has one session id for
-        # the whole soffice process, shared by every client. Returning 200
-        # claimed the session ended when it did not; clearing the id would cut
-        # every other client off. 405 tells spec clients the session is still
-        # here. They recover on 404 (stale id after restart), not 409 or 200.
+        # Nelson a3d69e68 / GitHub #38. Streamable HTTP lets a client DELETE
+        # the session URL to end it. WriterAgent has one session id for the
+        # whole soffice process, shared by every client. Returning 200 claimed
+        # the session ended when it did not; clearing the id would cut every
+        # other client off. 405 tells spec clients the session is still here.
+        # They recover on 404 (stale id after restart), not 409 or 200.
         log_mcp_transport_entry(handler, "mcp")
 
         def _headers(h: Any) -> None:
@@ -451,58 +499,102 @@ class MCPProtocolHandler:
             log.info("[SSE] GET stream disconnected")
 
     def _run_sse_keepalive_loop(self, handler: Any, interval: float = 15) -> None:
-        """Run a keepalive loop for an SSE stream without blocking the worker thread
-        longer than necessary on disconnect.
+        """Keep an SSE stream alive until the client drops or the HTTP server stops.
+
+        This loop runs on the ThreadingMixIn request thread until the socket
+        errors. HttpServer.stop() only ends serve_forever(), so each toggle
+        would leave another daemon thread in select() for up to ``interval``
+        seconds, including across restart. Register the socket, watch this
+        generation's stop event, and leave when stop() shuts the socket down
+        (that wakes select).
         """
         sock = handler.connection
+        tcp_server = getattr(handler, "server", None)
+        stop_event = note_sse_keepalive(tcp_server, sock)
+        if stop_event is None:
+            log.info("[SSE] GET stream closed")
+            return
         try:
-            while True:
+            while not stop_event.is_set():
                 try:
                     handler.wfile.write(b": keepalive\n\n")
                     handler.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     break
 
-                # Wait for either activity on the socket (client disconnect or data)
-                # or the timeout to send the next keepalive.
-                # select.select on the socket returns if it's readable, which
-                # for a client that only receives means EOF (disconnect).
-                r, _unused, _unused2 = select.select([sock], [], [], interval)
-                if r:
-                    try:
-                        # Peek at the data to see if it's EOF (empty byte)
-                        peek = sock.recv(1, socket.MSG_PEEK)
-                        if not peek:
-                            # Client closed connection
+                # Wait for client disconnect, the keepalive interval, or
+                # stop() shutting this socket down (readable / error).
+                # Sliced: on Windows a shutdown()/close() from another thread
+                # does not wake select, so the stop flag is re-checked each
+                # slice (GHA 37401464435: thread still alive after stop).
+                readable: list[Any] = []
+                wait_until = time.monotonic() + interval
+                try:
+                    while not stop_event.is_set():
+                        left = wait_until - time.monotonic()
+                        if left <= 0:
                             break
-                        # If there was actual data (unexpected for SSE GET),
-                        # we consume it to avoid immediate re-triggering of select.
-                        sock.recv(4096)
-                    except (ConnectionResetError, OSError):
+                        readable, _unused, _unused2 = select.select([sock], [], [], min(left, _SSE_STOP_POLL_SEC))
+                        if readable:
+                            break
+                except (OSError, ValueError):
+                    break
+                if stop_event.is_set():
+                    break
+                if not readable:
+                    continue
+                try:
+                    # Peek at the data to see if it's EOF (empty byte).
+                    peek = sock.recv(1, socket.MSG_PEEK)
+                    if not peek:
                         break
+                    # Unexpected request bytes on an SSE GET. Consume them
+                    # so select does not spin.
+                    sock.recv(4096)
+                except (ConnectionResetError, OSError):
+                    break
         except Exception as e:
             log.debug("SSE keepalive loop exception: %s", e)
         finally:
+            forget_sse_keepalive(tcp_server, sock)
             log.info("[SSE] GET stream closed")
 
     def handle_sse_post(self, handler: Any) -> None:
         """POST /sse or /messages — streamable HTTP (same as /mcp)."""
-        log_mcp_transport_entry(handler, "sse")
-        version_error = _validate_http_protocol_version(handler)
-        if version_error is not None:
-            status, response = version_error
-            self._send_json(handler, status, response)
-            return
-        body = self._read_body(handler)
-        if body is None:
-            return
-        document_url = handler.headers.get("X-Document-URL") or None
-        self._handle_mcp(body, handler, document_url=document_url)
+        # Shares the same body as handle_mcp_post to include keepalive logic.
+        # The transport label keeps /sse and /messages distinct in [MCP-HTTP] logs.
+        self.handle_mcp_post(handler, transport="sse")
+
+    def _is_tunneled(self, handler: Any) -> bool:
+        """Check if the request arrived via a public tunnel."""
+        for header in ("x-forwarded-for", "x-forwarded-host", "cf-ray", "ngrok-skip-browser-warning"):
+            if handler.headers.get(header) or handler.headers.get(header.title()):
+                return True
+        from plugin.mcp import _shared_tunnel
+
+        if _shared_tunnel and getattr(_shared_tunnel, "is_running", False):
+            return True
+        return False
 
     # ── Simple handlers (body, headers, query) -> (status, dict) ─────
 
     def handle_debug_info(self, body: Any, headers: Any, query: Any) -> tuple[int, dict[str, Any]]:
         """GET /debug — show available debug actions."""
+        # Note: headers are just a dict here, so wrap it in a dummy handler structure
+        # or just pass a dummy to `_is_tunneled` which expects `handler.headers`.
+        _hdrs = headers
+
+        class _DummyHandler:
+            headers: Any = _hdrs
+
+        if self._is_tunneled(_DummyHandler()):
+            return (403, {"error": "Forbidden: Debug actions restricted to localhost (tunneled access blocked)"})
+
+        # Reject Origin to block any cross-origin requests on /debug.
+        origin = headers.get("Origin") or headers.get("origin")
+        if origin:
+            return (403, {"error": "Forbidden: Origin header not allowed on /debug"})
+
         tools = list(self.tool_registry.tool_names) if self.tool_registry else []
         return (
             200,
@@ -523,9 +615,16 @@ class MCPProtocolHandler:
         """POST /debug — execute debug actions."""
         # Security: restrict debug actions to localhost
         client_ip = handler.client_address[0]
-        if client_ip not in ("127.0.0.1", "::1", "localhost"):
-            log.warning("Blocked remote access to /debug from %s", client_ip)
+        if client_ip not in ("127.0.0.1", "::1", "localhost") or self._is_tunneled(handler):
+            log.warning("Blocked remote access to /debug from %s (tunneled=%s)", client_ip, self._is_tunneled(handler))
             self._send_json(handler, 403, {"error": "Forbidden: Debug actions restricted to localhost"})
+            return
+
+        # Reject Origin to block any cross-origin requests on /debug.
+        origin = handler.headers.get("Origin") or handler.headers.get("origin")
+        if origin:
+            log.warning("Blocked cross-origin request to /debug")
+            self._send_json(handler, 403, {"error": "Forbidden: Cross-origin requests not allowed on /debug"})
             return
 
         body = self._read_body(handler)
@@ -553,8 +652,10 @@ class MCPProtocolHandler:
 
     # ── MCP protocol handler ─────────────────────────────────────────
 
-    def _handle_mcp(self, msg: Any, handler: Any, document_url: str | None = None) -> None:
+    def _handle_mcp(self, msg: Any, handler: Any, document_url: str | None = None, session: Any = None) -> None:
         """Route MCP JSON-RPC request(s) — single or batch."""
+        if session is None:
+            session = self._extract_session(handler)
         method = msg.get("method", "?") if isinstance(msg, dict) else "batch"
         req_id = msg.get("id") if isinstance(msg, dict) else None
         log.info("[MCP] <<< %s (id=%s)", method, req_id)
@@ -566,20 +667,35 @@ class MCPProtocolHandler:
 
         # Batch request
         if isinstance(msg, list):
+            if not msg:
+                self._send_json(handler, 400, wire_types.jsonrpc_failure(None, wire_types.INVALID_REQUEST, "Empty batch"))
+                return
+
             responses = []
+            batch_has_init = False
             for item in msg:
-                result = self._process_jsonrpc(item, document_url=document_url)
+                result = self._process_jsonrpc(item, document_url=document_url, session=session)
                 if result is not None:
                     _status, response = result
                     responses.append(response)
+                    if isinstance(item, dict) and item.get("method") == "initialize" and _status == 200:
+                        batch_has_init = True
+
+            if batch_has_init:
+                _mint_session_id_once()
+
             if responses:
                 self._send_json(handler, 200, responses)
             else:
-                write_http_empty(handler, 202, extra_headers=_send_mcp_response_headers)
+                # Passing _send_mcp_response_headers directly calls it with
+                # session_id=None, so a notifications-only batch omits
+                # Mcp-Session-Id. A single notification already passes the
+                # process id. Use that same lambda.
+                write_http_empty(handler, 202, extra_headers=lambda h: _send_mcp_response_headers(h, session_id=_mcp_session_id))
             return
 
         # Single request
-        result = self._process_jsonrpc(msg, document_url=document_url)
+        result = self._process_jsonrpc(msg, document_url=document_url, session=session)
         if result is None:
             write_http_empty(handler, 202, extra_headers=lambda h: _send_mcp_response_headers(h, session_id=_mcp_session_id))
             return
@@ -594,7 +710,18 @@ class MCPProtocolHandler:
     # ── MCP method handlers ──────────────────────────────────────────
 
     def _mcp_initialize(self, params: Any) -> Any:
+        # We echo the client's version only when it is in
+        # _SUPPORTED_HTTP_PROTOCOL_VERSIONS, not any string it sends, because
+        # the client then sends that value as Mcp-Protocol-Version and
+        # _validate_http_protocol_version answers 400 to every later request.
         client_version = params.get("protocolVersion", MCP_PROTOCOL_VERSION)
+        if not isinstance(client_version, str):
+            # protocolVersion must be a string. A non-string raises TypeError
+            # on set membership and becomes HTTP 500 instead of a JSON-RPC
+            # INVALID_PARAMS error.
+            raise ValueError("protocolVersion must be a string")
+        if client_version not in _SUPPORTED_HTTP_PROTOCOL_VERSIONS:
+            client_version = MCP_PROTOCOL_VERSION
         return wire_types.initialize_result(protocol_version=MCP_PROTOCOL_VERSION, client_protocol_version=client_version, server_version=self.version, instructions=build_initialize_instructions(self._tool_exposure_mode()))
 
     def _mcp_ping(self, params: Any) -> Any:
@@ -709,24 +836,53 @@ class MCPProtocolHandler:
     def _mcp_prompts_list(self, params: Any) -> Any:
         return wire_types.empty_prompts_result()
 
-    def _mcp_tools_call(self, params: Any, document_url: str | None = None) -> Any:
+    def _mcp_tools_call(self, params: Any, document_url: str | None = None, req_id: Any = None, session: Any = None) -> Any:
         state = MCPState(status=MCPStateStr.IDLE)
 
         call_params = wire_types.CallToolRequestParams.from_params(params)
         tool_name = call_params.name
         arguments = dict(call_params.arguments)
-        arg_document_url = arguments.pop("document_url", None)
+
+        tool = self.tool_registry.get(tool_name)
+        tool_params = tool.get_parameters() if tool else {}
+        tool_props = tool_params.get("properties", {}) if tool_params else {}
+
+        if "document_url" not in tool_props:
+            arg_document_url = arguments.pop("document_url", None)
+        else:
+            arg_document_url = arguments.get("document_url", None)
+
         if arg_document_url:
             document_url = arg_document_url
 
         # find_tools is the discovery search tool; it is only advertised in
         # direct_discovery mode, so reject calling it by name in other modes -- otherwise
         # the default (delegate) behavior would not really be unchanged.
-        if tool_name == "find_tools" and self._tool_exposure_mode() != "direct_discovery":
+        mode = self._tool_exposure_mode()
+        if tool_name == "find_tools" and mode != "direct_discovery":
             return {"content": [{"type": "text", "text": json.dumps({"status": "error", "code": "UNKNOWN_TOOL", "message": "Tool 'find_tools' is only available when mcp.tool_exposure_mode is 'direct_discovery'."}, ensure_ascii=False)}], "isError": True}
 
         tool = self.tool_registry.get(tool_name)
-        is_long_running = getattr(tool, "long_running", False) if tool else False
+        if tool:
+            tier = getattr(tool, "tier", "core")
+            # direct_discovery advertises specialized tools via find_tools, so
+            # invoking them must work. MCP_DELEGATE_EXCLUDE_TIERS excludes
+            # "specialized". Both direct modes use MCP_DIRECT_FLAT_EXCLUDE_TIERS
+            # (specialized_control and chat only).
+            if mode in ("direct_flat", "direct_discovery"):
+                exclude_tiers = MCP_DIRECT_FLAT_EXCLUDE_TIERS
+            else:
+                exclude_tiers = MCP_DELEGATE_EXCLUDE_TIERS
+
+            if tier in exclude_tiers:
+                return {"content": [{"type": "text", "text": json.dumps({"status": "error", "code": "UNKNOWN_TOOL", "message": f"Tool '{tool_name}' is not available in the current exposure mode."}, ensure_ascii=False)}], "isError": True}
+
+        # One off-thread path: a long-running tool is is_async() exactly True
+        # (positive timeout checked in _prepare_mcp_execution) and runs through
+        # execute_safe. The long_running attribute alone must not select a second
+        # path. MagicMock is_async() is not exactly True, so it stays on backpressure.
+        is_async_attr = getattr(tool, "is_async", None) if tool is not None else None
+        is_long_running = is_async_attr() is True if callable(is_async_attr) else False
 
         initial_event = MCPEvent(kind=EventKind.REQUEST_RECEIVED, data={"tool_name": tool_name, "arguments": arguments, "document_url": document_url, "is_long_running": is_long_running})
 
@@ -745,18 +901,22 @@ class MCPProtocolHandler:
                     log.debug(f"*** tools/call: {state.tool_name}, event_bus={self.event_bus} ***")
                     event_bus = getattr(self, "event_bus", None)
                     if event_bus is not None:
-                        event_bus.emit("mcp:request", tool=state.tool_name, args=state.arguments, method="tools/call")
+                        event_bus.emit("mcp:request", tool=state.tool_name, args=state.arguments, method="tools/call", req_id=req_id)
 
                 elif isinstance(effect, ExecuteToolEffect):
                     try:
-                        if effect.is_long_running:
-                            res = self._execute_long_running(effect.tool_name, effect.arguments, document_url=effect.document_url)
+                        exec_kwargs: dict[str, Any] = {"document_url": effect.document_url, "req_id": req_id}
+                        if session is not None:
+                            exec_kwargs["session"] = session
+                        if effect.is_long_running is True:
+                            res = self._execute_long_running(effect.tool_name, effect.arguments, **exec_kwargs)
                         else:
-                            res = self._execute_with_backpressure(effect.tool_name, effect.arguments, document_url=effect.document_url)
+                            res = self._execute_with_backpressure(effect.tool_name, effect.arguments, **exec_kwargs)
                         events_to_process.append(MCPEvent(kind=EventKind.TOOL_COMPLETED, data={"result": res}))
                     except BusyError:
                         raise
                     except TimeoutError:
+                        # We map TimeoutError to 504, not a tool error, because only QueueExecutor/gate timeouts reach here; ToolBase.execute_safe already turns a tool's own exceptions (including TimeoutError) into error dicts.
                         raise
                     except Exception as e:
                         # Tool failures must be MCP tool results (isError), not JSON-RPC
@@ -768,13 +928,13 @@ class MCPProtocolHandler:
                         code = getattr(e, "code", None) or "TOOL_EXECUTION_ERROR"
                         if code == "INTERNAL_ERROR":
                             code = "TOOL_EXECUTION_ERROR"
-                        events_to_process.append(MCPEvent(kind=EventKind.TOOL_COMPLETED, data={"result": make_tool_error(_resolve_exception_message(e), code=code, tool_name=effect.tool_name, error_type=type(e).__name__)}))
+                        events_to_process.append(MCPEvent(kind=EventKind.TOOL_COMPLETED, data={"result": make_tool_error(resolve_exception_message(e), code=code, tool_name=effect.tool_name, error_type=type(e).__name__)}))
 
                 elif isinstance(effect, StreamResponseEffect):
                     event_bus = getattr(self, "event_bus", None)
                     if event_bus is not None:
                         snippet = str(effect.result)[:100] if effect.result else ""
-                        event_bus.emit("mcp:result", tool=state.tool_name, result_snippet=snippet, args=state.arguments)
+                        event_bus.emit("mcp:result", tool=state.tool_name, result_snippet=snippet, args=state.arguments, req_id=req_id)
 
                     # A tool may return an image: {"_mcp_image": {"data": <b64>, "mimeType": ...}} ->
                     # emit a native MCP image content block (get_image) instead of base64-as-text.
@@ -792,13 +952,25 @@ class MCPProtocolHandler:
 
     # ── JSON-RPC processing ──────────────────────────────────────────
 
-    def _process_jsonrpc(self, msg: Any, document_url: str | None = None) -> Any:
+    def _process_jsonrpc(self, msg: Any, document_url: str | None = None, session: Any = None) -> Any:
         """Process a JSON-RPC message.
 
         Returns (http_status, response_dict) or None for notifications (no ``id``).
         """
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
             return (400, wire_types.jsonrpc_failure(None, wire_types.INVALID_REQUEST, "Invalid JSON-RPC 2.0 request"))
+
+        # Handle cancellation notifications globally.
+        # Key cancellations by (session, requestId). An id alone lets one
+        # client cancel another client's request that reused the same id.
+        if msg.get("method") == "notifications/cancelled":
+            params = msg.get("params")
+            req_id_to_cancel = params.get("requestId") if isinstance(params, dict) else None
+            if isinstance(req_id_to_cancel, (str, int)) and not isinstance(req_id_to_cancel, bool):
+                cancel_target = (session, req_id_to_cancel)
+                with self._requests_lock:
+                    if cancel_target in self._in_flight_requests:
+                        self._cancelled_requests.add(cancel_target)
 
         # Notifications must not receive a JSON-RPC response (HTTP 202, empty body).
         if wire_types.is_jsonrpc_notification(msg):
@@ -824,12 +996,30 @@ class MCPProtocolHandler:
             if method == "tools/list":
                 result = self._mcp_tools_list(params, document_url=document_url)
             elif method == "tools/call":
-                result = self._mcp_tools_call(params, document_url=document_url)
+                cancel_key = (session, req_id) if req_id is not None else None
+                if cancel_key is not None:
+                    with self._requests_lock:
+                        count = self._in_flight_requests.get(cancel_key, 0)
+                        if count == 0:
+                            self._cancelled_requests.discard(cancel_key)
+                        self._in_flight_requests[cancel_key] = count + 1
+                try:
+                    result = self._mcp_tools_call(params, document_url=document_url, req_id=req_id, session=session)
+                finally:
+                    if cancel_key is not None:
+                        with self._requests_lock:
+                            count = self._in_flight_requests.get(cancel_key, 0) - 1
+                            if count <= 0:
+                                self._in_flight_requests.pop(cancel_key, None)
+                                self._cancelled_requests.discard(cancel_key)
+                            else:
+                                self._in_flight_requests[cancel_key] = count
             else:
                 result = one_arg[method](params)
-            preview = str(result)
-            cap = 2000 if (isinstance(result, dict) and result.get("isError")) else 100
-            log.debug("*** MCP RESULT: %s ***", preview[:cap])
+            if log.isEnabledFor(logging.DEBUG):
+                preview = str(result)
+                cap = 2000 if (isinstance(result, dict) and result.get("isError")) else 100
+                log.debug("*** MCP RESULT: %s ***", preview[:cap])
             if result is None:
                 return (500, wire_types.jsonrpc_failure(req_id, wire_types.INTERNAL_ERROR, "No result from MCP handler"))
             return (200, wire_types.jsonrpc_success(req_id, result))
@@ -850,18 +1040,35 @@ class MCPProtocolHandler:
 
     # ── Backpressure execution ───────────────────────────────────────
 
-    def _execute_with_backpressure(self, tool_name: str, arguments: Any, document_url: str | None = None) -> Any:
-        """Execute a tool on the VCL main thread with backpressure.
+    def _execute_with_backpressure(self, tool_name: str, arguments: Any, document_url: str | None = None, req_id: Any = None, session: Any = None) -> Any:
+        """Execute a fast tool with backpressure.
 
-        Acquires _tool_semaphore then _execute_tool_on_main (which holds the per-doc
-        mutation gate for mutating tools). UNO runs on the main thread only.
+        The semaphore and the per-document mutation gate are acquired on this
+        HTTP worker. Document resolve and the tool body are marshalled to the
+        VCL main thread. UNO still runs only on that thread.
+
+        The gate used to be acquired inside ``_execute_tool_on_main``, which
+        this method dispatched as one main-thread job. A long-running mutator
+        already holding the gate (on its worker) made the UI thread block for
+        up to the 30s gate timeout, and that mutator could not marshal its own
+        UNO work until the wait gave up with BusyError. Wait for the gate
+        here, then dispatch only the tool body.
         """
         acquired = _tool_semaphore.acquire(timeout=_WAIT_TIMEOUT)
         if not acquired:
             raise BusyError("LibreOffice is busy processing another tool call. Please wait a moment and retry.")
         try:
-            return self.queue_executor.execute(self._execute_tool_on_main, tool_name, arguments, document_url, timeout=_PROCESS_TIMEOUT)
+            from plugin.framework.queue_executor import get_current_send_cancellation
+            send_cancellation = get_current_send_cancellation()
+            prepared = self.queue_executor.execute(self._prepare_mcp_execution, tool_name, arguments, document_url, req_id, timeout=10.0, bound_scope=send_cancellation, send_cancellation=send_cancellation, session=session)
+            if not isinstance(prepared, _PreparedMcpCall):
+                return prepared
+            with _document_mutation_gate(prepared.doc_key, enabled=prepared.needs_gate):
+                return self.queue_executor.execute(self._invoke_prepared_mcp_tool, prepared, tool_name, arguments, timeout=_PROCESS_TIMEOUT)
         finally:
+            # We release the semaphore on a marshal TimeoutError, not keep it held, because QueueExecutor raises it only for work that never started.
+            # If the tool body actually started executing on the main thread, QueueExecutor waits indefinitely instead of raising TimeoutError.
+            # This ensures we don't accidentally release the semaphore or gate while a long-running tool is actively mutating LibreOffice.
             _tool_semaphore.release()
 
     def _add_other_open_doc_schemas(self, schemas: list[dict[str, Any]], active_doc_type: str | None, exclude_tiers: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -899,11 +1106,20 @@ class MCPProtocolHandler:
         log.debug("tools/list broadened past the active %s document to also cover: %s", active_doc_type, ", ".join(sorted(others)))
         return schemas, others
 
-    def _prepare_mcp_execution(self, tool_name: str, arguments: Any, document_url: str | None = None) -> Any:
+    def _prepare_mcp_execution(self, tool_name: str, arguments: Any, document_url: str | None = None, req_id: Any = None, send_cancellation: Any = _SEND_CANCELLATION_UNSET, session: Any = None) -> Any:
         """Main-thread only: unknown-tool check, document resolve, ToolContext, precomputed echo.
 
         Returns ``_PreparedMcpCall`` or a structured error dict.
+
+        Marshalled callers pass the scope captured on the worker, including
+        None, so this does not inherit the main thread's ambient send.
+        Direct callers omit the argument and use the scope on this thread.
         """
+        if send_cancellation is _SEND_CANCELLATION_UNSET:
+            from plugin.framework.queue_executor import get_current_send_cancellation
+
+            send_cancellation = get_current_send_cancellation()
+
         tool = self.tool_registry.get(tool_name)
         if tool is None:
             return {"status": "error", "code": "UNKNOWN_TOOL", "message": "No tool named '%s'. Check tools/list for the exact name (tools are filtered by the open document's type)." % tool_name}
@@ -970,34 +1186,85 @@ class MCPProtocolHandler:
             except Exception:
                 pass
 
-        context = ToolContext(doc=doc, ctx=ctx, doc_type=doc_type, services=self.services, caller="mcp", active_page_index=active_page_idx, uno_services_supported=uno_services)
+        def stop_checker() -> bool:
+            if req_id is not None:
+                cancel_key = (session, req_id)
+                with self._requests_lock:
+                    if cancel_key in self._cancelled_requests:
+                        return True
+            if send_cancellation is not None and send_cancellation.is_cancelled():
+                return True
+            return False
+
+        # MagicMock tools (and any non-bool is_async result) are not async. A
+        # non-numeric timeout is not a positive timeout: comparing MagicMock
+        # to int raises TypeError and aborts preparation before ToolContext.
+        _is_async_attr = getattr(tool, "is_async", None)
+        _is_async = _is_async_attr() is True if callable(_is_async_attr) else False
+        _timeout = getattr(tool, "timeout", None)
+        if _is_async and _timeout is not None and not (isinstance(_timeout, (int, float)) and _timeout > 0):
+            return {"status": "error", "code": "TOOL_EXECUTION_ERROR", "message": "Async tools must declare a positive timeout to run off-thread."}
+
+        context = ToolContext(doc=doc, ctx=ctx, doc_type=doc_type, services=self.services, caller="mcp", active_page_index=active_page_idx, uno_services_supported=uno_services, send_cancellation=send_cancellation, stop_checker=stop_checker)
         return _PreparedMcpCall(tool=tool, context=context, doc=doc, doc_key=_resolve_mcp_doc_key(document_url, doc), needs_gate=_tool_needs_document_mutation_gate(tool, arguments), echo=_document_echo_payload(doc))
 
-    def _run_prepared_mcp_execute(self, prepared: _PreparedMcpCall, tool_name: str, arguments: Any) -> Any:
-        """Gate + registry execute + elapsed/echo. ``prepared.echo`` must already be computed on main."""
-        with _document_mutation_gate(prepared.doc_key, enabled=prepared.needs_gate):
-            t0 = time.perf_counter()
-            result = self.tool_registry.execute(tool_name, prepared.context, **arguments)
-            elapsed = time.perf_counter() - t0
+    def _invoke_prepared_mcp_tool(self, prepared: _PreparedMcpCall, tool_name: str, arguments: Any) -> Any:
+        """Registry execute + elapsed/echo. Caller holds the mutation gate when the tool needs it.
+
+        ``prepared.echo`` must already be computed on the main thread.
+        Client ``bypass_thread_guard`` is dropped and the keyword is not passed,
+        so ``ToolRegistry.execute`` keeps ``execute_safe`` (see
+        ``_arguments_without_thread_guard_bypass``). Do not call ``tool.execute``.
+        """
+        safe_args = _arguments_without_thread_guard_bypass(dict(arguments))
+        t0 = time.perf_counter()
+
+        result = self.tool_registry.execute(tool_name, prepared.context, **safe_args)
+
+        elapsed = time.perf_counter() - t0
         if isinstance(result, dict):
             result["_elapsed_ms"] = round(elapsed * 1000, 1)
             _attach_precomputed_echo(result, prepared.echo)
         return result
 
-    def _execute_long_running(self, tool_name: str, arguments: Any, document_url: str | None = None) -> Any:
+    def _run_prepared_mcp_execute(self, prepared: _PreparedMcpCall, tool_name: str, arguments: Any) -> Any:
+        """Hold the per-document gate on the caller, then run the tool.
+
+        Long-running tools call this on the HTTP worker. Sync UNO inside the
+        registry is marshalled to the main thread from there.
+        """
+        with _document_mutation_gate(prepared.doc_key, enabled=prepared.needs_gate):
+            stop_checker = prepared.context.stop_checker
+            if callable(stop_checker) and stop_checker() is True:
+                return {"status": "error", "code": "USER_STOPPED", "message": "Stopped by user"}
+            return self._invoke_prepared_mcp_tool(prepared, tool_name, arguments)
+
+    def _execute_long_running(self, tool_name: str, arguments: Any, document_url: str | None = None, req_id: Any = None, session: Any = None) -> Any:
         """Execute a long-running tool on the current background HTTP thread.
 
         Context resolution runs on the main thread. Mutating tools hold the same
-        per-document gate as _execute_tool_on_main; read-only tools skip it.
-        Tool bodies run on the HTTP worker; UNO inside tools uses execute_on_main_thread.
+        per-document gate as backpressure, acquired here on the worker;
+        read-only tools skip it. is_async tools (the long-running path) run
+        here through execute_safe; the registry marshals sync tools back to
+        the main thread. Client arguments cannot set bypass_thread_guard, and
+        this method does not pass that keyword (see
+        _arguments_without_thread_guard_bypass).
         """
-        prepared = self.queue_executor.execute(self._prepare_mcp_execution, tool_name, arguments, document_url, timeout=10.0)
+        from plugin.framework.queue_executor import get_current_send_cancellation
+        send_cancellation = get_current_send_cancellation()
+        prepared = self.queue_executor.execute(self._prepare_mcp_execution, tool_name, arguments, document_url, req_id, timeout=10.0, bound_scope=send_cancellation, send_cancellation=send_cancellation, session=session)
         if not isinstance(prepared, _PreparedMcpCall):
             return prepared
         return self._run_prepared_mcp_execute(prepared, tool_name, arguments)
 
     def _execute_tool_on_main(self, tool_name: str, arguments: Any, document_url: str | None = None) -> Any:
-        """Run a backpressure tool on the main thread; shares _document_mutation_gate with long-running path."""
+        """Prepare and run a tool on the caller, including the mutation-gate wait.
+
+        In-process helper (tests, direct calls). Production backpressure must
+        not marshal this whole function: the gate wait would freeze the VCL
+        thread. ``_execute_with_backpressure`` waits on the HTTP worker, then
+        dispatches ``_invoke_prepared_mcp_tool`` alone.
+        """
         prepared = self._prepare_mcp_execution(tool_name, arguments, document_url)
         if not isinstance(prepared, _PreparedMcpCall):
             return prepared
@@ -1008,7 +1275,15 @@ class MCPProtocolHandler:
     def _debug_call_tool(self, tool_name: str, arguments: Any, document_url: str | None = None) -> Any:
         if not tool_name:
             return {"error": "Missing 'tool' parameter"}
-        result = self._execute_with_backpressure(tool_name, arguments, document_url=document_url)
+        if not isinstance(arguments, dict):
+            return {"error": "'args' must be a dictionary"}
+
+        args_copy = dict(arguments)
+
+        if document_url is None:
+            document_url = args_copy.pop("document_url", None)
+
+        result = self._execute_with_backpressure(tool_name, args_copy, document_url=document_url)
         return result
 
     def _debug_trigger(self, command: str) -> Any:
@@ -1061,21 +1336,18 @@ class MCPProtocolHandler:
         return None
 
     def _read_body(self, handler: Any) -> Any:
-        """Read and parse JSON body from an HTTP handler."""
-        content_length = int(handler.headers.get("Content-Length", 0))
-        if content_length == 0:
-            return {}
-        raw = handler.rfile.read(content_length).decode("utf-8")
-        data = safe_json_loads(raw, default=None, strict=True)
-        if data is None and raw.strip():
-            log.warning("Invalid JSON body: %s", raw[:200])
-            from plugin.framework.errors import AgentParsingError, format_error_payload
+        """Read and parse JSON body from an HTTP handler.
 
-            err = AgentParsingError("Invalid JSON body in HTTP request", details={"raw": raw[:200]})
-            self._send_json(handler, 400, format_error_payload(err))
+        Same cap and socket-timeout failure as ``GenericRequestHandler._read_body``.
+        The two entry points used to each call ``rfile.read(content_length)``.
+        """
+        data, rejected = read_json_body(handler)
+        if rejected is not None:
+            status, err = rejected
+            self._send_json(handler, status, format_error_payload(err))
             return None
-        return data if data is not None else {}
+        return data
 
     def _send_json(self, handler: Any, status: int, data: Any) -> None:
         """Send a JSON response via an HTTP handler."""
-        write_http_json(handler, status, data, extra_headers=_send_mcp_response_headers)
+        write_http_json(handler, status, data, extra_headers=lambda h: _send_mcp_response_headers(h, session_id=_mcp_session_id))

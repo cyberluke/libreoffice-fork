@@ -16,30 +16,25 @@ if TYPE_CHECKING:
     from com.sun.star.awt import ActionEvent
     from com.sun.star.lang import EventObject
 
-from plugin.chatbot.dialogs import (
-    TabListener,
-    get_checkbox_state,
-    get_control_text,
-    get_optional,
-    is_checkbox_control,
-    set_checkbox_state,
-    set_control_text,
-    translate_dialog,
-)
-from plugin.framework.config_schema import as_bool
-from plugin.framework.i18n import _
+from plugin.chatbot.dialogs import TabListener, get_optional, translate_dialog
 from plugin.framework.uno_context import get_extension_url
 
 log = logging.getLogger(__name__)
 
 _active_dialogs: dict[str, Any] = {}
 
-_TAB_PAGE_MAP = {
-    "btn_tab_general": 1,
-    "btn_tab_ocr": 2,
-    "btn_tab_tables": 3,
-    "btn_tab_advanced": 4,
-}
+def _tab_buttons_in_order(dlg: Any) -> list[Any]:
+    """btn_tab_* controls in dialog-model order (the order the XDL generator writes)."""
+    from plugin.chatbot.dialogs import _dialog_model_element_names
+
+    buttons: list[Any] = []
+    for name in _dialog_model_element_names(dlg):
+        if not str(name).startswith("btn_tab_"):
+            continue
+        btn = get_optional(dlg, str(name))
+        if btn is not None:
+            buttons.append(btn)
+    return buttons
 
 
 def get_module_config_dialog_id(module_name: str) -> str | None:
@@ -66,42 +61,6 @@ def apply_module_config_result(ctx: Any, module_name: str, result: dict[str, Any
 
     field_specs = get_module_config_field_specs(ctx, module_name)
     apply_field_specs_result(ctx, result, field_specs)
-
-
-def _option_labels(field: dict[str, Any]) -> tuple[str, ...]:
-    opts = field.get("options")
-    if not isinstance(opts, list):
-        return ()
-    labels: list[str] = []
-    for opt in opts:
-        if isinstance(opt, dict):
-            labels.append(_(str(opt.get("label") or opt.get("value") or "")))
-        elif opt is not None:
-            labels.append(_(str(opt)))
-    return tuple(labels)
-
-
-def _set_field_options(ctrl: Any, field: dict[str, Any]) -> None:
-    labels = _option_labels(field)
-    if not labels:
-        log.warning("Module config field %s has no select options", field.get("name"))
-        return
-    model = ctrl.getModel() if hasattr(ctrl, "getModel") else None
-    if model is not None and hasattr(model, "StringItemList"):
-        model.StringItemList = labels
-        log.debug("Module config set %d options on %s", len(labels), field.get("name"))
-        return
-    if hasattr(ctrl, "addItem"):
-        try:
-            while ctrl.getItemCount() > 0:
-                ctrl.removeItems(0, 1)
-        except Exception:
-            pass
-        for label in labels:
-            ctrl.addItem(label, 0)
-        log.debug("Module config addItem populated %d options on %s", len(labels), field.get("name"))
-        return
-    log.warning("Module config control %s does not support option lists", field.get("name"))
 
 
 class ModuleConfigDialog:
@@ -203,10 +162,11 @@ class ModuleConfigDialog:
 
     def _setup_tabs(self) -> None:
         assert self._dlg is not None
-        for tab_id, page_num in _TAB_PAGE_MAP.items():
-            btn = get_optional(self._dlg, tab_id)
-            if btn is not None:
-                btn.addActionListener(TabListener(self._dlg, page_num))
+        # Step numbers follow control order, which is the page order the
+        # generator writes. A new page: in module.yaml then gets a listener
+        # without a second hardcoded map.
+        for page_num, btn in enumerate(_tab_buttons_in_order(self._dlg), start=1):
+            btn.addActionListener(TabListener(self._dlg, page_num))
 
     def _wire_buttons(self) -> None:
         assert self._dlg is not None
@@ -244,9 +204,11 @@ class ModuleConfigDialog:
             close_btn.addActionListener(_CloseListener())
 
     def _populate_fields(self, field_specs: list[dict[str, Any]]) -> None:
+        from plugin.chatbot.settings_fields import populate_settings_control
+
         assert self._dlg is not None
         for field in field_specs:
-            ctrl = self._dlg.getControl(field["name"])
+            ctrl = get_optional(self._dlg, field["name"])
             if ctrl is None:
                 log.warning(
                     "Module config dialog %s missing control %r",
@@ -254,45 +216,43 @@ class ModuleConfigDialog:
                     field["name"],
                 )
                 continue
-            if is_checkbox_control(ctrl):
-                set_checkbox_state(ctrl, 1 if as_bool(field["value"]) else 0)
-            elif hasattr(ctrl, "setText"):
-                if "options" in field:
-                    try:
-                        _set_field_options(ctrl, field)
-                    except Exception:
-                        log.exception("Failed to set options for %s", field["name"])
-                ctrl.setText(str(field.get("value", "")))
-            else:
-                if "options" in field:
-                    try:
-                        _set_field_options(ctrl, field)
-                    except Exception:
-                        log.exception("Failed to set options for %s", field["name"])
-                set_control_text(ctrl, field["value"])
+            populate_settings_control(ctrl, field)
 
     def _extract_result(self) -> dict[str, Any]:
+        from plugin.chatbot.settings_fields import read_settings_control
+
         assert self._dlg is not None
         result: dict[str, Any] = {}
         for field in get_module_config_field_specs(self._ctx, self._module_name):
             name = field["name"]
-            ctrl = self._dlg.getControl(name)
+            ctrl = get_optional(self._dlg, name)
             if ctrl is None:
                 continue
-            if is_checkbox_control(ctrl):
-                result[name] = "true" if get_checkbox_state(ctrl) else "false"
-            elif hasattr(ctrl, "getText"):
-                result[name] = ctrl.getText()
+            value = read_settings_control(ctrl, field)
+            if value is None:
+                continue
+            # Helper returns bool. This dialog used to persist "true"/"false"
+            # strings (LibrePy does the same wrap). WriterAgent Settings keeps
+            # the bool.
+            if isinstance(value, bool):
+                result[name] = "true" if value else "false"
             else:
-                result[name] = get_control_text(ctrl)
+                result[name] = value
         return result
 
     def _apply(self, *, close: bool) -> None:
+        from plugin.chatbot.dialogs import msgbox
+        from plugin.framework.i18n import _
+
         try:
             result = self._extract_result()
             apply_module_config_result(self._ctx, self._module_name, result)
-        except Exception:
+        except Exception as exc:
+            # A failed save stays open. Closing here dismisses the dialog
+            # after the values were not stored.
             log.exception("Failed to apply module config for %s", self._module_name)
+            msgbox(self._ctx, _("Invalid Setting"), str(exc))
+            return
         if close:
             self.close()
 

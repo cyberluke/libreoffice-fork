@@ -15,6 +15,7 @@ load ``document_helpers`` → chat context / ``DocumentService``.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
@@ -51,20 +52,40 @@ _GO_RIGHT_CHUNK = 8192
 
 
 def _writer_char_count(model: Any) -> int:
-    """Writer document character count; prefers O(1) CharacterCount over full getString()."""
-    try:
-        check_disposed(model, "Document Model")
-        count = getattr(model, "CharacterCount", None)
-        if count is not None:
-            return max(0, int(count))
-    except Exception:
-        pass
+    """Length of the Writer body in cursor steps: the space every offset here uses
+    (``get_text_cursor_at_range``, ``get_selection_range``, the chat excerpt reads).
+
+    The ``CharacterCount`` statistic leaves out paragraph breaks
+    and text deleted by pending tracked changes (54 chars read as
+    53; 60 pending edits, 2385 against offsets up to 3404). Adding
+    ``ParagraphCount - 1`` puts the breaks back but not the deleted
+    text, which the cursor still steps over. Callers treat this
+    length as the end of the offset space, so the chat's [DOCUMENT
+    END] excerpt and get_full_writer_text drop the end of the
+    document, and a selection at the end comes back as (length,
+    length). The statistic is not cheap either: after an edit it
+    recomputes (253 ms on a 348k-char body; this walk took 55 ms).
+
+    Future: if huge-document chat feels slow, cache this length (and the visible
+    ``get_document_length`` walk) until the next edit instead of walking every call.
+    """
     try:
         text = safe_call(model.getText, "Get document text")
         cursor = safe_call(text.createTextCursor, "Create text cursor")
         safe_call(cursor.gotoStart, "Cursor gotoStart", False)
-        safe_call(cursor.gotoEnd, "Cursor gotoEnd", True)
-        return len(normalize_linebreaks(safe_call(cursor.getString, "Cursor getString")))
+        count = 0
+        step = _GO_RIGHT_CHUNK
+        while step:
+            probe = safe_call(text.createTextCursorByRange, "Create probe cursor",
+                              safe_call(cursor.getStart, "Cursor getStart"))
+            # A goRight that cannot go the full distance still moves to the end and returns
+            # False, so retry a smaller step from the last position it fully reached.
+            if safe_call(probe.goRight, "Cursor goRight", step, False) is True:
+                cursor = probe
+                count += step
+            else:
+                step //= 2
+        return count
     except UnoObjectError:
         logging.getLogger(__name__).exception("_writer_char_count failed")
         return 0
@@ -125,7 +146,7 @@ def _get_writer_selection_positions(model: Any) -> tuple[Any, Any, Any] | None:
             rng = safe_call(sel.getByIndex, "Get selection by index", 0)
         if not rng or not hasattr(rng, "getStart") or not hasattr(rng, "getEnd"):
             return None
-        text = safe_call(model.getText, "Get document text")
+        text = safe_call(rng.getText, "Get range text")
         return text, safe_call(rng.getStart, "Get range start"), safe_call(rng.getEnd, "Get range end")
     except UnoObjectError:
         return None
@@ -646,11 +667,23 @@ def _writer_selection_overlaps_windows(  # pyright: ignore[reportUnusedFunction]
 
 @main_thread_only
 def get_document_length(model: Any) -> int:
-    """Return total character length of the document. Returns 0 on error."""
+    """Return total character length of the document. Returns 0 on error.
+
+    Writer: the length of the visible text (pending tracked deletions hidden, paragraph breaks
+    counted, fields and footnote numbers as shown), read with the same helper
+    get_document_content scope='range' counts its offsets with. It was the ``CharacterCount``
+    statistic, which leaves out the breaks and the deleted text, so a range read near the end
+    was cut short ("o dan"). Cursor steps minus the deleted text is no substitute: a field or
+    footnote anchor is one step but several characters (314 against 324 on 12 footnotes).
+    """
     try:
         check_disposed(model, "Document Model")
         if _doc_type.get_document_type(model) == _doc_type.DocumentType.WRITER:
-            return _writer_char_count(model)
+            body = safe_call(model.getText, "Get document text")
+            whole = safe_call(body.createTextCursor, "Create text cursor")
+            safe_call(whole.gotoStart, "Cursor gotoStart", False)
+            safe_call(whole.gotoEnd, "Cursor gotoEnd", True)
+            return len(normalize_linebreaks(get_string_without_tracked_deletions(whole)))
         text = safe_call(model.getText, "Get document text")
         cursor = safe_call(text.createTextCursor, "Create text cursor")
         safe_call(cursor.gotoStart, "Cursor gotoStart", False)
@@ -673,6 +706,46 @@ def clone_text_range(text_range: Any) -> Any:
     return text_range.getText().createTextCursorByRange(text_range)
 
 
+def with_view_cursor_left_body_locked(doc: Any, vc: Any, action_fn: Any) -> Any:
+    """Leave nested XText, lock for the action, unlock before restore.
+
+    What was wrong: Hand-rolled cursor save/lock in get_page_for_paragraph and
+    get_page_count used doc.getText().createTextCursorByRange(vc.getStart())
+    which raised RuntimeException ("End of content node doesn't have the proper
+    start node") when vc sat inside a table cell or text frame, aborting page
+    resolution and falling back to page 1 (#1422). It also called gotoRange
+    before unlockControllers(), which fails for nested cell targets.
+    How it happened: structural.py previously implemented _with_left_body_locked
+    for page scans, but document_helpers.py retained an outdated duplicate.
+    Why this change: Centralizes the leave-body, lock, unlock, restore sequence
+    into one shared, LibrePy-safe helper for all view-cursor walking operations.
+    """
+    saved = None
+    try:
+        # Nested XText (table cell / frame): body getText() cannot clone this range.
+        saved = clone_text_range(vc)
+    except Exception:
+        pass
+    in_body = False
+    try:
+        vc.gotoRange(doc.getText().getStart(), False)
+        in_body = True
+    except Exception:
+        pass
+    if in_body:
+        doc.lockControllers()
+    try:
+        return action_fn()
+    finally:
+        if in_body:
+            doc.unlockControllers()
+        if saved is not None:
+            try:
+                vc.gotoRange(saved, False)
+            except Exception:
+                pass
+
+
 @main_thread_only
 def get_text_cursor_at_range(model: Any, start_offset: int, end_offset: int) -> Any:
     """Return a text cursor that selects the character range [start_offset, end_offset).
@@ -681,27 +754,83 @@ def get_text_cursor_at_range(model: Any, start_offset: int, end_offset: int) -> 
     Returns None on error or invalid range."""
     try:
         check_disposed(model, "Document Model")
-        doc_len = get_document_length(model)
-        start_offset = max(0, min(start_offset, doc_len))
-        end_offset = max(0, min(end_offset, doc_len))
+        # Offsets are not clamped to get_document_length(). For Writer
+        # that is the CharacterCount statistic -- it leaves out paragraph
+        # breaks and tracked deletions, while offsets
+        # (search_in_document return_offsets, getString) count both. On
+        # a long document the range is clamped past its real end and
+        # set_selection selects nothing (relato #37). No clamp is needed
+        # at the end: goRight stops at the end of the text on its own.
+        start_offset = max(0, start_offset)
+        end_offset = max(0, end_offset)
         if start_offset > end_offset:
             start_offset, end_offset = end_offset, start_offset
         text = safe_call(model.getText, "Get document text")
         cursor = safe_call(text.createTextCursor, "Create text cursor")
         safe_call(cursor.gotoStart, "Cursor gotoStart", False)
-        # Move to start_offset in chunks
+        # Move to start_offset in chunks. A goRight that runs out of text stops at the end and
+        # returns False: stop there, or an offset like 10**12 runs millions of UNO calls.
         remaining = start_offset
         while remaining > 0:
             n = min(remaining, _GO_RIGHT_CHUNK)
-            safe_call(cursor.goRight, "Cursor goRight", n, False)
+            if safe_call(cursor.goRight, "Cursor goRight", n, False) is False:
+                return cursor
             remaining -= n
         # Expand selection by (end_offset - start_offset)
         remaining = end_offset - start_offset
         while remaining > 0:
             n = min(remaining, _GO_RIGHT_CHUNK)
-            safe_call(cursor.goRight, "Cursor goRight", n, True)
+            if safe_call(cursor.goRight, "Cursor goRight", n, True) is False:
+                break
             remaining -= n
         return cursor
     except UnoObjectError:
         logging.getLogger(__name__).exception("get_text_cursor_at_range failed")
         return None
+
+
+# ast_source_offset splits lines on \r\n, \r, or \n, matching
+# Python AST line numbering. str.splitlines() also splits on form
+# feed (\x0c), vertical tab (\x0b), U+2028, U+2029, and other
+# Unicode breaks the lexer does not. Line-start offsets are
+# precomputed for O(1) random-access lookups.
+_AST_LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
+
+
+def line_starts_exact(src: str) -> list[int]:
+    """Find line start character offsets splitting only on \\r\\n, \\r, or \\n."""
+    starts = [0]
+    for m in _AST_LINE_BREAK_RE.finditer(src):
+        starts.append(m.end())
+    return starts
+
+
+def ast_source_offset(
+    src: str,
+    lineno: int,
+    col: int,
+    *,
+    line_starts: list[int] | None = None,
+) -> int:
+    """Map AST ``(lineno, col_offset)`` to an absolute character index in *src*.
+
+    On Python 3.8+, ``col_offset`` / ``end_col_offset`` are UTF-8 *byte* offsets
+    within the line — not Unicode character indices. Convert before slicing *src*
+    so a non-ASCII prefix cannot shift the rewrite window.
+    """
+    if lineno < 1 or col < 0:
+        return -1
+    if line_starts is None:
+        line_starts = line_starts_exact(src)
+    if lineno > len(line_starts):
+        return -1
+    line_start = line_starts[lineno - 1]
+    line_end = line_starts[lineno] if lineno < len(line_starts) else len(src)
+    line = src[line_start:line_end]
+    raw = line.encode("utf-8")
+    if col > len(raw):
+        return -1
+    # If *col* landed mid-codepoint, back up to a valid UTF-8 boundary.
+    while col > 0 and col < len(raw) and (raw[col] & 0xC0) == 0x80:
+        col -= 1
+    return line_start + len(raw[:col].decode("utf-8"))

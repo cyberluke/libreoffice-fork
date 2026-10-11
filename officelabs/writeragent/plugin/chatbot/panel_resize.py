@@ -23,7 +23,6 @@ _STRETCH_CONTROLS = frozenset({
     "status",
     "chat_mode_selector",
     "model_selector",
-    "prompt_selector",
     "image_model_selector",
     "aspect_ratio_selector",
 })
@@ -33,9 +32,16 @@ _OVERLAY_CONTROLS = frozenset({"slash_popup"})
 
 # ChatPanelDialog.xdl: response top=16 height=110, status top=128 -> gap=2.
 _XDL_GAP_BELOW_RESPONSE = 2
-_BOTTOM_MARGIN = 10
+# 20 matches python_sidebar.py. 10 clips the Image-mode bottom row
+# (base_size_input, aspect_ratio_selector, model_selector) under the deck
+# border at 1x.
+_BOTTOM_MARGIN = 20
 _MIN_RESPONSE_HEIGHT = 30
 _RIGHT_MARGIN = 4
+
+# Send/Record, Stop, Clear share one row. XDL widths are AppFont, so at 2x the
+# three buttons need ~500px and Clear was clamped to 20px under Stop.
+_BUTTON_ROW = ("send", "stop", "clear")
 
 # Controls below the chat transcript — anchored as one block toward the panel bottom.
 _BOTTOM_CLUSTER = frozenset({
@@ -49,7 +55,6 @@ _BOTTOM_CLUSTER = frozenset({
     "chat_mode_selector",
     "model_label",
     "model_selector",
-    "prompt_selector",
     "image_model_selector",
     "base_size_label",
     "base_size_input",
@@ -76,6 +81,49 @@ def _cluster_metrics(snapshot: dict[str, tuple[int, int, int, int]]) -> tuple[in
     return bottom_top, bottom_bottom - bottom_top, snapshot["response"][1]
 
 
+def column_right_margin(snapshot: dict[str, tuple[int, int, int, int]], right_margin: int = _RIGHT_MARGIN) -> int:
+    """Right inset of the column, as wide as the left inset.
+
+    Mirror the left inset (already DPI-mapped) plus a pixel of slack per
+    AppFont unit of rounding, so the request fits the viewport. A fixed 4px
+    right margin against a 4 AppFont left inset (7px at 1x, 13px at 2x)
+    makes the panel wider than the deck (the window asks for the children's
+    extent plus the left inset) and the deck shows a horizontal scrollbar.
+    """
+    left = snapshot.get("response", (right_margin, 0, 0, 0))[0]
+    return max(right_margin, left + max(1, left // 4))
+
+
+def compute_min_panel_height(
+    snapshot: dict[str, tuple[int, int, int, int]],
+    *,
+    bottom_margin: int = _BOTTOM_MARGIN,
+    response_gap: int = _XDL_GAP_BELOW_RESPONSE,
+    min_response_height: int = _MIN_RESPONSE_HEIGHT,
+) -> int:
+    """Real minimum panel height: fixed bottom cluster at its natural spot.
+
+    The transcript is shrinkable (it has its own internal scrollbar), so the
+    non-scrollable bottom cluster governs the floor. This layout rests the
+    cluster on the bottom of a ``min_response_height`` transcript, so the
+    minimum is: transcript top + min transcript + gap + cluster height
+    + bottom margin. Any panel height below this value would either overlap
+    the fixed controls with the transcript or push them off the top.
+
+    This is the value a panel MUST report as ``LayoutSize.Minimum``. The deck
+    (``sfx2 DeckLayouter``) only shows the outer vertical scrollbar when the
+    available height is below the total Minimum, so under-reporting it (the
+    old constant 100) makes LibreOffice believe the fixed controls can always
+    be shrunk into the viewport, which clips their bottom row unreachably.
+    """
+    if not snapshot or "response" not in snapshot:
+        return 0
+    bottom_top, cluster_height, response_y = _cluster_metrics(snapshot)
+    if cluster_height <= 0:
+        return 0
+    return response_y + min_response_height + response_gap + cluster_height + bottom_margin
+
+
 def compute_chat_panel_layout(
     width: int,
     height: int,
@@ -84,26 +132,30 @@ def compute_chat_panel_layout(
     bottom_margin: int = _BOTTOM_MARGIN,
     response_gap: int = _XDL_GAP_BELOW_RESPONSE,
     min_response_height: int = _MIN_RESPONSE_HEIGHT,
-    right_margin: int = _RIGHT_MARGIN,
+    right_margin: int | None = None,
+    preferred: dict[str, tuple[int, int]] | None = None,
 ) -> dict[str, ControlRect]:
-    """Pure layout: bottom band anchored near the bottom, transcript fills the rest."""
+    """Pure layout: bottom band anchored near the bottom, transcript fills the rest.
+
+    *preferred* holds measured (width, height) of controls whose text sets their
+    size (``query_label``); it is optional so the pure layout still works
+    without a peer.
+    """
     if width <= 0 or height <= 0 or not snapshot or "response" not in snapshot:
         return {}
+    if right_margin is None:
+        right_margin = column_right_margin(snapshot)
 
     bottom_top_initial, cluster_height, response_y = _cluster_metrics(snapshot)
     response_x, _oy, _ow, _oh = snapshot["response"]
     # Anchor the bottom band near the panel bottom, but never climb above the
-    # transcript's minimum room. When the deck is too short to fit everything,
-    # keep the transcript readable and let the cluster overflow below the panel:
-    # the sidebar window has a vertical scrollbar, so those sections stay
-    # reachable instead of being clipped with no scrollbar (fix: whole sidebar
-    # scrollable).
+    # transcript's minimum room. When the panel is shorter than the reachable
+    # floor, keep fixed chrome at its natural position (transcript at minimum,
+    # cluster below it) instead of overlapping; the outer deck scrollbar
+    # (turned on because Minimum > available) reveals the overflow.
     anchored = height - bottom_margin - cluster_height
     min_cluster_top = response_y + response_gap + min_response_height
-    if anchored >= min_cluster_top:
-        bottom_top_new = anchored
-    else:
-        bottom_top_new = min_cluster_top
+    bottom_top_new = max(anchored, min_cluster_top)
     cluster_delta = bottom_top_new - bottom_top_initial
     response_h = max(min_response_height, bottom_top_new - response_gap - response_y)
     response_w = max(20, width - response_x - right_margin)
@@ -129,10 +181,137 @@ def compute_chat_panel_layout(
         layouts[name] = ControlRect(ox, new_y, new_w, oh)
 
     layouts["response"] = ControlRect(response_x, response_y, response_w, response_h)
-    # The Ask label stays at its XDL X. Only the TTS checkbox is recentered;
-    # a fixed X would stay on the left when the sidebar is wider than the dialog.
-    _center_voice_checkbox(layouts, snapshot, width, right_margin)
+    _share_button_row(layouts, snapshot, width, right_margin)
+    _fit_base_size_row(layouts, snapshot, width, right_margin, (preferred or {}).get("base_size_input"))
+    label_pref = (preferred or {}).get("query_label")
+    if label_pref and label_pref[0] > 0:
+        _place_voice_checkbox_after_label(layouts, snapshot, width, right_margin, label_pref[0])
+    else:
+        # No measured label width: the Ask label stays at its XDL X and the TTS
+        # checkbox is centered.
+        _center_voice_checkbox(layouts, snapshot, width, right_margin)
     return layouts
+
+
+def _share_button_row(
+    layouts: dict[str, ControlRect],
+    snapshot: dict[str, tuple[int, int, int, int]],
+    width: int,
+    right_margin: int,
+) -> None:
+    """Split the row from Send's left edge to the column edge between the buttons.
+
+    Equal shares with the XDL gap fill the column at any DPI, so every
+    button stays visible and its right edge matches the stretch controls.
+    XDL widths (AppFont) need ~500px at 2x; in a ~300px column Stop shrinks
+    and Clear clamps to a sliver under it.
+    """
+    names = [n for n in _BUTTON_ROW if n in layouts and n in snapshot]
+    if len(names) < 2:
+        return
+    x0 = snapshot[names[0]][0]
+    gaps = [
+        snapshot[b][0] - (snapshot[a][0] + snapshot[a][2])
+        for a, b in zip(names, names[1:])
+    ]
+    gap = max(1, min(gaps))
+    avail = width - right_margin - x0
+    each = (avail - gap * (len(names) - 1)) // len(names)
+    if each < 20:
+        return
+    x = x0
+    for i, name in enumerate(names):
+        rect = layouts[name]
+        w = each if i < len(names) - 1 else (width - right_margin) - x
+        layouts[name] = ControlRect(x, rect.y, w, rect.height)
+        x += w + gap
+
+
+def _fit_base_size_row(
+    layouts: dict[str, ControlRect],
+    snapshot: dict[str, tuple[int, int, int, int]],
+    width: int,
+    right_margin: int,
+    base_pref: tuple[int, int] | None,
+) -> None:
+    """Image mode: size box at its measured width, aspect box takes the rest.
+
+    The peer's preferred width covers the text and the dropdown button
+    at any DPI; the XDL width stays the upper bound and the XDL gap is kept.
+    A fixed 40 AppFont (131px at 2x) for "1024" leaves the aspect box ~60px,
+    which reads "Squa".
+    """
+    if not base_pref or base_pref[0] <= 0:
+        return
+    base = layouts.get("base_size_input")
+    aspect = layouts.get("aspect_ratio_selector")
+    if base is None or aspect is None or "base_size_input" not in snapshot or "aspect_ratio_selector" not in snapshot:
+        return
+    bx, _by, bw, _bh = snapshot["base_size_input"]
+    gap = max(1, snapshot["aspect_ratio_selector"][0] - (bx + bw))
+    new_bw = min(bw, base_pref[0])
+    layouts["base_size_input"] = ControlRect(base.x, base.y, new_bw, base.height)
+    ax = base.x + new_bw + gap
+    aw = (width - right_margin) - ax
+    if aw >= 20:
+        layouts["aspect_ratio_selector"] = ControlRect(ax, aspect.y, aw, aspect.height)
+
+
+def _place_voice_checkbox_after_label(
+    layouts: dict[str, ControlRect],
+    snapshot: dict[str, tuple[int, int, int, int]],
+    width: int,
+    right_margin: int,
+    label_text_w: int,
+) -> None:
+    """Put the TTS checkbox right after the Ask label's measured text.
+
+    The label keeps its text width (measured from the peer, so DPI and
+    translations are covered) and the checkbox follows it. Only when the
+    column is too narrow for both does the label give up width. Centering
+    the checkbox cuts the label ("Ask / ins" at 2x) or parks the box far
+    from its label in a wide column.
+    """
+    voice = layouts.get("chk_voice")
+    label = layouts.get("query_label")
+    if voice is None or label is None or "chk_voice" not in snapshot:
+        _center_voice_checkbox(layouts, snapshot, width, right_margin)
+        return
+    max_right = width - right_margin
+    voice_w = min(snapshot["chk_voice"][2], max(1, max_right))
+    gap = max(2, voice.height // 4)
+    x = label.x + label_text_w + gap
+    x = max(0, min(x, max_right - voice_w))
+    room = max(1, x - gap - label.x)
+    layouts["query_label"] = ControlRect(label.x, label.y, room, label.height)
+    layouts["chk_voice"] = ControlRect(x, voice.y, voice_w, voice.height)
+
+
+def fit_snapshot_min_heights(
+    snapshot: dict[str, tuple[int, int, int, int]],
+    min_heights: dict[str, int],
+) -> dict[str, tuple[int, int, int, int]]:
+    """Grow controls to their measured minimum height; push the band below down.
+
+    Take the peer's minimum height and move the rows under it down by
+    the same amount; the transcript gives up the space. The status box is
+    10 AppFont (16px at 1x). An edit field needs the font height plus its
+    frame (21px at 1x, 33px at 2x). AppFont scales the box with the font;
+    the frame does not, so at 1x "Ready" touches the top border.
+    """
+    out = dict(snapshot)
+    for name, min_h in min_heights.items():
+        rect = out.get(name)
+        if rect is None or min_h <= rect[3]:
+            continue
+        x, y, w, h = rect
+        dh = min_h - h
+        bottom = y + h
+        for other, (ox, oy, ow, oh) in list(out.items()):
+            if other != name and other in _BOTTOM_CLUSTER and oy >= bottom:
+                out[other] = (ox, oy + dh, ow, oh)
+        out[name] = (x, y, w, min_h)
+    return out
 
 
 def _center_voice_checkbox(
@@ -189,6 +368,21 @@ def _clamp_to_column(x: int, w: int, width: int, right_margin: int) -> tuple[int
     return x, w
 
 
+def _measure(ctrl: Any, method: str) -> tuple[int, int] | None:
+    """(width, height) from XLayoutConstrains on a control, or None."""
+    fn = getattr(ctrl, method, None) if ctrl is not None else None
+    if not callable(fn):
+        return None
+    try:
+        size: Any = fn()
+        w, h = size.Width, size.Height
+    except Exception:
+        return None
+    if not isinstance(w, int) or not isinstance(h, int) or w <= 0 or h <= 0:
+        return None
+    return w, h
+
+
 class _PanelResizeListener(BaseWindowListener):  # pyright: ignore[reportUnusedClass]  # constructed from panel_wiring; covered by tests
     """Repositions sidebar controls when the panel root is resized.
 
@@ -197,15 +391,20 @@ class _PanelResizeListener(BaseWindowListener):  # pyright: ignore[reportUnusedC
     """
 
     _c: dict[str, Any]
+    _on_dispose: Any
     _in_relayout: bool
     _root_window: Any
     _parent_window: Any
     _width_negotiated: bool
     _viewport_w: int
+    _restore_focus: Any
 
-    def __init__(self, controls: dict[str, Any]) -> None:
+    def __init__(self, controls: dict[str, Any], on_dispose: Any = None, restore_focus: Any = None) -> None:
         self._c = controls
+        self._on_dispose = on_dispose
+        self._restore_focus = restore_focus
         self._snapshot: dict[str, tuple[int, int, int, int]] | None = None
+        self._preferred: dict[str, tuple[int, int]] = {}
         self._in_relayout = False
         self._root_window = None
         self._parent_window = None
@@ -217,13 +416,37 @@ class _PanelResizeListener(BaseWindowListener):  # pyright: ignore[reportUnusedC
     def last_response_rect(self) -> tuple[int, int, int, int] | None:
         return self._last_response_rect
 
+    @property
+    def min_panel_height(self) -> int:
+        """Real minimum height (fixed chrome + min transcript + margins), or 0.
+
+        ``getHeightForWidth`` reports this as ``LayoutSize.Minimum`` so the
+        deck turns on the outer scrollbar whenever the docked height cannot
+        hold the fixed bottom cluster plus a usable transcript (see
+        ``compute_min_panel_height``). Before the first snapshot is captured
+        this returns 0; ``getHeightForWidth`` falls back to a sensible floor.
+        """
+        snapshot = self._snapshot
+        if not snapshot:
+            return 0
+        try:
+            return compute_min_panel_height(snapshot)
+        except Exception:
+            log.exception("min_panel_height computation failed")
+            return 0
+
     def disposing(self, Source: Any) -> None:
-        if self._root_window and hasattr(self._root_window, "removeWindowListener"):
-            try:
-                self._root_window.removeWindowListener(self)
-            except Exception:
-                pass
+        # VCL calls this on deck close. ChatPanelElement.disposing is not
+        # invoked then, so the in-flight send stayed running. Do not
+        # removeWindowListener here: this listener is already disposing.
+        callback = self._on_dispose
+        self._on_dispose = None
         self._root_window = None
+        if callable(callback):
+            try:
+                callback()
+            except Exception:
+                log.exception("sidebar window dispose callback failed")
 
     def relayout_now(self, win: Any) -> None:
         if not win:
@@ -269,7 +492,16 @@ class _PanelResizeListener(BaseWindowListener):  # pyright: ignore[reportUnusedC
 
         if "response" not in snapshot:
             return
-        self._snapshot = snapshot
+        min_heights: dict[str, int] = {}
+        status = self._c.get("status")
+        min_size = _measure(status, "getMinimumSize")
+        if min_size is not None:
+            min_heights["status"] = min_size[1]
+        for name in ("query_label", "base_size_input"):
+            size = _measure(self._c.get(name), "getPreferredSize")
+            if size is not None:
+                self._preferred[name] = size
+        self._snapshot = fit_snapshot_min_heights(snapshot, min_heights)
         bottom_top, cluster_h, _response_y = _cluster_metrics(snapshot)
         _resize_debug(
             "_capture_snapshot: bottom_top=%d cluster_h=%d controls=%d",
@@ -293,6 +525,29 @@ class _PanelResizeListener(BaseWindowListener):  # pyright: ignore[reportUnusedC
         w, h = int(r.Width), int(r.Height)
         if w <= 0 or h <= 0:
             return
+        # Cap h against the parent window height (getPosSize().Height) and
+        # 3000px. In Calc's sidebar, moving bottom controls down resizes the
+        # container, which fires windowResized with a larger height and
+        # repeats (test_e12).
+        if self._parent_window is not None:
+            try:
+                pr = self._parent_window.getPosSize()
+                if pr.Height > 0 and h > pr.Height:
+                    h = int(pr.Height)
+            except Exception:
+                pass
+        if h > 3000:
+            h = 3000
+        # Never crush the fixed bottom cluster below the reachable minimum.
+        # The deck turns on the outer scrollbar when available < Minimum, so a
+        # real (non-negotiation) layout is always >= this floor; but clamp
+        # defensively so a transient short allocation never overlaps the fixed
+        # controls. Layout proceeds as if the panel were `min_h` tall and the
+        # deck scrollbar reveals the overflow.
+        min_h = self.min_panel_height
+        if min_h > 0 and h < min_h:
+            log.info("[LAYOUT] clamp_height window=%s min=%s", h, min_h)
+            h = min_h
         # Column is last getHeightForWidth. Before the first hfw, the first
         # layout width (320) is the column so a GTK jump (320→383) is not filled.
         # A windowResized grow without a new deck_hint is GTK, not a drag.
@@ -310,7 +565,7 @@ class _PanelResizeListener(BaseWindowListener):  # pyright: ignore[reportUnusedC
             log.warning("_relayout: no snapshot, skip")
             return
 
-        layouts = compute_chat_panel_layout(w, h, snapshot)
+        layouts = compute_chat_panel_layout(w, h, snapshot, preferred=self._preferred)
         if not layouts:
             return
 
@@ -349,6 +604,7 @@ class _PanelResizeListener(BaseWindowListener):  # pyright: ignore[reportUnusedC
                         self._c.get("response"),
                         placeholder_rect=self._last_response_rect,
                         control_out=rich_out,
+                        restore_focus=self._restore_focus,
                     )
                     rich = rich_out[0]
                     self._c["response_rich"] = rich

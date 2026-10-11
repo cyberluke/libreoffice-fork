@@ -92,7 +92,12 @@ def load_menu_graphic(ctx: Any, icon_filename: str) -> Any:
 
 
 def invoke_action_handler(handler: Callable[..., Any] | None, frame: Any = None) -> None:
-    """Call a registered action; most LibrePy handlers take no frame argument."""
+    """Call a registered action; most LibrePy handlers take no frame argument.
+
+    A parameter named ``frame`` receives the sidebar frame even when it has
+    a default, so Extend/Edit can prefer that document and the menubar can
+    still call the same handler with no arguments.
+    """
     if handler is None:
         return
     wants_frame = False
@@ -103,7 +108,7 @@ def invoke_action_handler(handler: Callable[..., Any] | None, frame: Any = None)
                 wants_frame = frame is not None
                 break
             if param.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
-                if param.default is inspect.Parameter.empty:
+                if param.name == "frame" or param.default is inspect.Parameter.empty:
                     wants_frame = True
                     break
     except (TypeError, ValueError):
@@ -121,17 +126,18 @@ def command_prefix_for_ctx(ctx: Any) -> str:
 
 
 def document_has_notebook_registry(doc: Any) -> bool:
-    """True when File → Open wrote ``WriterAgentNotebookJson`` on *doc*.
+    """True when *doc* has an imported notebook with at least one code cell.
 
     Addons.xcu ``Context=TextDocument`` is every Writer file. These commands
-    must not appear there — only on an imported notebook.
+    must not appear there — only on an imported notebook. A registry with no
+    code cells (markdown-only import) has nothing for Run All to execute.
     """
     if doc is None:
         return False
     try:
-        from plugin.notebook.cell_registry import load_registry
+        from plugin.notebook.cell_registry import has_notebook_registry
 
-        return load_registry(doc) is not None
+        return has_notebook_registry(doc)
     except Exception:
         log.debug("notebook registry check failed", exc_info=True)
         return False

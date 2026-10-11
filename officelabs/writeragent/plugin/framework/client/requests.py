@@ -3,121 +3,96 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+"""One-shot HTTP for catalog, speech, image URL download, and update checks.
+
+The stop / timeout / retry / redaction / strict-JSON behavior is
+``LlmHttpTransport``. This module only adapts a URL into that transport so
+LibrePy can import it without ``llm_client``.
+"""
+
 from __future__ import annotations
 
-import json
-import logging
-import urllib.error
 from typing import Any
-from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
 from plugin.framework.constants import USER_AGENT
-from plugin.framework.errors import NetworkError
-from .request_controls import LocalHttpsCertificateFallback
-from .ssl_helpers import get_verified_ssl_context, get_unverified_ssl_context
-from plugin.framework.errors import format_error_message
-from .errors import _format_http_error_response
 
-log = logging.getLogger(__name__)
+from .http_transport import HttpResult, LlmHttpTransport, origin_and_path
 
 
-def _log_request_target(url: Any) -> str:
-    """Host and path for logs. Query strings can carry API keys."""
-    raw = getattr(url, "full_url", url)
-    parsed = urlparse(str(raw))
-    host = parsed.hostname or ""
-    port = f":{parsed.port}" if parsed.port else ""
-    path = parsed.path or "/"
-    scheme = parsed.scheme or "http"
-    return f"{scheme}://{host}{port}{path}"
+def sync_request(
+    url: str | Request,
+    data: bytes | None = None,
+    headers: dict[str, str] | None = None,
+    parse_json: bool = True,
+    method: str | None = None,
+    *,
+    timeout: float,
+    stop_checker: Any = None,
+    status_callback: Any = None,
+    include_meta: bool = False,
+) -> Any:
+    """Blocking HTTP GET or POST on the shared transport.
 
+    ``timeout`` is the read budget (Settings ``request_timeout`` for LLM and
+    image work, or an explicit probe value). Connect uses
+    ``LLM_CONNECT_TIMEOUT_SEC`` inside the transport so a dead host does not
+    wait the full read stall. ``parse_json`` is strict ``json.loads`` — a
+    truncated body is ``BAD_RESPONSE``, not a repaired object.
 
-def sync_request(url: str | Request, data: bytes | None = None, headers: dict[str, str] | None = None, parse_json: bool = True, method: str | None = None, *, timeout: float) -> Any:
-    """
-    Blocking HTTP GET or POST. Shared by LLM client and other code.
-    url: str or urllib.request.Request. If Request, headers/data come from it.
-    data: optional bytes for POST. headers: optional dict (used only if url is str).
-    timeout: required seconds for connect+read (no silent default — callers must
-    pass Settings ``request_timeout`` / ``LlmClient._timeout()`` for LLM and
-    image work, or an explicit short probe value at the call site).
-    Returns response data: decoded JSON if parse_json else raw bytes. Raises on error.
+    Returns decoded JSON, or raw bytes when ``parse_json`` is false. With
+    ``include_meta``, returns :class:`HttpResult` (status, body, content type).
+
+    Redirects (301/302/303/307/308) are followed on the shared transport,
+    at most five hops. 301/302/303 switch a non-GET to GET and drop the
+    body; 307/308 keep the method and body. A non-numeric or out-of-range
+    port, or an unmatched bracket (``http://[::1``, ``http://[]/v1``), is
+    ``NetworkError``, including when it is in the URL before the request
+    is sent.
     """
     if headers is None:
         headers = {}
+    else:
+        headers = dict(headers)
 
-    # Add default User-Agent header to identify WriterAgent
-    has_ua = any(k.lower() == "user-agent" for k in headers.keys())
-    if not has_ua:
+    full_url: str
+    if isinstance(url, Request):
+        full_url = url.full_url
+        if data is None and isinstance(url.data, (bytes, bytearray)):
+            data = bytes(url.data)
+        if method is None:
+            method = url.get_method()
+        for key, value in url.header_items():
+            if not any(existing.lower() == key.lower() for existing in headers):
+                headers[key] = value
+    else:
+        full_url = url
+
+    if method is None:
+        method = "POST" if data is not None else "GET"
+
+    if not any(key.lower() == "user-agent" for key in headers):
         headers["User-Agent"] = USER_AGENT
 
-    if isinstance(url, str):
-        req = Request(url, data=data, headers=headers, method=method)
-    else:
-        req = url
-
-    # Debug: log which headers we are actually sending (keys only)
+    origin, path = origin_and_path(full_url)
+    transport = LlmHttpTransport(lambda: origin, lambda: timeout)
     try:
-        header_keys = list(req.headers.keys()) if hasattr(req, "headers") else []
-        if not header_keys and hasattr(req, "get_full_url"):
-            # If it's a urllib Request object, headers might be in .headers
-            pass
-        log.debug("Request to %s with header keys: %s", _log_request_target(req), header_keys)
-    except Exception:
-        pass
+        result = transport.exchange(
+            method,
+            path,
+            data,
+            headers,
+            stop_checker=stop_checker,
+            status_callback=status_callback,
+            parse_json=parse_json,
+        )
+    finally:
+        transport.close()
+    if include_meta:
+        return result
+    if parse_json:
+        return result.parsed
+    return result.body
 
-    full_url = getattr(req, "full_url", url)
-    parsed = urlparse(str(full_url))
-    host = parsed.hostname or ""
-    is_https = parsed.scheme.lower() == "https"
 
-    def _read_with_context(context: Any) -> Any:
-        log.debug("About to open URL: %s", _log_request_target(req))
-        with urlopen(req, timeout=timeout, context=context) as resp:
-            log.debug(f"URL opened, status={resp.getcode()}. Heading to read...")
-            raw = resp.read()
-            log.debug(f"Read {len(raw)} bytes")
-            if parse_json:
-                return json.loads(raw.decode("utf-8"))
-            return raw
-
-    # Always verify first. Local self-signed hosts retry unverified below.
-    ctx = get_verified_ssl_context()
-    try:
-        return _read_with_context(ctx)
-    except urllib.error.HTTPError as e:
-        status = e.code
-        reason = e.reason
-        try:
-            err_body = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            err_body = ""
-
-        msg = _format_http_error_response(status, reason, err_body)
-        # Status and target only. ``msg`` includes the provider body, which can
-        # echo a key; the NetworkError still carries the full text for the UI.
-        log.exception("HTTP Error %s %s for %s", status, reason, _log_request_target(full_url))
-        raise NetworkError(msg, code="HTTP_ERROR", details={"url": url, "status": status}) from e
-    except NetworkError:
-        raise
-    except Exception as e:
-        # Fresh instance: this call still tries verified TLS first. Remembering the
-        # host here would change the next sync_request. enable_if_applicable logs.
-        cert_fallback = LocalHttpsCertificateFallback()
-        if is_https and cert_fallback.enable_if_applicable(host, e):
-            try:
-                return _read_with_context(get_unverified_ssl_context())
-            except urllib.error.HTTPError as retry_http_e:
-                status = retry_http_e.code
-                reason = retry_http_e.reason
-                try:
-                    err_body = retry_http_e.read().decode("utf-8", errors="replace")
-                except Exception:
-                    err_body = ""
-                msg = _format_http_error_response(status, reason, err_body)
-                log.exception("HTTP Error %s %s for %s", status, reason, _log_request_target(full_url))
-                raise NetworkError(msg, code="HTTP_ERROR", details={"url": url, "status": status}) from retry_http_e
-            except Exception as retry_e:
-                log.exception("Request retry failed: %s", format_error_message(retry_e))
-                raise NetworkError(format_error_message(retry_e), details={"url": url}) from retry_e
-        log.exception("Request failed: %s", format_error_message(e))
-        raise NetworkError(format_error_message(e), details={"url": url}) from e
+__all__ = ["HttpResult", "sync_request"]

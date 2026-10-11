@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Topic-based delivery of the shared behavioral pieces (MCP / external-agent channel).
 
-The SOURCE OF TRUTH for the cross-cutting behavioral rules lives in plugin/framework/constants.py:
+The SOURCE OF TRUTH for the cross-cutting behavioral rules lives in plugin/framework/prompts.py:
 the original chat system prompt pieces (TOOL_USAGE_PATTERNS, WRITER_APPLY_DOCUMENT_HTML_RULES,
 TRANSLATION_RULES), updated in place and extended with new pieces (WRITER_REVIEW_MODES_RULES,
 WRITER_SEARCH_RULES, WRITER_NAVIGATION_RULES, WRITER_IMAGES_RULES). The sidebar system prompt
@@ -21,7 +21,7 @@ concurrency contract, which the in-process sidebar never needs). Its consumers:
 - the agent-backend path (send_handlers), which injects full_manual() — it talks to the HTTP
   server, so it takes the whole manual including the MCP extras.
 
-Same pieces, different assembly per channel — update a rule in constants.py and every consumer
+Same pieces, different assembly per channel — update a rule in prompts.py and every consumer
 sees it; only genuinely channel-specific text lives outside the shared pieces.
 
 Sections are per document type: Writer has the full manual; Calc and Draw currently get the generic
@@ -50,7 +50,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # MCP-only pieces. The HTTP server's concurrency contract: real for every client of the MCP
 # server (external clients and the agent-backend path alike), meaningless for the in-process
-# sidebar — which is why it lives here and not with the shared pieces in constants.py.
+# sidebar — which is why it lives here and not with the shared pieces in prompts.py.
 # ---------------------------------------------------------------------------
 _MCP_CONCURRENCY_RULES = (
     "CONCURRENCY / MULTI-DOCUMENT:\n"
@@ -103,7 +103,7 @@ _TOPIC_SUMMARY: list[tuple[str, str]] = [
     ("review-modes", "tracked changes off/record/wait; never resolve your own"),
     ("search", "find text anywhere (body, tables, boxes, shapes, headers, comments) + where it is"),
     ("navigation", "map-first reading of large documents"),
-    ("images", "insert/replace/resize/crop + how a vision model sees images"),
+    ("images", "insert/replace/resize/crop, highlight passages on a picture + how a vision model sees images"),
     ("concurrency", "same-document edits serialize; retry on HTTP 429; multi-document targeting"),
 ]
 
@@ -146,7 +146,7 @@ _ALIASES = {
     "review": "review-modes", "review_modes": "review-modes", "review-mode": "review-modes",
     "find": "search", "search_in_document": "search",
     "navigate": "navigation", "outline": "navigation", "large-documents": "navigation",
-    "image": "images", "crop": "images", "vision": "images",
+    "image": "images", "crop": "images", "vision": "images", "highlight": "images",
     "429": "concurrency", "rate-limit": "concurrency", "rate_limit": "concurrency",
     "documents": "concurrency", "multi-document": "concurrency", "document-url": "concurrency",
     "document_url": "concurrency",
@@ -156,13 +156,20 @@ _ALIASES = {
 def _app(doc_type: str | None) -> str:
     if doc_type is None:
         return "generic"  # no document open -> only the generic rules apply
-    return doc_type if doc_type in _SECTIONS_BY_APP else "writer"
+    # Strip and lower the label before the lookup. Callers pass display
+    # labels ("Impress", " IMPRESS "); an exact "impress" match misses
+    # those and opens the Writer manual. Impress is a Draw model; an
+    # unknown label still uses Writer.
+    label = str(doc_type).strip().lower()
+    if label == "impress":
+        return "draw"
+    return label if label in _SECTIONS_BY_APP else "writer"
 
 
 def doc_type_of(doc: Any) -> str | None:
     """'writer' / 'calc' / 'draw' for a document model, or None when there is no document.
 
-    Same resolution every other tool relies on (lazy import mirrors get_core_directives)."""
+    Same resolution every other tool relies on (lazy import of is_calc / is_draw)."""
     if doc is None:
         return None
     try:

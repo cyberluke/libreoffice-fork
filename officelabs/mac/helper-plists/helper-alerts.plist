@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>OfficeLabs Helper (Alerts)</string>
+	<string>NAI Office Helper (Alerts)</string>
 	<key>CFBundleExecutable</key>
-	<string>OfficeLabs Helper (Alerts)</string>
+	<string>NAI Office Helper (Alerts)</string>
 	<key>CFBundleIdentifier</key>
 	<string>ai.officelabs.helper.alerts</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>OfficeLabs Helper (Alerts)</string>
+	<string>NAI Office Helper (Alerts)</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleSignature</key>

@@ -49,19 +49,26 @@ class ResolvedDep:
 @deal.pre(lambda model, anchor, sheet_hint="": str_bounded(anchor, DEAL_MAX_SOURCE) and str_bounded(sheet_hint, DEAL_MAX_SOURCE))
 def _lookup_anchor(model: ExcelWorkbookModel, anchor: str, sheet_hint: str = "") -> str | None:
     """Find an array/spill snapshot for *anchor* (bare or Sheet!A1)."""
+    # With a sheet hint, try the sheet-qualified key ("Sheet2!A1") before
+    # the bare key ("A1"). Bare-first, and lower-bare-first, lets one sheet
+    # pick up another sheet's anchor snapshot.
     cleaned = anchor.replace("$", "").strip()
     snaps = model.anchor_snapshots
-    for key in (cleaned, cleaned.upper(), f"{sheet_hint}!{cleaned}" if sheet_hint and "!" not in cleaned else "", f"'{sheet_hint}'!{cleaned}" if sheet_hint and "!" not in cleaned else ""):
-        if key and key in snaps:
+    if sheet_hint and "!" not in cleaned:
+        for key in (f"{sheet_hint}!{cleaned}", f"{sheet_hint}!{cleaned}".upper(), f"'{sheet_hint}'!{cleaned}", f"'{sheet_hint}'!{cleaned}".upper()):
+            if key in snaps:
+                return snaps[key]
+    for key in (cleaned, cleaned.upper()):
+        if key in snaps:
             return snaps[key]
     # Case-insensitive scan
     lower = {k.lower(): v for k, v in snaps.items()}
-    if cleaned.lower() in lower:
-        return lower[cleaned.lower()]
-    if sheet_hint:
+    if sheet_hint and "!" not in cleaned:
         for variant in (f"{sheet_hint}!{cleaned}", f"'{sheet_hint}'!{cleaned}"):
             if variant.lower() in lower:
                 return lower[variant.lower()]
+    if cleaned.lower() in lower:
+        return lower[cleaned.lower()]
     return None
 
 

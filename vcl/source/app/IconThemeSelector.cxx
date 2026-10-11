@@ -64,10 +64,13 @@ IconThemeSelector::IconThemeSelector()
 
 #ifdef _WIN32
     (void)eDesktop;
-    if (!bPreferDarkIconTheme)
-        return "colibre";
-    else
-        return "colibre_dark";
+    // Writer 2027 is a dark-only product; Phosphor is the initial default
+    // theme. High-contrast handling stays in SelectIconTheme() (unchanged),
+    // and an explicit user preference still wins in
+    // SelectIconThemeForDesktopEnvironment(). If the theme is not installed,
+    // ReturnFallback() safely selects an installed theme instead.
+    (void)bPreferDarkIconTheme;
+    return u"writer2027_phosphor_svg"_ustr;
 #else
     OUString r;
     if (eDesktop == DesktopType::Plasma5 || eDesktop == DesktopType::Plasma6

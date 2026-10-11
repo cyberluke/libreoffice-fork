@@ -26,7 +26,7 @@ _CELL_HREF_RE = re.compile(r"""href\s*=\s*(["'])(?:cell://|writeragent-cell://)(
 _CELL_LINK_ANCHOR_RE = re.compile(r"""<a\s+[^>]*href\s*=\s*(["'])(?:cell://|writeragent-cell://)([^"']+)\1[^>]*>(.*?)</a>""", re.IGNORECASE | re.DOTALL)
 # Plain cell address (optional sheet prefix): Sheet1.B2, Excel Sheet1!B2, or B2.
 # Canonical form is always the Calc dot (Sheet1.B2).
-_CELL_ADDRESS_RE = re.compile(r"^(?:([A-Za-z0-9_]+)[.!])?([A-Z]{1,3})(\d{1,7})$", re.IGNORECASE)
+_CELL_ADDRESS_RE = re.compile(r"^(?:(?:'([^']+)'|([^.!]+))[.!])?([A-Z]{1,3})(\d{1,7})$", re.IGNORECASE)
 WRITERAGENT_CELL_URL_PREFIX = "writeragent-cell://"
 
 _CELL_LINK_LISTENERS: dict[int, Any] = {}
@@ -55,6 +55,26 @@ class CellLinkSpanRegistry:
                 return addr
         return None
 
+    def drop_from(self, control: Any, start_len: int) -> None:
+        """Drop spans that end past a truncation point.
+
+        A failed formatted copy rolls the control back to the length it had
+        before the separator. Spans recorded for that copy, including one
+        that starts before the cut and ends inside the deleted tail, would
+        otherwise resolve a click into text that is gone.
+        """
+        if control is None:
+            return
+        key = id(control)
+        spans = self._spans.get(key)
+        if not spans:
+            return
+        kept = [span for span in spans if span[1] <= start_len]
+        if kept:
+            self._spans[key] = kept
+        else:
+            self._spans.pop(key, None)
+
 
 cell_link_registry = CellLinkSpanRegistry()
 
@@ -71,7 +91,9 @@ def normalize_cell_address(raw: str) -> str | None:
     match = _CELL_ADDRESS_RE.match(text.strip())
     if not match:
         return None
-    sheet, col, row = match.group(1), match.group(2), match.group(3)
+    sheet = match.group(1) or match.group(2)
+    col = match.group(3)
+    row = match.group(4)
     addr = f"{col.upper()}{row}"
     if sheet:
         return f"{sheet}.{addr}"
@@ -144,6 +166,10 @@ def register_cell_link_span(control: Any, start: int, end: int, address: str) ->
 
 def clear_cell_link_spans(control: Any) -> None:
     cell_link_registry.clear(control)
+
+
+def drop_cell_link_spans_from(control: Any, start_len: int) -> None:
+    cell_link_registry.drop_from(control, start_len)
 
 
 def resolve_sheet_and_cell(doc: Any, address: str) -> tuple[Any, int, int] | None:
@@ -282,6 +308,7 @@ def attach_calc_cell_link_listener(ctx: Any, control: Any, get_calc_doc: Callabl
     class _CalcCellLinkMouseListener(unohelper.Base, XMouseListener):  # type: ignore[misc]
         def disposing(self, Source: Any) -> None:
             _CELL_LINK_LISTENERS.pop(ctrl_id, None)
+            cell_link_registry.clear(Source)
 
         def mousePressed(self, e: Any) -> None:
             pass

@@ -26,14 +26,17 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-ORIGIN_USER = "user"
-ORIGIN_DOCUMENT = "document"
+from plugin.scripting.domain_registry import SCRIPT_ORIGIN_DOCUMENT, SCRIPT_ORIGIN_USER
+
+ORIGIN_USER = SCRIPT_ORIGIN_USER
+ORIGIN_DOCUMENT = SCRIPT_ORIGIN_DOCUMENT
 
 _NAMED_SCRIPT_MAX_BYTES = 200_000
 _IDENT_NON_ALNUM = re.compile(r"[^0-9A-Za-z_]+")
 _IDENT_MULTI_US = re.compile(r"_+")
 
-# Current sandbox executor (set for the duration of one execute).
+# Bind-thread executor for this execute. Off-thread timeout evaluation has no
+# ContextVar; that path uses the ScriptLibrary stored on the executor.
 _current_executor: ContextVar[Any] = ContextVar("named_scripts_executor", default=None)
 
 GET_NAMED_PYTHON_SCRIPT = "get_named_python_script"
@@ -60,33 +63,180 @@ def script_body_hash(code: str) -> str:
     return hashlib.sha256((code or "").encode("utf-8")).hexdigest()
 
 
-def _is_simple_constant(node: ast.AST) -> bool:
-    if isinstance(node, ast.Constant):
-        return True
-    if isinstance(node, (ast.Tuple, ast.List)):
-        return all(_is_simple_constant(elt) for elt in node.elts)
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        return _is_simple_constant(node.operand)
+# Bodies of these nodes do not run while the library statement is loading.
+_NESTED_SCOPES = (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _import_time_has(node: ast.AST, kinds: tuple[type[ast.AST], ...]) -> bool:
+    """True when *node* contains *kinds* outside nested function/class/lambda bodies.
+
+    ``ast.walk`` used to enter ``lambda x: transform(x)`` and reject a binding
+    that does not call ``transform`` until the lambda runs.
+    """
+    pending: list[ast.AST] = [node]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, _NESTED_SCOPES):
+            continue
+        if isinstance(current, kinds):
+            return True
+        pending.extend(ast.iter_child_nodes(current))
     return False
 
 
+def _expr_has_call(node: ast.AST) -> bool:
+    """True when *node* contains a call that would run while the library loads."""
+    return _import_time_has(node, (ast.Call, ast.Await))
+
+
+def _expr_has_namedexpr(node: ast.AST) -> bool:
+    """True when *node* binds a name with ``:=`` at library-load time."""
+    return _import_time_has(node, (ast.NamedExpr,))
+
+
+def _function_import_time_call_lines(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[int]:
+    """Lines evaluated when a function definition is reached.
+
+    Function bodies wait until the function is called, but decorators, default
+    argument values, and annotations run when the definition is reached.
+    Reject calls in decorator_list, args.defaults, args.kw_defaults, and
+    argument/return annotations.
+    """
+    lines: list[int] = []
+
+    def _note(expr: ast.AST | None) -> None:
+        if expr is None or not _expr_has_call(expr):
+            return
+        lineno = getattr(expr, "lineno", getattr(node, "lineno", 0))
+        if lineno not in lines:
+            lines.append(lineno)
+
+    for dec in node.decorator_list:
+        _note(dec)
+    for default in node.args.defaults:
+        _note(default)
+    for kw_default in node.args.kw_defaults:
+        if kw_default is not None:
+            _note(kw_default)
+    if node.returns is not None:
+        _note(node.returns)
+    all_args = (
+        node.args.posonlyargs
+        + node.args.args
+        + node.args.kwonlyargs
+        + ([node.args.vararg] if node.args.vararg else [])
+        + ([node.args.kwarg] if node.args.kwarg else [])
+    )
+    for arg in all_args:
+        if arg.annotation is not None:
+            _note(arg.annotation)
+    return lines
+
+
+def _class_import_time_call_lines(node: ast.ClassDef) -> list[int]:
+    """Lines ``evaluate_class_def`` would execute while the library loads.
+
+    Class decorators and non-assign class-body statements run at load time.
+    Scanning only bases, keywords, and assignments missed those calls.
+    Scan decorator_list, bases, keywords, method definitions, and assignments,
+    and reject other class-body statements that contain calls.
+    """
+    lines: list[int] = []
+
+    def _note(expr: ast.AST | None) -> None:
+        if expr is None or not _expr_has_call(expr):
+            return
+        lineno = getattr(expr, "lineno", getattr(node, "lineno", 0))
+        if lineno not in lines:
+            lines.append(lineno)
+
+    for dec in node.decorator_list:
+        _note(dec)
+    for base in node.bases:
+        _note(base)
+    for kw in node.keywords:
+        _note(kw.value)
+    for stmt in node.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for ln in _function_import_time_call_lines(stmt):
+                if ln not in lines:
+                    lines.append(ln)
+        elif isinstance(stmt, ast.ClassDef):
+            for ln in _class_import_time_call_lines(stmt):
+                if ln not in lines:
+                    lines.append(ln)
+        elif isinstance(stmt, ast.Assign):
+            _note(stmt.value)
+        elif isinstance(stmt, ast.AnnAssign):
+            _note(stmt.value)
+            _note(stmt.annotation)
+        elif isinstance(stmt, ast.Pass):
+            continue
+        elif isinstance(stmt, ast.Expr):
+            if isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+                continue
+            lineno = getattr(stmt, "lineno", getattr(node, "lineno", 0))
+            if lineno not in lines:
+                lines.append(lineno)
+        else:
+            lineno = getattr(stmt, "lineno", getattr(node, "lineno", 0))
+            if lineno not in lines:
+                lines.append(lineno)
+    return lines
+
+
 def extract_library_source(code: str) -> str:
-    """Keep defs/classes/imports/constant assigns; drop module-level calls."""
+    """Keep defs, classes, imports, and name assignments. Drop module-level calls."""
     try:
         tree = ast.parse(code or "")
     except SyntaxError as exc:
         raise ValueError(f"Named script is not valid Python: {exc}") from exc
 
     keep: list[ast.stmt] = []
+    dropped: list[int] = []
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
+        if isinstance(node, ast.ClassDef):
+            call_lines = _class_import_time_call_lines(node)
+            if call_lines:
+                dropped.extend(call_lines)
+            else:
+                keep.append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            call_lines = _function_import_time_call_lines(node)
+            if call_lines:
+                dropped.extend(call_lines)
+            else:
+                keep.append(node)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
             keep.append(node)
-        elif isinstance(node, ast.Assign):
-            if all(isinstance(t, ast.Name) for t in node.targets) and _is_simple_constant(node.value):
+        elif isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) for t in node.targets):
+            # Name assignments stay, including ``SCALE = FACTOR * 2``. Only
+            # constant assigns used to be kept, so the name vanished with no error.
+            # A call in the value still runs at import (``x = wa.writer...()``),
+            # which mutated the document when Run Python Script left tool RPC open.
+            if node.value is not None and _expr_has_call(node.value):
+                dropped.append(getattr(node, "lineno", 0))
+            else:
                 keep.append(node)
-        elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name) and node.value is not None and _is_simple_constant(node.value):
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+            if _expr_has_call(node.value):
+                dropped.append(getattr(node, "lineno", 0))
+            else:
                 keep.append(node)
+        elif isinstance(node, ast.Expr):
+            # Module-level calls are not library definitions. They are omitted.
+            # A walrus here binds a name. Dropping the Expr used to discard
+            # that binding with no error, so the library loaded without it.
+            if _expr_has_namedexpr(node):
+                dropped.append(getattr(node, "lineno", 0))
+            continue
+        elif isinstance(node, ast.Pass):
+            continue
+        else:
+            dropped.append(getattr(node, "lineno", 0))
+    if dropped:
+        lines = ", ".join(str(n) for n in sorted(set(dropped)))
+        raise ValueError(f"Named script has statements that are not library definitions (lines {lines})")
     if not keep:
         return ""
     return ast.unparse(ast.Module(body=keep, type_ignores=[]))
@@ -94,16 +244,22 @@ def extract_library_source(code: str) -> str:
 
 def _rpc_named(tool_name: str, **kwargs: Any) -> Any:
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    # Same fail-closed path as writeragent_api._rpc_call. The ImportError
+    # branch below would otherwise call exchange_tool_call with no host.
+    if os.environ.get("WRITERAGENT_COMPUTE_WORKER") == "1":
+        raise RuntimeError("WriterAgent document tools are not available in the Python compute service.")
     if os.environ.get("WRITERAGENT_IS_WORKER") == "1":
+        # Catch ImportError only around the import. Wrapping _rpc_call too
+        # turned an ImportError raised during the call into a second
+        # exchange_tool_call, so the RPC was sent twice.
         try:
             from plugin.scripting.writeragent_api import _rpc_call
-
-            return _rpc_call(tool_name, **kwargs)
         except ImportError:
             # LibrePy omits writeragent_api. Same locked, id-checked pipe as _rpc_call.
             from plugin.scripting.ipc import exchange_tool_call
 
             return exchange_tool_call(tool_name, kwargs)
+        return _rpc_call(tool_name, **kwargs)
 
     from plugin.scripting.host_rpc import execute_tool
 
@@ -132,10 +288,14 @@ def _eval_library(executor: Any, source: str, ident: str) -> SimpleNamespace:
     extracted = extract_library_source(source)
     state: dict[str, Any] = {"__name__": ident}
     if extracted.strip():
+        # evaluate_function_def writes each def into custom_tools. Passing the
+        # executor dict made those names callable in later runs on this
+        # executor. The copy still sees helpers that already exist.
+        shared_tools = executor.custom_tools if isinstance(executor.custom_tools, dict) else {}
         evaluate_python_code(
             extracted,
             static_tools=executor.static_tools or {},
-            custom_tools=executor.custom_tools or {},
+            custom_tools=dict(shared_tools),
             state=state,
             authorized_imports=executor.authorized_imports,
             max_print_outputs_length=executor.max_print_outputs_length,
@@ -198,10 +358,26 @@ class ScriptLibrary:
     def __init__(self, origin: str) -> None:
         self._origin = origin
         self._executor: Any | None = None
-        self._ident_map: dict[str, list[str]] | None = None
+
+    def _resolve_executor(self) -> Any:
+        """Executor for this lookup.
+
+        One module-level ScriptLibrary stored ``_executor``, and
+        ``bind_named_scripts_executor`` overwrote it. ``__getattr__`` used
+        that field and ignored the ContextVar, so the next run stole lookups
+        that still held the old library object. ``writeragent`` is one
+        process-global module. Each executor keeps its own ScriptLibrary. On
+        the bind thread the ContextVar wins. Off that thread (timeout
+        fallback) the library's own executor is used, because the ContextVar
+        does not follow the thread.
+        """
+        current = _current_executor.get()
+        if current is not None:
+            return current
+        return self._executor
 
     def _names(self) -> list[str]:
-        executor = self._executor if self._executor is not None else _current_executor.get()
+        executor = self._resolve_executor()
         listing_cache = getattr(executor, "_named_script_listing", None) if executor is not None else None
         if listing_cache is None:
             listing = _rpc_named(LIST_NAMED_PYTHON_SCRIPTS)
@@ -218,7 +394,6 @@ class ScriptLibrary:
         for title in self._names():
             ident = python_identifier_from_script_name(title)
             mapping.setdefault(ident, []).append(title)
-        self._ident_map = mapping
         return mapping
 
     def __getattr__(self, item: str) -> Any:
@@ -233,13 +408,33 @@ class ScriptLibrary:
                 f"Multiple {self._origin} scripts map to {item!r}: {titles!r}. "
                 "Use wa.scripts[title] / wa.doc[title] with the stored name."
             )
-        return load_named_script(self._origin, titles[0], executor=self._executor)
+        return load_named_script(self._origin, titles[0], executor=self._resolve_executor())
 
     def __getitem__(self, name: str) -> Any:
-        return load_named_script(self._origin, name, executor=self._executor)
+        return load_named_script(self._origin, name, executor=self._resolve_executor())
+
+    def __dir__(self) -> list[str]:
+        return sorted(set(super().__dir__()) | set(self._ident_map_now().keys()) | set(self._names()))
+
+    def __contains__(self, item: object) -> bool:
+        if not isinstance(item, str):
+            return False
+        return item in self._names() or item in self._ident_map_now()
 
     def __repr__(self) -> str:
         return f"ScriptLibrary(origin={self._origin!r})"
+
+
+def _library_for_executor(executor: Any, origin: str) -> ScriptLibrary:
+    """Return the ScriptLibrary bound to *executor*, creating it once."""
+    attr = "_named_scripts_library" if origin == ORIGIN_USER else "_named_doc_library"
+    existing = getattr(executor, attr, None)
+    if isinstance(existing, ScriptLibrary) and existing._origin == origin and existing._executor is executor:
+        return existing
+    lib = ScriptLibrary(origin)
+    lib._executor = executor
+    setattr(executor, attr, lib)
+    return lib
 
 
 def attach_named_script_libraries(executor: Any | None = None) -> None:
@@ -267,35 +462,56 @@ def attach_named_script_libraries(executor: Any | None = None) -> None:
         mods.append(alias)
     if not mods:
         return
-    scripts = ScriptLibrary(ORIGIN_USER)
-    doc = ScriptLibrary(ORIGIN_DOCUMENT)
-    scripts._executor = executor
-    doc._executor = executor
+    # Bind this execute's libraries onto the executor and point the alias
+    # module at those objects. Do not retarget a library another run still
+    # holds: one module-level ScriptLibrary meant a second document's run
+    # redirected the first run's object.
+    if executor is None:
+        scripts = ScriptLibrary(ORIGIN_USER)
+        doc = ScriptLibrary(ORIGIN_DOCUMENT)
+    else:
+        scripts = _library_for_executor(executor, ORIGIN_USER)
+        doc = _library_for_executor(executor, ORIGIN_DOCUMENT)
     for mod in mods:
-        existing_s = getattr(mod, "scripts", None)
-        if isinstance(existing_s, ScriptLibrary):
-            existing_s._executor = executor
-        else:
-            mod.scripts = scripts
-        existing_d = getattr(mod, "doc", None)
-        if isinstance(existing_d, ScriptLibrary):
-            existing_d._executor = executor
-        else:
-            mod.doc = doc
+        mod.scripts = scripts
+        mod.doc = doc
 
 
-def bind_named_scripts_executor(executor: Any) -> None:
-    """New execute: re-check hashes; keep module cache on the shared executor."""
+def bind_named_scripts_executor(executor: Any) -> Any:
+    """New execute: re-check hashes; keep module cache on the shared executor.
+
+    Returns the ContextVar token so callers can reset it on completion.
+
+    Set the ContextVar only after attach succeeds. Attach stamps the executor
+    onto the library and does not read the var. Setting the var first meant a
+    raise in attach never reached ``_run_on_executor``'s finally, so the var
+    stayed bound to this executor on the thread.
+    """
     executor._named_script_checked = set()
     executor._named_script_listing = None
-    _current_executor.set(executor)
     attach_named_script_libraries(executor)
+    return _current_executor.set(executor)
+
+
+def reset_named_scripts_executor(token: Any) -> None:
+    """Reset the ContextVar token from bind_named_scripts_executor.
+
+    Reset the ContextVar with the token from bind. Leaving it set leaked the
+    executor to later code on the same thread.
+    """
+    if token is not None:
+        try:
+            _current_executor.reset(token)
+        except Exception as e:
+            log.debug("Failed to reset named_scripts_executor ContextVar: %s", e)
 
 
 def host_list_named_python_scripts(*, user_scripts: dict[str, str], document_scripts: dict[str, str]) -> dict[str, list[str]]:
+    from plugin.scripting.document_scripts import picker_document_scripts
+
     return {
         ORIGIN_USER: sorted(user_scripts.keys()),
-        ORIGIN_DOCUMENT: sorted(document_scripts.keys()),
+        ORIGIN_DOCUMENT: sorted(picker_document_scripts(document_scripts)),
     }
 
 
@@ -307,9 +523,15 @@ def host_get_named_python_script(
     user_scripts: dict[str, str],
     document_scripts: dict[str, str],
 ) -> dict[str, Any]:
-    store = user_scripts if origin == ORIGIN_USER else document_scripts
     if origin not in (ORIGIN_USER, ORIGIN_DOCUMENT):
         raise RuntimeError(f"Unknown named-script origin {origin!r}")
+    if origin == ORIGIN_DOCUMENT:
+        from plugin.scripting.document_scripts import is_calc_init_script_name
+
+        # INIT is the workbook init script, not a wa.doc library.
+        if is_calc_init_script_name(name):
+            raise RuntimeError(f"No {origin} script named {name!r}")
+    store = user_scripts if origin == ORIGIN_USER else document_scripts
     code = store.get(name)
     if not isinstance(code, str):
         raise RuntimeError(f"No {origin} script named {name!r}")

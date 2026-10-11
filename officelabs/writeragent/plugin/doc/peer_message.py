@@ -83,7 +83,11 @@ PEER_ACCEPTED_FINISH_HINT = (
 
 @dataclass
 class PeerPendingTurn:
-    """One queued extracted send on a listener."""
+    """One queued extracted send on a listener.
+
+    We compare turns by value, not identity (eq=False), because identical
+    queued turns are interchangeable for q.remove.
+    """
 
     wrapped_text: str
     already_appended: bool
@@ -91,7 +95,6 @@ class PeerPendingTurn:
 
 _listener_queues: WeakKeyDictionary[Any, deque[PeerPendingTurn]] = WeakKeyDictionary()
 _global_fifo: deque[tuple[weakref.ref[Any], PeerPendingTurn]] = deque()
-_idle_kick_scheduled = False
 
 
 def _supports_service(model: Any, service: str) -> bool:
@@ -348,7 +351,8 @@ def listener_is_busy(listener: Any) -> bool:
     send = getattr(state, "send", None) if state is not None else None
     if send is not None and bool(getattr(send, "is_busy", False)):
         return True
-    if getattr(listener, "_active_q", None) is not None:
+    turn = getattr(listener, "_turn", None)
+    if turn is not None and getattr(turn, "queue", None) is not None and getattr(turn, "alive", False):
         return True
     if getattr(listener, "_send_cancellation", None) is not None:
         return True
@@ -386,16 +390,13 @@ def drop_listener_queue(listener: Any) -> None:
 
 def reset_peer_queues() -> None:
     """Test hook: clear all pending turns."""
-    global _global_fifo, _idle_kick_scheduled
+    global _global_fifo
     _listener_queues.clear()
     _global_fifo.clear()
-    _idle_kick_scheduled = False
 
 
 def kick_pending_peer_starts() -> None:
     """Start at most one queued extracted send when the process drain is idle."""
-    global _idle_kick_scheduled
-    _idle_kick_scheduled = False
     if get_drain_owner() is not None:
         return
     skipped: list[tuple[weakref.ref[Any], PeerPendingTurn]] = []
@@ -419,8 +420,17 @@ def kick_pending_peer_starts() -> None:
         start_fn = getattr(listener, "start_extracted_peer_send", None)
         if not callable(start_fn):
             continue
+        # The turn is already removed from q, and a False return is
+        # ignored. send_state refuses EXTRACTED_SEND while the
+        # hands-free mic records, so the turn is lost and an
+        # already-appended user message sits unanswered. start_fn has
+        # no side effects when it returns False, so put the turn back
+        # like the busy case above.
+        if start_fn(turn.wrapped_text, already_appended=turn.already_appended) is False:
+            q.appendleft(turn)
+            skipped.append((ref, turn))
+            continue
         started = True
-        start_fn(turn.wrapped_text, already_appended=turn.already_appended)
     for item in reversed(skipped):
         _global_fifo.appendleft(item)
 
@@ -435,12 +445,10 @@ def _on_drain_idle() -> None:
     Packet P dispatches ``KICK_PEERS`` after Writer Ready (do not force-marshal
     from this callback: that starts Calc during Writer wrapup and sticks Stop).
     """
-    global _idle_kick_scheduled
     if get_drain_owner() is not None:
         return
     if not _global_fifo:
         return
-    _idle_kick_scheduled = True
     try:
         from plugin.framework.queue_executor import default_executor
 
@@ -478,7 +486,7 @@ def summarize_peer_tool_on_wire(schemas: list[dict[str, Any]]) -> tuple[bool, in
             continue
         fn = schema.get("function")
         desc = str(fn.get("description") or "") if isinstance(fn, dict) else str(schema.get("description") or "")
-        return True, desc.count("uid=")
+        return True, desc.count("(uid=")
     return False, 0
 
 
@@ -607,6 +615,9 @@ def _inject_on_listener(listener: Any, wrapped: str) -> None:
     session = getattr(listener, "session", None)
     if session is not None and hasattr(session, "add_user_message"):
         session.add_user_message(wrapped)
+    render = getattr(listener, "render_session_messages", None)
+    if callable(render) and session is not None:
+        render(session)
     append = getattr(listener, "_append_response", None)
     if callable(append):
         append(wrapped, role="user")
@@ -709,6 +720,20 @@ class _SendPeerBase(ToolBase):
             message=message,
             kind=envelope_kind,
         )
+
+        # The envelope is not written into the peer session, and not
+        # painted, before schedule_peer_turn. On PEER_QUEUE_FULL the
+        # tool would otherwise return an error for a turn that was never
+        # queued, so nothing runs it, and a retry appends a second
+        # phantom user turn. The cap is the same check enqueue uses.
+        # Refuse a full queue before any transcript write. Success
+        # still injects before schedule so an immediate kick sees
+        # already_appended.
+        if listener_queue_len(listener) >= PEER_QUEUE_CAP:
+            return self._tool_error(
+                f"Peer sidebar queue is full (max {PEER_QUEUE_CAP} pending turns).",
+                code="PEER_QUEUE_FULL",
+            )
 
         busy = listener_is_busy(listener)
         already_appended = not busy

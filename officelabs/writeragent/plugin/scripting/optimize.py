@@ -9,22 +9,15 @@ Compute is lazy-loaded from ``plugin.scripting.venv.optimize`` via ``__getattr__
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-from plugin.calc.analysis_runner import calc_tool_context
-from plugin.calc.bridge import CalcBridge
-from plugin.scripting._lazy_venv import make_getattr
-from plugin.calc.calc_addin_data import _resolve_python_data
-from plugin.framework.errors import ToolExecutionError
+from plugin.scripting._lazy_venv import install_lazy_dir, make_getattr
 from plugin.scripting.client import run_optimize as client_run_optimize
 from plugin.scripting.helper_domain import (
     header_prefix,
+    is_status_helper_result,
+    run_trusted_calc_data_helper,
 )
-
-log = logging.getLogger(__name__)
-
-# --- Common & Constants ---
 
 from plugin.scripting.calc_functions_common import (
     OPTIMIZE_HELPER_NAMES as HELPER_NAMES,
@@ -54,6 +47,7 @@ _OPTIMIZE_VENV_EXPORTS = frozenset(
 )
 
 __getattr__ = make_getattr("optimize", _OPTIMIZE_VENV_EXPORTS)
+install_lazy_dir(globals(), _OPTIMIZE_VENV_EXPORTS)
 
 
 # --- Templates ---
@@ -71,6 +65,7 @@ _API = make_template_api(
         run_name="run_optimize",
         style="run_import",
         data_expr="data",
+        leading_data=True,
         extra_comment_lines=("# Set the data range in the toolbar (or select cells), then Run.",),
     )
 )
@@ -99,56 +94,27 @@ def run_trusted_optimize(
     task_hint: str | None = None,
 ) -> dict[str, Any]:
     """Fetch Calc data and run a trusted optimization helper in the user venv."""
-    name = str(helper or "").strip()
-    if not name:
-        raise ToolExecutionError("helper is required", code="OPTIMIZE_ERROR")
-    if name not in HELPER_NAMES:
-        raise ToolExecutionError(f"Unknown helper {name!r}", code="OPTIMIZE_ERROR")
-
-    dr = str(data_range).strip() if data_range else None
-    if not dr and data is None:
-        raise ToolExecutionError("Provide data_range or data", code="OPTIMIZE_ERROR")
-
-    tool_ctx = calc_tool_context(uno_ctx, doc)
-    py_data, err = _resolve_python_data(tool_ctx, data_range=dr, data=data)
-    if err:
-        raise ToolExecutionError(err, code="OPTIMIZE_ERROR")
-    if py_data is None:
-        raise ToolExecutionError("No data to optimize", code="OPTIMIZE_ERROR")
-
-    spec: dict[str, Any] = {"helper": name, "headers": bool(headers)}
-    if isinstance(params, dict) and params:
-        spec["params"] = params
-
-    context: dict[str, Any] = {}
-    try:
-        bridge = CalcBridge(doc)
-        context["sheet_name"] = bridge.get_active_sheet().getName()
-    except Exception:
-        pass
-    if task_hint:
-        context["task_hint"] = str(task_hint)
-    if dr:
-        context["range_a1"] = dr
-
-    return client_run_optimize(uno_ctx, spec, py_data, context=context or None)
+    return run_trusted_calc_data_helper(
+        uno_ctx,
+        doc,
+        helper=helper,
+        params=params,
+        data_range=data_range,
+        data=data,
+        headers=headers,
+        task_hint=task_hint,
+        helper_names=HELPER_NAMES,
+        error_code="OPTIMIZE_ERROR",
+        empty_data_message="No data to optimize",
+        client_run=client_run_optimize,
+    )
 
 
 # --- Egress ---
 
 def is_optimize_result(value: Any) -> bool:
     """True when *value* matches the compact optimize helper result contract."""
-    if not isinstance(value, dict):
-        return False
-    if "status" not in value:
-        return False
-    helper = value.get("helper")
-    if isinstance(helper, str) and helper in HELPER_NAMES:
-        return True
-    if value.get("status") == "error":
-        code = str(value.get("code") or "")
-        return code == "OPTIMIZE_ERROR" or "OPTIMIZ" in code
-    return False
+    return is_status_helper_result(value, HELPER_NAMES, frozenset({"OPTIMIZE_ERROR"}))
 
 
 def format_optimize_for_calc(result: dict[str, Any]) -> list[list[Any]]:
@@ -168,10 +134,17 @@ def insert_optimize_result_into_calc(
     uno_ctx: Any,
     result: dict[str, Any],
     *,
+    sheet_name: str | None = None,
     start_col: int | None = None,
     start_row: int | None = None,
 ) -> int:
-    """Write formatted optimization output starting at *start_col*/*start_row* (or selection). Returns row count."""
+    """Write formatted optimization output at *sheet_name*/*start_col*/*start_row* (or the selection).
+
+    *sheet_name* is the prefix from ``parse_output_anchor``. The shared
+    tabular writer qualifies the anchor so ``CalcBridge.resolve`` opens
+    that sheet. A missing name stays on the active sheet (Run Python Script
+    selection, or an unqualified ``output_range``).
+    """
     from plugin.calc.tabular_egress import insert_tabular_result_into_calc
 
     grid = format_optimize_for_calc(result)
@@ -179,6 +152,7 @@ def insert_optimize_result_into_calc(
         doc,
         uno_ctx,
         grid,
+        sheet_name=sheet_name,
         start_col=start_col,
         start_row=start_row,
     )

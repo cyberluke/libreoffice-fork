@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from plugin.calc.base import ToolCalcPythonBase
 from plugin.calc.calc_addin_data import resolve_python_data_on_main_thread
-from plugin.framework.prompts import PYTHON_VENV_AUTO_IMPORTS_TOOL_NOTE
 from plugin.scripting.import_policy import format_matplotlib_plot_hint
 from plugin.scripting.payload_codec import find_image_payloads, write_image_payload_to_temp
 from plugin.scripting.venv_worker import run_code_in_user_venv
@@ -59,22 +58,42 @@ _PARAMETERS_NEUTRAL = {
 }
 
 _DESCRIPTION_CALC = (
-    "Run Python code. Set `result` to a return value (NumPy ndarray, Pandas DataFrame, list, dict, or scalar). " + PYTHON_VENV_AUTO_IMPORTS_TOOL_NOTE + "Optional data_range (one A1 address, comma-separated addresses, or an array) injects "
+    "Run Python code. Set `result` to a return value (NumPy ndarray, Pandas DataFrame, list, dict, or scalar). "
+    "Optional data_range (one A1 address, comma-separated addresses, or an array) injects "
     "`data` / `ranges` (one address → `data` is that CalcRange; several → `data` is the `ranges` list). "
     "The host reads ranges on the main thread and sends shaped data over the efficient IPC path. "
     "For anything beyond tiny grids, use data_range (address) rather than passing values in the data parameter."
 )
 
-_DESCRIPTION_WRITER = "Run Python code in the configured venv. Set `result` to a return value (NumPy ndarray, Pandas DataFrame, list, dict, or scalar). " + PYTHON_VENV_AUTO_IMPORTS_TOOL_NOTE + "Use document tools to read or change the file; this tool does not inject spreadsheet `data`."
+_DESCRIPTION_WRITER = "Run Python code in the configured venv. Set `result` to a return value (NumPy ndarray, Pandas DataFrame, list, dict, or scalar). Use document tools to read or change the file; this tool does not inject spreadsheet `data`."
 
-_DESCRIPTION_DRAW = "Run Python code in the configured venv. Set `result` to a return value (NumPy ndarray, Pandas DataFrame, list, dict, or scalar). " + PYTHON_VENV_AUTO_IMPORTS_TOOL_NOTE + "Use document tools to read or change the slide/page; this tool does not inject spreadsheet `data`."
+_DESCRIPTION_DRAW = "Run Python code in the configured venv. Set `result` to a return value (NumPy ndarray, Pandas DataFrame, list, dict, or scalar). Use document tools to read or change the slide/page; this tool does not inject spreadsheet `data`."
 
 # Used when the target app is unknown (e.g. discovery with no document open): covers both
 # the Calc data_range path and the Writer/Draw no-injection path, to match the superset schema.
 _DESCRIPTION_NEUTRAL = (
-    "Run Python code in the configured venv. Set `result` to a return value (NumPy ndarray, Pandas DataFrame, list, dict, or scalar). " + PYTHON_VENV_AUTO_IMPORTS_TOOL_NOTE + "In Calc, optional data_range injects `data` / `ranges` from one or more A1 addresses; "
+    "Run Python code in the configured venv. Set `result` to a return value (NumPy ndarray, Pandas DataFrame, list, dict, or scalar). In Calc, optional data_range injects `data` / `ranges` from one or more A1 addresses; "
     "in Writer or Draw/Impress use document tools to read or change content (no spreadsheet `data` injection)."
 )
+
+_IMPORT_NOTE_MARKER = "Set `result` to a return value (NumPy ndarray, Pandas DataFrame, list, dict, or scalar). "
+
+
+def _with_import_note(text: str) -> str:
+    """Insert the sandbox import policy when the tool schema is built.
+
+    Read the global here, after ensuring init has run.
+    PYTHON_VENV_AUTO_IMPORTS_TOOL_NOTE starts empty and is filled on first
+    prompt assembly. Concatenating that name at import (tool discovery)
+    captures the empty string, and a later assignment does not rewrite it.
+    """
+    from plugin.framework import prompts
+
+    prompts._ensure_venv_import_policy_strings()
+    note = prompts.PYTHON_VENV_AUTO_IMPORTS_TOOL_NOTE
+    if note and _IMPORT_NOTE_MARKER in text:
+        return text.replace(_IMPORT_NOTE_MARKER, _IMPORT_NOTE_MARKER + note, 1)
+    return text
 
 
 def _venv_tool_description(doc_type: str | None) -> str:
@@ -87,9 +106,8 @@ def _venv_tool_description(doc_type: str | None) -> str:
     else:
         base = _DESCRIPTION_WRITER
     hint = format_matplotlib_plot_hint(doc_type=doc_type)
-    if hint:
-        return f"{base} {hint}"
-    return base
+    text = f"{base} {hint}" if hint else base
+    return _with_import_note(text)
 
 
 class RunVenvPythonScript(ToolCalcPythonBase):
@@ -133,7 +151,30 @@ class RunVenvPythonScript(ToolCalcPythonBase):
             if kwargs.get("data_range") is not None or kwargs.get("data") is not None:
                 log.debug("run_venv_python_script: ignoring data/data_range on doc_type=%s", ctx.doc_type)
 
-        res = run_code_in_user_venv(ctx.ctx, code, data=py_data, active_domain=ctx.active_domain, python_tool_domain=ctx.python_tool_domain)
+        # Pin ctx.doc for this call only. document_for_script_session
+        # resolves a doc: id before the desktop's current component. The
+        # pin is not the worker session id, so Isolated mode still gets a
+        # fresh namespace. With no session id, host tool RPC uses
+        # get_active_document and wa.draw / wa.shape bind to the front window.
+        from plugin.scripting.session_manager import pin_script_document, release_script_document
+
+        script_session_id = pin_script_document(ctx.doc)
+
+        stop_checker = getattr(ctx, "stop_checker", None)
+        cancellation_scope = getattr(ctx, "send_cancellation", None)
+
+        try:
+            res = run_code_in_user_venv(
+                ctx.ctx,
+                code,
+                data=py_data,
+                python_tool_domain=ctx.python_tool_domain,
+                script_session_id=script_session_id,
+                stop_checker=stop_checker,
+                cancellation_scope=cancellation_scope,
+            )
+        finally:
+            release_script_document(script_session_id)
 
         result = res.get("result")
         if res.get("status") == "ok":
@@ -150,10 +191,32 @@ class RunVenvPythonScript(ToolCalcPythonBase):
                     from plugin.calc.python.image_egress import insert_image_result_on_sheet
                     from plugin.framework.queue_executor import execute_on_main_thread
 
+                    # Pass ctx.doc, and report inserted only after the
+                    # main-thread call returns. Omitting doc= makes egress
+                    # use getCurrentComponent (the front window), and a
+                    # silent return was treated as success.
+                    inserted = 0
+                    failure: Exception | None = None
                     for img in images:
-                        execute_on_main_thread(insert_image_result_on_sheet, ctx.ctx, img)
-                    out["message"] = f"{len(images)} plot(s) inserted on active sheet"
-                    out["image_inserted"] = True
+                        try:
+                            execute_on_main_thread(insert_image_result_on_sheet, ctx.ctx, img, doc=ctx.doc)
+                        except Exception as exc:
+                            log.warning("run_venv_python_script: plot insert failed: %s", exc)
+                            failure = exc
+                            break
+                        inserted += 1
+                    if failure is not None and inserted == 0:
+                        out["status"] = "error"
+                        out["image_inserted"] = False
+                        out["plot_error"] = str(failure)
+                        out["message"] = f"Plot was not inserted: {failure}"
+                    elif failure is not None:
+                        out["image_inserted"] = True
+                        out["plot_error"] = str(failure)
+                        out["message"] = f"{inserted} of {len(images)} plot(s) inserted on active sheet"
+                    else:
+                        out["message"] = f"{len(images)} plot(s) inserted on active sheet"
+                        out["image_inserted"] = True
                 return out
 
         return res

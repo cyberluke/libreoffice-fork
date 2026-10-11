@@ -279,6 +279,21 @@ def resolve_page_style(doc: Any, style_name: str = "Standard") -> tuple[Any, str
     return styles.getByName(style_name), style_name
 
 
+def _mm(style: Any, name: str) -> float | None:
+    """A 1/100 mm page-style property in mm, or None while LibreOffice leaves it void.
+
+    HeaderHeight, HeaderBodyDistance, FooterHeight and
+    FooterBodyDistance are void (Python None) while that header or
+    footer is off, which is how every new Writer document starts
+    (checked live). ``None / 100.0`` raises TypeError, and the whole
+    read fails with "Error reading properties from page style
+    'Standard'". A void measure is reported as None (not applicable),
+    and the rest of the style still reads.
+    """
+    value = style.getPropertyValue(name)
+    return None if value is None else value / 100.0
+
+
 def get_page_style_properties(doc: Any, style_name: str = "Standard") -> dict[str, Any]:
     """Read dimensions, margins, and header/footer state of a Writer page style.
 
@@ -298,26 +313,26 @@ def get_page_style_properties(doc: Any, style_name: str = "Standard") -> dict[st
     try:
         props = {
             "style_name": style_name,
-            "width_mm": style.getPropertyValue("Width") / 100.0,
-            "height_mm": style.getPropertyValue("Height") / 100.0,
+            "width_mm": _mm(style, "Width"),
+            "height_mm": _mm(style, "Height"),
             "is_landscape": style.getPropertyValue("IsLandscape"),
-            "left_margin_mm": style.getPropertyValue("LeftMargin") / 100.0,
-            "right_margin_mm": style.getPropertyValue("RightMargin") / 100.0,
-            "top_margin_mm": style.getPropertyValue("TopMargin") / 100.0,
-            "bottom_margin_mm": style.getPropertyValue("BottomMargin") / 100.0,
-            "gutter_margin_mm": style.getPropertyValue("GutterMargin") / 100.0,
+            "left_margin_mm": _mm(style, "LeftMargin"),
+            "right_margin_mm": _mm(style, "RightMargin"),
+            "top_margin_mm": _mm(style, "TopMargin"),
+            "bottom_margin_mm": _mm(style, "BottomMargin"),
+            "gutter_margin_mm": _mm(style, "GutterMargin"),
             "header_is_on": style.getPropertyValue("HeaderIsOn"),
             "footer_is_on": style.getPropertyValue("FooterIsOn"),
             "header_is_shared": style.getPropertyValue("HeaderIsShared"),
             "footer_is_shared": style.getPropertyValue("FooterIsShared"),
-            "header_height_mm": style.getPropertyValue("HeaderHeight") / 100.0,
-            "footer_height_mm": style.getPropertyValue("FooterHeight") / 100.0,
-            "header_body_distance_mm": style.getPropertyValue("HeaderBodyDistance") / 100.0,
-            "footer_body_distance_mm": style.getPropertyValue("FooterBodyDistance") / 100.0,
+            "header_height_mm": _mm(style, "HeaderHeight"),
+            "footer_height_mm": _mm(style, "FooterHeight"),
+            "header_body_distance_mm": _mm(style, "HeaderBodyDistance"),
+            "footer_body_distance_mm": _mm(style, "FooterBodyDistance"),
             "back_color": style.getPropertyValue("BackColor"),
             "back_transparent": style.getPropertyValue("BackTransparent"),
             "numbering_type": style.getPropertyValue("NumberingType"),
-            "footnote_height_mm": style.getPropertyValue("FootnoteHeight") / 100.0,
+            "footnote_height_mm": _mm(style, "FootnoteHeight"),
             "register_paragraph_style": style.getPropertyValue("RegisterParagraphStyle"),
         }
         # False means the first page has its OWN header/footer — the usual setup for a
@@ -899,12 +914,16 @@ class PageInsertBreak(ToolWriterPageBase):
             if not view_cursor:
                 return self._tool_error("Could not obtain view cursor.")
 
+            # BreakType is a paragraph property. A collapsed model cursor at the
+            # view start applies it to the paragraph that contains the selection.
+            # SwXTextViewCursor is not an XParagraphCursor (no gotoEndOfParagraph)
+            # and this path must not move that selection. insertControlCharacter
+            # (PARAGRAPH_BREAK) split the paragraph and destroyed the selected
+            # text; do not put that back.
             from com.sun.star.style.BreakType import PAGE_BEFORE
             text = view_cursor.getText()
-            cursor = text.createTextCursorByRange(view_cursor)
+            cursor = text.createTextCursorByRange(view_cursor.getStart())
             cursor.setPropertyValue("BreakType", PAGE_BEFORE)
-            # Optionally insert a paragraph break so the break actually applies cleanly
-            text.insertControlCharacter(cursor, 0, False)  # 0 = PARAGRAPH_BREAK
             return {"status": "ok", "message": "Page break inserted."}
         except Exception as e:
             return self._tool_error(f"Error inserting page break: {e}")

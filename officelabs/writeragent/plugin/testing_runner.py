@@ -1183,6 +1183,10 @@ def consume_office_recycle_request() -> bool:
     return wanted
 
 
+# Windows: must run on the original soffice, before any suite-end recycle.
+_WINDOWS_FIRST_IN_DIR = frozenset({"test_designs_uno.py"})
+
+
 def _native_suite_sort_key(module_path: str) -> tuple[int, str]:
     """Windows: leftover-leaving suites run last so they do not poison later loads.
 
@@ -1206,10 +1210,22 @@ def _native_suite_sort_key(module_path: str) -> tuple[int, str]:
     after slash, ``document_research_uno``, and import-filter so the
     copy Hidden-open stays 3/3. Same band as ``test_draw_uno`` (calc
     paths sort first). Do not skip the Hidden-open tests.
+
+    GHA 37406913485 (master d66aa2e1): ``draw/test_bridge_uno`` (new
+    since the last green Windows run) sorts before ``test_designs_uno``.
+    It became the first Impress suite with leftovers open, so its
+    teardown asked for the suite-end recycle and designs ran on the
+    fresh soffice. There it exited 0 mid-suite and the runner aborted.
+    On 36804071142 designs was the first Impress suite and passed on
+    the original office. Keep it first in ``draw/``.
     """
     name = os.path.basename(module_path)
     if sys.platform != "win32":
         return (0, module_path)
+    if name in _WINDOWS_FIRST_IN_DIR:
+        # "\0" sorts before every sibling; the path prefix keeps the
+        # suite inside its own directory's slot in band 0.
+        return (0, module_path[: -len(name)] + "\0" + name)
     if name == "test_peer_message_uno.py":
         return (2, module_path)
     if name in (
@@ -1686,6 +1702,40 @@ def run_module_suite(ctx: Any, module: Any, name: str, doc_model: Any = None) ->
     return total_passed, total_failed, suite_log
 
 
+def _native_suite_set_config(
+    key: str,
+    value: Any,
+    *,
+    event_key: str | None,
+    ctx: Any,
+    review_mode_override: Dict[str, Any],
+    original_set_config: Callable[..., None],
+) -> None:
+    """Stand-in for ``set_config`` while native suites run.
+
+    Forward ``event_key``. ``set_text_model``, ``set_image_model``, and
+    ``set_api_key_for_endpoint`` always pass it: the listener key when a
+    settings field is stored under another name, or ``None`` so listeners
+    see the stored key. A wrapper that only takes ``(key, value)`` raises
+    ``TypeError`` and aborts both suites before any test
+    (GHA 36809189426, 36809192143).
+
+    ``doc.agent_edit_review_mode`` stays in memory; a caller-supplied
+    ``event_key`` is still the ``config:changed`` key so that signal is
+    not dropped.
+    """
+    if key == "doc.agent_edit_review_mode":
+        review_mode_override[key] = value
+        from plugin.framework.event_bus import global_event_bus
+
+        if event_key:
+            global_event_bus.emit("config:changed", key=event_key, value=value, ctx=ctx)
+        else:
+            global_event_bus.emit("config:changed", ctx=ctx)
+        return
+    original_set_config(key, value, event_key=event_key)
+
+
 def run_all_tests(ctx: Any) -> str:
     """Run all in-process WriterAgent tests and return a JSON summary string.
 
@@ -1724,13 +1774,15 @@ def run_all_tests(ctx: Any) -> str:
             return _review_mode_override.get(key, "off")
         return original_get_config(key)
 
-    def test_set_config(key: str, value: Any) -> None:
-        if key == "doc.agent_edit_review_mode":
-            _review_mode_override[key] = value
-            from plugin.framework.event_bus import global_event_bus
-            global_event_bus.emit("config:changed", ctx=ctx)
-            return
-        original_set_config(key, value)
+    def test_set_config(key: str, value: Any, *, event_key: str | None = None) -> None:
+        _native_suite_set_config(
+            key,
+            value,
+            event_key=event_key,
+            ctx=ctx,
+            review_mode_override=_review_mode_override,
+            original_set_config=original_set_config,
+        )
 
     def test_get_config_dict() -> dict[str, Any]:
         base = original_get_config_dict()

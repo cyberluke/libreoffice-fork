@@ -549,7 +549,7 @@ if test -n "$UNITTEST_WSL_PATHFORMAT"; then
 fi
 
 AC_MSG_CHECKING([for product name])
-PRODUCTNAME="AC_PACKAGE_NAME"
+PRODUCTNAME="NAI Office"
 if test -n "$with_product_name" -a "$with_product_name" != no; then
     PRODUCTNAME="$with_product_name"
 fi
@@ -2470,7 +2470,9 @@ AC_ARG_WITH(theme,
          *elementary, *elementary_svg,
          *karasa_jaga, *karasa_jaga_svg,
          *sifr, *sifr_dark, *sifr_dark_svg, *sifr_svg,
-         *sukapura, *sukapura_dark, *sukapura_dark_svg, *sukapura_svg.]),
+         *sukapura, *sukapura_dark, *sukapura_dark_svg, *sukapura_svg,
+         *writer2027_carbon_svg, *writer2027_phosphor_svg,
+         *tdesign_svg.]),
 ,)
 
 libo_FUZZ_ARG_WITH(helppack-integration,
@@ -14632,14 +14634,14 @@ dnl ===================================================================
 AC_MSG_CHECKING([which themes to include])
 # if none given use default subset of available themes
 if test "x$with_theme" = "x" -o "x$with_theme" = "xyes"; then
-    with_theme="breeze breeze_dark breeze_dark_svg breeze_svg colibre colibre_svg colibre_dark colibre_dark_svg elementary elementary_svg karasa_jaga karasa_jaga_svg sifr sifr_svg sifr_dark sifr_dark_svg sukapura sukapura_dark sukapura_dark_svg sukapura_svg"
+    with_theme="breeze breeze_dark breeze_dark_svg breeze_svg colibre colibre_svg colibre_dark colibre_dark_svg elementary elementary_svg karasa_jaga karasa_jaga_svg sifr sifr_svg sifr_dark sifr_dark_svg sukapura sukapura_dark sukapura_dark_svg sukapura_svg writer2027_carbon_svg writer2027_phosphor_svg tdesign_svg"
 fi
 
 WITH_THEMES=""
 if test "x$with_theme" != "xno"; then
     for theme in $with_theme; do
         case $theme in
-        breeze|breeze_dark|breeze_dark_svg|breeze_svg|colibre|colibre_svg|colibre_dark|colibre_dark_svg|elementary|elementary_svg|karasa_jaga|karasa_jaga_svg|sifr|sifr_svg|sifr_dark|sifr_dark_svg|sukapura|sukapura_dark|sukapura_dark_svg|sukapura_svg) WITH_THEMES="${WITH_THEMES:+$WITH_THEMES }$theme" ;;
+        breeze|breeze_dark|breeze_dark_svg|breeze_svg|colibre|colibre_svg|colibre_dark|colibre_dark_svg|elementary|elementary_svg|karasa_jaga|karasa_jaga_svg|sifr|sifr_svg|sifr_dark|sifr_dark_svg|sukapura|sukapura_dark|sukapura_dark_svg|sukapura_svg|writer2027_carbon_svg|writer2027_phosphor_svg|tdesign_svg) WITH_THEMES="${WITH_THEMES:+$WITH_THEMES }$theme" ;;
         *) AC_MSG_ERROR([Unknown value for --with-theme: $theme]) ;;
         esac
     done

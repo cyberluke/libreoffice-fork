@@ -19,7 +19,6 @@
 from __future__ import annotations
 
 import logging
-import traceback
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, cast
 
 from plugin.contrib.smolagents.agents import ToolCallingAgent
@@ -27,12 +26,13 @@ from plugin.contrib.smolagents.memory import ActionStep, FinalAnswerStep, ToolCa
 from plugin.contrib.smolagents.models import ChatMessage, Model, TokenUsage, remove_content_after_stop_sequences
 from plugin.contrib.smolagents.tools import Tool as SmolTool
 from plugin.framework.config import get_api_config, get_config_int
-from plugin.framework.errors import ToolExecutionError, format_error_payload
+from plugin.framework.errors import ToolExecutionError, format_error_payload, make_tool_error
 from plugin.framework.client.llm_client import LlmClient
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from plugin.chatbot.sticky_reply import StickyReplySpec
     from plugin.framework.tool import ToolBase
     from plugin.framework.tool import ToolContext
 
@@ -122,6 +122,26 @@ class SmolToolAdapter(SmolTool):
 
         tool = self._inner_tool
         ctx = self._inner_tctx
+
+        # Refuse before dispatch with the same flag, detects_mutation(), and
+        # READ_ONLY_TARGET payload as ToolRegistry.execute. forward used to
+        # call ToolBase.execute and skip that check, so a mutating tool ran
+        # on a read_only_target context. The field is a bool, so only an
+        # explicit True counts.
+        if getattr(ctx, "read_only_target", False) is True and tool.detects_mutation():
+            tool_name = tool.name or self.name
+            common_details: dict[str, Any] = {"tool_name": tool_name}
+            caller = getattr(ctx, "caller", None)
+            if caller:
+                common_details["caller"] = caller
+            doc_type = getattr(ctx, "doc_type", None)
+            if doc_type:
+                common_details["doc_type"] = doc_type
+            return make_tool_error(
+                "This document is open for read-only document_research access; writes are not allowed.",
+                code="READ_ONLY_TARGET",
+                **common_details,
+            )
 
         is_async = getattr(tool, "is_async", lambda: False)()
         if is_async:
@@ -362,7 +382,10 @@ def run_subagent_tool(
     ctx: ToolContext,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Execute a specialized subagent runner with standard error handling and traceback capture.
+    """Execute a specialized subagent runner with standard error handling.
+
+    Failures are logged with ``log.exception`` so the traceback stays in the
+    log. The payload shown to the model and UI is the exception text only.
 
     Args:
         agent_label: Human-readable label for logging and errors (e.g. 'Writing plan', 'PPT-Master').
@@ -377,7 +400,95 @@ def run_subagent_tool(
     try:
         return runner(ctx, **kwargs)
     except Exception as e:
-        tb = traceback.format_exc()
+        # This except is the boundary for subagent runners. log.exception
+        # records the traceback; the payload keeps the exception text only.
         log.exception("%s execution failed", agent_label)
-        err = ToolExecutionError(f"{agent_label} failed: {str(e)}\n\n{tb}", details={"query": query})
+        err = ToolExecutionError(f"{agent_label} failed: {str(e)}", details={"query": query})
         return format_error_payload(err)
+
+
+def _document_open_tool_handler(ctx: ToolContext) -> Callable[[ToolCall], None]:
+    """Brainstorming and writing report each delegate_read_document in the chat.
+
+    The status line is the tool name alone. Deep research does not use this
+    handler, so its steps keep the executor default (``Tool: name...``).
+    """
+    status_callback = getattr(ctx, "status_callback", None)
+    append_thinking_callback = getattr(ctx, "append_thinking_callback", None)
+    chat_append_callback = getattr(ctx, "chat_append_callback", None)
+    document_open_step_index = 0
+
+    def tool_call_handler(step: ToolCall) -> None:
+        nonlocal document_open_step_index
+        if step.name == "delegate_read_document" and chat_append_callback:
+            from plugin.chatbot.web_research_chat import document_open_step_chat_text
+            from plugin.doc.specialized_base import _field_from_tool_arguments
+
+            path_or_name = _field_from_tool_arguments(step.arguments, "path_or_name")
+            chat_append_callback(document_open_step_chat_text(path_or_name, document_open_step_index))
+            document_open_step_index += 1
+        if append_thinking_callback:
+            append_thinking_callback(f"Running tool: {step.name} with {step.arguments}\n")
+        if status_callback:
+            status_callback(f"{step.name}...")
+
+    return tool_call_handler
+
+
+def run_smol_side_turn(
+    ctx: ToolContext,
+    *,
+    query: str,
+    history_text: str | None,
+    collector: Callable[[ToolContext], Sequence[ToolBase]],
+    instructions: str,
+    examples_key: str,
+    reply_spec: StickyReplySpec | None = None,
+    report_document_opens: bool = False,
+    status_message: str,
+    stop_message: str,
+    error_prefix: str,
+) -> dict[str, Any]:
+    """One smol turn shared by brainstorming, writing plan, and deep research.
+
+    The three runners were the same setup. Status text, the stop message, and
+    whether a document open is written into the chat stay arguments so deep
+    research can keep the executor's default tool status.
+    """
+    from plugin.chatbot.smol_examples import get_examples_block
+
+    status_callback = getattr(ctx, "status_callback", None)
+    if history_text and len(history_text) > 4000:
+        history_text = "..." + history_text[-4000:]
+    if status_callback:
+        status_callback(status_message)
+
+    smol_tools: list[SmolTool] = [SmolToolAdapter(t, ctx, safe=True, inputs_style="specialized") for t in collector(ctx)]
+    if reply_spec is not None:
+        from plugin.chatbot.sticky_reply import StickyReplyToUserTool
+
+        smol_tools.append(SmolToolAdapter(StickyReplyToUserTool(reply_spec), ctx, safe=False, inputs_style="librarian"))
+
+    agent = build_toolcalling_agent(
+        ctx,
+        smol_tools,
+        instructions=instructions,
+        final_answer_tool_name="reply_to_user",
+        examples_block=get_examples_block(examples_key),
+        status_callback=status_callback,
+    )
+    task = f"### CONVERSATION HISTORY:\n{history_text or 'None'}\n\n### CURRENT QUERY:\n{query}"
+    res = SmolAgentExecutor(ctx).execute_safe(
+        agent,
+        task,
+        tool_call_handler=_document_open_tool_handler(ctx) if report_document_opens else None,
+        stop_message=stop_message,
+        error_prefix=error_prefix,
+    )
+    if isinstance(res, dict) and res.get("status") == "error":
+        return res
+    if reply_spec is not None:
+        from plugin.chatbot.sticky_reply import interpret_sticky_final_answer
+
+        return interpret_sticky_final_answer(res, leave_status=reply_spec.leave_status)
+    return {"status": "ok", "result": str(res)}

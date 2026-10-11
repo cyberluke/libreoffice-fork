@@ -83,10 +83,12 @@ def show_hamburger_menu(ctx: Any, frame: Any, button_ctrl: Any) -> None:
 
         pos = 0
 
-        # 1. Edit / Extend selection
-        add_item(popup, _("Extend Selection"), "chatbot.extend_selection", pos)
+        # 1. Edit / Extend selection (TDesign AI icons, see burn_ai_icons.py)
+        add_item(popup, _("Extend Selection"), "chatbot.extend_selection", pos,
+                 menu_icon_filename("ai", ctx=ctx))
         pos += 1
-        add_item(popup, _("Edit Selection"), "chatbot.edit_selection", pos)
+        add_item(popup, _("Edit Selection"), "chatbot.edit_selection", pos,
+                 menu_icon_filename("ai-edit", ctx=ctx))
         pos += 1
 
         # 2. Separator
@@ -103,13 +105,15 @@ def show_hamburger_menu(ctx: Any, frame: Any, button_ctrl: Any) -> None:
             add_item(popup, _("Convert Sheet to Python..."), "calc.convert_spreadsheet_to_python", pos)
             pos += 1
 
-        add_item(popup, _("Search Nearby Files..."), "embeddings.search_dialog", pos, menu_icon_filename("search", ctx=ctx))
+        add_item(popup, _("Search Nearby Files..."), "embeddings.search_dialog", pos,
+                 menu_icon_filename("ai-search", ctx=ctx))
         pos += 1
 
         if is_writer_doc:
             add_item(popup, _("Insert LaTeX Math..."), "writer.insert_latex_dialog", pos, menu_icon_filename("latex", ctx=ctx))
             pos += 1
-            add_item(popup, _("Text Analytics..."), "textanalytics.open_dialog", pos)
+            add_item(popup, _("Text Analytics..."), "textanalytics.open_dialog", pos,
+                     menu_icon_filename("ai-chart-bar", ctx=ctx))
             pos += 1
 
         # 4. Separator
@@ -138,7 +142,7 @@ def show_hamburger_menu(ctx: Any, frame: Any, button_ctrl: Any) -> None:
 
         add_item(popup, _("Reset Python Session"), "scripting.reset_python_session", pos)
         pos += 1
-        # Not every Writer file: only File → Open of a .ipynb (registry UDProp).
+        # Not every Writer file: only an imported notebook that still has code cells.
         # Addons.xcu cannot express that, so these stay hamburger-only.
         from plugin.librepy.sidebar_menus import document_has_notebook_registry
 
@@ -188,6 +192,18 @@ def show_hamburger_menu(ctx: Any, frame: Any, button_ctrl: Any) -> None:
         if chosen_id in item_actions:
             action_name = item_actions[chosen_id]
             log.info("Hamburger menu selected: %s", action_name)
-            invoke_action_handler(get_action_handler(action_name), frame)
+            handler = get_action_handler(action_name)
+            if handler is not None:
+                invoke_action_handler(handler, frame)
+            else:
+                # Toggle MCP Server and MCP Server Status are built here and
+                # never registered (mcp.toggle_server, mcp.server_status), so
+                # get_action_handler is None. The toolbar reaches
+                # McpModule.on_action through _dispatch_command; use that path
+                # when the registry has no handler. Registered items still
+                # get the sidebar frame.
+                from plugin.main import _dispatch_command
+
+                _dispatch_command(action_name)
     except Exception as e:
         log.exception("show_hamburger_menu failed: %s", e)

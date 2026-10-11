@@ -80,6 +80,9 @@ def msgbox(ctx: Any, title: Any, message: Any, *, box_type: int = 1) -> None:
 
     Args:
         box_type: LO message box type (1=INFO, 2=WARNING, 3=ERROR, 4=QUERY).
+
+    *message* is shown as given: callers translate catalog strings. Runtime text
+    (tracebacks, exception text) through ``_()`` breaks the DEAL_MAX_MSGID contract.
     """
     if not ctx:
         log.info("MSGBOX (no ctx) - %s: %s", title, message)
@@ -93,7 +96,7 @@ def msgbox(ctx: Any, title: Any, message: Any, *, box_type: int = 1) -> None:
         window = frame.getContainerWindow()
         smgr = ctx.getServiceManager()
         toolkit = smgr.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
-        box = toolkit.createMessageBox(window, box_type, 1, _(title), _(message))  # OK button
+        box = toolkit.createMessageBox(window, box_type, 1, _(title), str(message))  # OK button
         log.debug("msgbox execute start title=%s", title)
         try:
             box.execute()
@@ -141,8 +144,16 @@ def show_approval_dialog(ctx: Any, description: str, tool_name: str = "", parent
         message = (description or _("Proceed with this action?")) + ("\n\n" + _("Tool: %s") % tool_name if tool_name else "")
         log.debug("show_approval_dialog: tool_name=%s parent_frame=%s", tool_name, parent_frame is not None)
         # 4 = QUERYBOX, 3 = BUTTONS_YES_NO. Result 2 = Yes (Approve), 3 = No (Reject), 1 = OK
+        # msgbox() disposes in a finally. This box used to return after execute()
+        # and leak the toolkit window. A dispose failure must not flip Yes/No.
         box = toolkit.createMessageBox(window, 4, 3, title, message)
-        result = box.execute()
+        try:
+            result = box.execute()
+        finally:
+            try:
+                box.dispose()
+            except Exception:
+                log.debug("show_approval_dialog dispose failed", exc_info=True)
         return result in (1, 2)
     except Exception as e:
         log.exception("Approval dialog failed")
@@ -420,7 +431,7 @@ def msgbox_with_copy(ctx: Any, title: str, message: str, copy_text: str) -> None
 
         msg_ctrl = dlg.getControl("Msg")
         if msg_ctrl is not None:
-            msg_ctrl.getModel().Label = _(message)
+            msg_ctrl.getModel().Label = str(message)
 
         class _CopyListener(BaseActionListener):
             _dlg: Any
@@ -490,7 +501,7 @@ def msgbox_with_report(ctx: Any, title: str, message: str, *, reportable: bool =
 
         msg_ctrl = dlg.getControl("Msg")
         if msg_ctrl is not None:
-            msg_ctrl.getModel().Label = _(message)
+            msg_ctrl.getModel().Label = str(message)
 
         class _CopyListener(BaseActionListener):
             _dlg: Any
@@ -696,13 +707,12 @@ def _dialog_model_element_names(dlg: Any) -> tuple[str, ...]:
 def _translate_model_help_text(model: Any, name: str) -> None:
     """Translate UNO ``HelpText`` the same way labels are translated.
 
-    What was wrong: ``translate_dialog`` only walked type-specific captions
-    (Label, Text, Title, StringItemList). ``HelpText`` never reached ``_()``,
-    so Settings ``dlg:help-text`` stayed English even though those YAML helpers
-    are already in the pot.
+    ``translate_dialog`` walks type-specific captions (Label, Text, Title,
+    StringItemList) and never sees ``HelpText``, so Settings ``dlg:help-text``
+    stays English even though those YAML helpers are already in the pot.
 
     Edit and NumericField are not in ``control_types`` at all, so listing
-    HelpText only on that map would still miss text and number fields.
+    HelpText only on that map still misses text and number fields.
     """
     try:
         if model is None:
@@ -1045,10 +1055,13 @@ def get_optional(root_window: Any, name: str) -> Any:
         # Expected exception from UNO when an element is not found,
         # but catch Exception broadly since LibreOffice Python bridges
         # raise varying error types across platforms when missing names.
-        if "DisposedException" in str(type(e)):
+        # A disposed window is not a missing control name. Callers that must
+        # ignore teardown already use suppress_disposed. A bare RuntimeException
+        # stays "missing": some bridges use that for an unknown control id.
+        if "DisposedException" in type(e).__name__:
             log.warning("get_optional %s error: control disposed %s", name, e)
-        else:
-            log.debug("get_optional %s error: %s", name, e)
+            raise
+        log.debug("get_optional %s error: %s", name, e)
         return None
 
 

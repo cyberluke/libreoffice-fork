@@ -77,7 +77,7 @@ class ForecastDataTool(ToolBaseDummy):
             return self._tool_error("Provide data_range or data")
 
         from plugin.scripting.forecast import run_trusted_forecast, insert_forecast_result_into_calc
-        from plugin.calc.address_utils import parse_address
+        from plugin.calc.address_utils import parse_output_anchor
         from plugin.framework.queue_executor import execute_on_main_thread
 
         dr = str(data_range).strip() if data_range else None
@@ -86,11 +86,12 @@ class ForecastDataTool(ToolBaseDummy):
         task_hint = str(kwargs["task_hint"]) if kwargs.get("task_hint") else None
         output_range = str(kwargs["output_range"]).strip() if kwargs.get("output_range") else None
 
-        def _run() -> dict[str, Any]:
-            return run_trusted_forecast(ctx.ctx, ctx.doc, helper=helper, params=params, data_range=dr, data=data, headers=headers, task_hint=task_hint)
-
+        # Call run_trusted_forecast on this worker. It both reads the sheet
+        # and blocks in client_run_forecast, so execute_on_main_thread would
+        # put that IPC on the UI thread and freeze Calc. The helper marshals
+        # only the UNO read; the sheet write below stays on the main thread.
         try:
-            result = execute_on_main_thread(_run)
+            result = run_trusted_forecast(ctx.ctx, ctx.doc, helper=helper, params=params, data_range=dr, data=data, headers=headers, task_hint=task_hint)
         except ToolExecutionError as exc:
             return self._tool_error(str(exc), code=getattr(exc, "code", "FORECAST_ERROR"))
         except Exception as exc:
@@ -99,9 +100,11 @@ class ForecastDataTool(ToolBaseDummy):
         if output_range and result.get("status") == "ok":
 
             def _write() -> None:
-                cell_part = output_range.rsplit(".", 1)[-1] if output_range else output_range
-                col, row = parse_address(cell_part)
-                insert_forecast_result_into_calc(ctx.doc, ctx.ctx, result, start_col=col, start_row=row)
+                # Forward the sheet from parse_output_anchor, the same way
+                # analyze_data does. Passing only the column and row writes
+                # Sheet1.D1 or 'Q1.Sales'!B2 onto the active sheet.
+                sheet, col, row = parse_output_anchor(output_range)
+                insert_forecast_result_into_calc(ctx.doc, ctx.ctx, result, sheet_name=sheet, start_col=col, start_row=row)
 
             try:
                 execute_on_main_thread(_write)
@@ -115,11 +118,11 @@ class ForecastDataTool(ToolBaseDummy):
 
             plot_result = None
             if should_auto_plot(helper=helper, auto_plot=auto_plot, task_hint=task_hint):
-
-                def _auto_plot() -> dict[str, Any] | None:
-                    return run_auto_plot_after_forecast(ctx.ctx, ctx.doc, forecast_helper=helper, forecast_result=result, forecast_params=params, data_range=dr, auto_plot=auto_plot, task_hint=task_hint)
-
-                plot_result = execute_on_main_thread(_auto_plot)
+                # Call run_auto_plot_after_forecast on this worker. It
+                # marshals the sheet read itself. Wrapping it in
+                # execute_on_main_thread runs the matplotlib IPC on the UI
+                # thread. insert_viz_result_into_doc below stays on main.
+                plot_result = run_auto_plot_after_forecast(ctx.ctx, ctx.doc, forecast_helper=helper, forecast_result=result, forecast_params=params, data_range=dr, auto_plot=auto_plot, task_hint=task_hint)
             if plot_result is not None:
                 result = dict(result)
                 result["plot"] = plot_result

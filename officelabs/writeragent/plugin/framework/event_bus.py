@@ -28,11 +28,12 @@ docs/framework/threading.md.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import logging
 import threading
 import weakref
-from typing import Any
+from typing import Any, Iterator, cast
 
 log = logging.getLogger("writeragent.events")
 
@@ -85,12 +86,34 @@ class EventBus:
     def __init__(self) -> None:
         # crosshair: off  # threading.local() is engine-hostile (cover-all 33093268817: exit 1, 0 contract errors)
         self._subscribers: dict[str, list[tuple[Any, bool]]] = {}  # event -> list of (callback, is_weakref)
-        # Guards list create/replace only. emit copies under the lock, then
-        # drops it before calling handlers.
-        self._lock: threading.Lock = threading.Lock()
+        # RLock: a weakref callback can run on this thread while the lock is
+        # already held (GC during a list copy). A plain Lock deadlocks there.
+        # _guard_depth is how many of our own sections are on the stack.
+        # Cleanup is queued and applied only at the outermost exit so a
+        # callback cannot replace the list a caller is still copying.
+        self._lock: threading.RLock = threading.RLock()
+        self._guard_depth: int = 0
+        self._applying_cleanups: bool = False
+        self._pending_cleanups: list[tuple[str, Any]] = []
         # Per-thread names currently in emit(); instance-wide would drop
         # legitimate parallel emits of the same event from two threads.
         self._dispatching = threading.local()
+
+    @contextlib.contextmanager
+    def _guard(self) -> Iterator[None]:
+        """Hold ``_lock`` and apply queued weakref drops after the outermost exit."""
+        # crosshair: off
+        self._lock.acquire()
+        self._guard_depth += 1
+        try:
+            yield
+        finally:
+            self._guard_depth -= 1
+            try:
+                if self._guard_depth == 0:
+                    self._apply_pending_cleanups()
+            finally:
+                self._lock.release()
 
     def subscribe(self, event: str, callback: Any, weak: bool = False) -> None:
         """Register *callback* for *event*.
@@ -100,26 +123,48 @@ class EventBus:
             callback: Callable to invoke when the event is emitted.
             weak:     If True, store a weakref to the callback's bound
                       object. The subscription auto-removes when the
-                      object is garbage-collected.
+                      object is garbage-collected. If ``WeakMethod``
+                      rejects the callable, it is stored strongly.
+                      ``weakref.ref`` would point at a temporary bound
+                      method and the subscription would die on the next GC.
         """
         # crosshair: off  # threading.local() is engine-hostile (cover-all 33093268817: exit 1, 0 contract errors)
         entry: tuple[Any, bool]
         if weak and hasattr(callback, "__self__"):
-            entry = (weakref.WeakMethod(callback, lambda r: self._cleanup(event, r)), True)
-        elif weak:
             try:
-                entry = (weakref.ref(callback, lambda r: self._cleanup(event, r)), True)
+                entry = (weakref.WeakMethod(callback, lambda r: self._cleanup(event, r)), True)
             except TypeError:
+                # WeakMethod rejects builtins and methods of instances with no
+                # ``__weakref__`` (``__slots__``). Keep the callback strongly.
+                # ``weakref.ref(callback)`` tracks the bound-method object, not
+                # the instance. Callers pass the method inline (``items.append``)
+                # and do not keep it, so the next GC would drop the subscription
+                # and emit would never run. A strong ref still fires. Python
+                # methods on normal instances stay on the WeakMethod path above.
                 entry = (callback, False)
+        elif weak:
+            entry = self._weakref_or_strong(event, callback)
         else:
             entry = (callback, False)
-        with self._lock:
+        with self._guard():
             self._subscribers.setdefault(event, []).append(entry)
+
+    def _weakref_or_strong(self, event: str, callback: Any) -> tuple[Any, bool]:
+        """Weak-ref a callable the caller holds, or keep it if it cannot be weak.
+
+        Bound methods do not belong here. ``weakref.ref`` would track the
+        temporary method object, which dies when the caller did not stash it.
+        """
+        # crosshair: off  # threading.local() is engine-hostile (cover-all 33093268817: exit 1, 0 contract errors)
+        try:
+            return (weakref.ref(callback, lambda r: self._cleanup(event, r)), True)
+        except TypeError:
+            return (callback, False)
 
     def unsubscribe(self, event: str, callback: Any) -> None:
         """Remove *callback* from *event*."""
         # crosshair: off  # threading.local() is engine-hostile (cover-all 33093268817: exit 1, 0 contract errors)
-        with self._lock:
+        with self._guard():
             subs = self._subscribers.get(event)
             if not subs:
                 return
@@ -133,6 +178,9 @@ class EventBus:
         Bound methods are new objects on every attribute access
         (``obj.m is obj.m`` is False), so identity alone never matches
         ``unsubscribe("e", obj.handler)``. Compare ``__self__``/``__func__``.
+        Callables with ``__self__`` but no ``__func__`` (builtins,
+        method-wrappers) compare with ``==`` so a sibling method on the
+        same object does not match.
         """
         if stored is None:
             return False
@@ -142,7 +190,15 @@ class EventBus:
         other_self = getattr(callback, "__self__", None)
         if stored_self is None or other_self is None:
             return False
-        return stored_self is other_self and getattr(stored, "__func__", None) is getattr(callback, "__func__", None)
+        stored_func = getattr(stored, "__func__", None)
+        other_func = getattr(callback, "__func__", None)
+        if stored_func is None and other_func is None:
+            # Builtins and method-wrappers have ``__self__`` and no ``__func__``.
+            # ``None is None`` would treat every pair as the same method, so
+            # ``items.append`` would unsubscribe ``items.clear``. ``==`` is
+            # true for the same builtin method and false for a sibling.
+            return bool(stored_self is other_self and stored == callback)
+        return stored_self is other_self and stored_func is other_func
 
     def _active_events(self) -> set[str]:
         # crosshair: off  # threading.local() is engine-hostile (cover-all 33093268817: exit 1, 0 contract errors)
@@ -162,7 +218,7 @@ class EventBus:
         that writes a second key still notifies listeners.
         """
         # crosshair: off
-        with self._lock:
+        with self._guard():
             live = self._subscribers.get(event)
             if not live:
                 return
@@ -184,13 +240,8 @@ class EventBus:
                     continue
                 try:
                     resolved(**data)
-                except TypeError:
-                    log.exception("TypeError in event handler %s for %s", resolved, event)
-                except ValueError:
-                    log.exception("ValueError in event handler %s for %s", resolved, event)
                 except Exception as e:
-                    # Still catch Exception to avoid one bad listener breaking the whole bus,
-                    # but log it clearly as an unhandled application error
+                    # One bad listener must not stop the rest of the fan-out.
                     log.exception("Unhandled error in event handler %s for %s: %s", resolved, event, e)
         finally:
             active.discard(token)
@@ -202,20 +253,51 @@ class EventBus:
         return cb
 
     def _cleanup(self, event: str, ref: Any) -> None:
-        """Called when a weakref target is garbage-collected."""
+        """Called when a weakref target is garbage-collected.
+
+        ``_lock`` is an ``RLock``. Emit, subscribe, and unsubscribe allocate
+        while holding it, and GC of a cyclic weak subscriber runs this
+        callback on that same thread. A non-reentrant lock taken again here
+        never returns. Queue the dead ref and apply it only when this thread
+        is not already inside ``_guard`` (outermost exit, or a callback that
+        found the lock free). The list a caller is copying stays stable until
+        that copy finishes, and the callback cannot deadlock against the bus.
+        """
         # crosshair: off  # threading.local() is engine-hostile (cover-all 33093268817: exit 1, 0 contract errors)
-        with self._lock:
-            subs = self._subscribers.get(event)
-            if subs:
-                # Replace, do not mutate in place (emit may still hold a snapshot).
-                self._subscribers[event] = [(cb, w) for cb, w in subs if cb is not ref]
+        self._lock.acquire()
+        try:
+            self._pending_cleanups.append((event, ref))
+            # _apply drops the depth to 0 before it runs, and the list copy
+            # can collect another subscriber. Don't re-enter apply from that
+            # callback; the loop already in progress picks the new ref up.
+            if self._guard_depth == 0 and not self._applying_cleanups:
+                self._apply_pending_cleanups()
+        finally:
+            self._lock.release()
+
+    def _apply_pending_cleanups(self) -> None:
+        """Drop queued dead refs. Caller holds ``_lock``."""
+        # crosshair: off
+        self._applying_cleanups = True
+        try:
+            while self._pending_cleanups:
+                pending = self._pending_cleanups
+                self._pending_cleanups = []
+                for event, ref in pending:
+                    subs = self._subscribers.get(event)
+                    if not subs:
+                        continue
+                    # Replace, do not mutate in place (emit may still hold a snapshot).
+                    self._subscribers[event] = [(cb, w) for cb, w in subs if cb is not ref]
+        finally:
+            self._applying_cleanups = False
 
 
 def get_event_bus() -> EventBus:
     """Return the true singleton EventBus across all LO import contexts."""
     if not hasattr(sys, "_writeragent_event_bus"):
         setattr(sys, "_writeragent_event_bus", EventBus())
-    return getattr(sys, "_writeragent_event_bus")
+    return cast("EventBus", getattr(sys, "_writeragent_event_bus"))
 
 
 global_event_bus = get_event_bus()

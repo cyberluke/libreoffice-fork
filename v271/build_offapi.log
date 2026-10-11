@@ -1,0 +1,5 @@
+cd D:/_SATIN_AI/LibreOffice/offapi && make -j 24 -rs
+[build BIN] top level modules: offapi
+[build LOC] top level modules: offapi
+[build ALL] top level modules: build-non-l10n-only build-l10n-only
+OFFAPI_EXIT=0

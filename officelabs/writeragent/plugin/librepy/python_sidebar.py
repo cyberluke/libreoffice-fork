@@ -131,26 +131,78 @@ def compute_python_sidebar_layout(width: int, height: int, snapshot: dict[str, t
     return layouts
 
 
+def compute_python_sidebar_min_height(
+    snapshot: dict[str, tuple[int, int, int, int]],
+    *,
+    bottom_margin: int = _BOTTOM_MARGIN,
+) -> int:
+    """Real minimum Python sidebar height from the XDL geometry.
+
+    The flex fields (status/cell list/diag lists) shrink to their
+    ``_MIN_FLEX_HEIGHT`` but the fixed rows below them (action buttons,
+    settings) do not. ``compute_python_sidebar_layout`` lays everything out
+    with a bottom margin of ``bottom_margin``, so the smallest height at which
+    every fixed control is still reachable is the deepest content bottom plus
+    that margin. Below it, non-flex controls would extend past the panel with
+    no internal scrollbar.
+
+    This is reported as ``LayoutSize.Minimum`` so the outer deck scrollbar
+    appears whenever the docked height is below the real floor (the deck only
+    scrolls when total Minimum exceeds the available height).
+    """
+    if not snapshot:
+        return 0
+    content_bottom = max(rect[1] + rect[3] for rect in snapshot.values())
+    return content_bottom + bottom_margin
+
+
 class _PanelResizeListener(BaseWindowListener):
     """Repositions Python sidebar controls when the panel root is resized."""
 
     _c: dict[str, Any]
+    _on_dispose: Any
     _in_relayout: bool
     _root_window: Any
 
-    def __init__(self, controls: dict[str, Any]) -> None:
+    def __init__(self, controls: dict[str, Any], on_dispose: Any = None) -> None:
         self._c = controls
+        self._on_dispose = on_dispose
         self._snapshot: dict[str, tuple[int, int, int, int]] | None = None
         self._in_relayout = False
         self._root_window = None
 
+    @property
+    def min_panel_height(self) -> int:
+        """Real minimum height (fixed chrome + bottom margin) or 0.
+
+        Reported as LayoutSize.Minimum by the panel factory so the deck
+        scrollbar appears when the docked height cannot hold all fixed
+        controls (see ``compute_python_sidebar_min_height``).
+        """
+        snapshot = self._snapshot
+        if not snapshot:
+            return 0
+        try:
+            return compute_python_sidebar_min_height(snapshot)
+        except Exception:
+            log.exception("python sidebar min_panel_height computation failed")
+            return 0
+
     def disposing(self, Source: Any) -> None:  # noqa: N803 -- UNO signature
-        if self._root_window and hasattr(self._root_window, "removeWindowListener"):
-            try:
-                self._root_window.removeWindowListener(self)
-            except Exception:
-                pass
+        # LibreOffice queries XComponent for dispose. This element is
+        # XUIElement only, so PythonPanelElement.disposing never runs and
+        # deck close would leak the controller's listeners. VCL does call
+        # this window listener when the root window goes; clean up from here.
+        # Do not removeWindowListener; this listener is already disposing
+        # (same as the chat panel listener).
+        callback = self._on_dispose
+        self._on_dispose = None
         self._root_window = None
+        if callable(callback):
+            try:
+                callback()
+            except Exception:
+                log.exception("python sidebar window dispose callback failed")
 
     def relayout_now(self, win: Any) -> None:
         if not win or self._in_relayout:
@@ -191,6 +243,14 @@ class _PanelResizeListener(BaseWindowListener):
         if not snapshot:
             log.warning("python sidebar _relayout: no snapshot, skip")
             return
+        # Never crush the fixed rows below the reachable minimum (see
+        # compute_python_sidebar_min_height). The deck scrollbar appears when
+        # available < Minimum, so a real layout is >= this floor; clamp so a
+        # transient short allocation cannot push the bottom buttons off-screen.
+        min_h = self.min_panel_height
+        if min_h > 0 and h < min_h:
+            log.info("[LIBREPY LAYOUT] clamp_height window=%s min=%s", h, min_h)
+            h = min_h
         layouts = compute_python_sidebar_layout(w, h, snapshot)
         if not layouts:
             return
@@ -339,25 +399,41 @@ class PythonSidebarController:
                 log.debug("sidebar diagnostics listener add failed", exc_info=True)
 
     def disposing(self) -> None:
+        # Deck close never calls PythonPanelElement.disposing: the element is
+        # XUIElement, not XComponent, so the sidebar dispose query fails.
+        # The root window listener's on_dispose calls this method (an explicit
+        # element.disposing still does too). Drop the window listener while
+        # the root is still held, then the diagnostics and Calc activation
+        # listeners; otherwise they run against a dead frame. Clear on_dispose
+        # first so the window hook cannot re-enter.
         rl = getattr(self, "resize_listener", None)
         if rl is not None:
-            try:
-                rl.disposing(None)
-            except Exception:
-                log.debug("sidebar resize listener remove failed", exc_info=True)
             self.resize_listener = None
+            rl._on_dispose = None
+            root = getattr(rl, "_root_window", None)
+            rl._root_window = None
+            if root is not None and hasattr(root, "removeWindowListener"):
+                try:
+                    root.removeWindowListener(rl)
+                except Exception:
+                    log.debug("sidebar resize listener remove failed", exc_info=True)
         try:
             self._store.remove_listener(self._on_diag)
         except Exception:
             log.debug("sidebar diagnostics listener remove failed", exc_info=True)
-        # Remove activation listener if it was added
-        if getattr(self, "_activation_listener", None) is not None and self.frame is not None:
+        activation = getattr(self, "_activation_listener", None)
+        self._activation_listener = None
+        if activation is not None and self.frame is not None:
             try:
                 controller = self.frame.getController()
                 if controller is not None:
-                    controller.removeActivationEventListener(self._activation_listener)
+                    controller.removeActivationEventListener(activation)
             except Exception:
                 log.debug("sidebar activation listener remove failed", exc_info=True)
+
+    def _release_on_window_dispose(self) -> None:
+        """Deck close never calls PythonPanelElement.disposing (not an XComponent)."""
+        self.disposing()
 
     def _ctrl(self, name: str) -> Any:
         return get_optional_control(self.root, name)
@@ -367,7 +443,7 @@ class PythonSidebarController:
         try:
             ids = _CONTROL_IDS if self._calc_panel else tuple(cid for cid in _CONTROL_IDS if cid not in _CALC_ONLY_IDS)
             controls = {cid: self._ctrl(cid) for cid in ids}
-            listener = _PanelResizeListener(controls)
+            listener = _PanelResizeListener(controls, on_dispose=self._release_on_window_dispose)
             listener._root_window = self.root
             if self.root is not None and hasattr(self.root, "addWindowListener"):
                 self.root.addWindowListener(listener)
@@ -456,7 +532,12 @@ class PythonSidebarController:
 
         Writer panels must not fall back to some other open Calc document.
         """
-        if not getattr(self, "_calc_panel", True):
+        # Refresh _calc_panel from _frame_is_calc() on each lookup, and
+        # return None when this frame is not Calc. A value captured at
+        # construction stays Calc after a switch to Writer, and
+        # get_calc_document_from_ctx then returns some other open Calc document.
+        self._calc_panel = self._frame_is_calc()
+        if not self._calc_panel:
             return None
         frame = self.frame
         if frame is not None:
@@ -472,6 +553,7 @@ class PythonSidebarController:
         return get_calc_document_from_ctx(self.ctx)
 
     def refresh(self) -> None:
+        self._calc_panel = self._frame_is_calc()
         if not self._calc_panel:
             set_control_text(self._ctrl("status"), format_runtime_status(self.ctx, None))
             return

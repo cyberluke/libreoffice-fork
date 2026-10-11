@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>OfficeLabs Helper (GPU)</string>
+	<string>NAI Office Helper (GPU)</string>
 	<key>CFBundleExecutable</key>
-	<string>OfficeLabs Helper (GPU)</string>
+	<string>NAI Office Helper (GPU)</string>
 	<key>CFBundleIdentifier</key>
 	<string>ai.officelabs.helper.gpu</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>OfficeLabs Helper (GPU)</string>
+	<string>NAI Office Helper (GPU)</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleSignature</key>

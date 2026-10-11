@@ -62,6 +62,72 @@ from plugin.writer.hyperlink_fixup import (
 
 log = logging.getLogger("writeragent.writer")
 
+
+# com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK
+_PARAGRAPH_BREAK = 0
+
+
+def _paragraph_boundary_cursor(text_obj: Any, found: Any, position: str) -> tuple[Any, bool]:
+    """Collapsed cursor at the paragraph boundary nearest the match, for block content.
+
+    ``before`` -> start of the paragraph holding the match start; ``after`` -> end of the
+    paragraph holding the match end. The flag says whether the match edge was not already
+    on that boundary (the insert moved away from the exact edge).
+    """
+    if position == "before":
+        cursor = text_obj.createTextCursorByRange(found.getStart())
+        moved = not cursor.isStartOfParagraph()
+        cursor.gotoStartOfParagraph(False)
+        return cursor, moved
+    cursor = text_obj.createTextCursorByRange(found.getEnd())
+    moved = not cursor.isEndOfParagraph()
+    cursor.gotoEndOfParagraph(False)
+    return cursor, moved
+
+_EDGE_SPACE = " \t\u00a0"
+
+
+def _match_stripped_edges(old_content: str, content: str) -> tuple[str, int]:
+    """Line *content* up with the search, which drops the spaces at *old_content*'s edges.
+
+    Returns ``(content, separator)``. A replacement loses the same edge spaces the search
+    dropped (separator 0). A deletion -- empty content, or only spaces when old_content had edge
+    spaces -- returns how many edge spaces old_content named, for the match to take along.
+    Replacing a symbol with a space ("_" -> " ") stays a replacement.
+    """
+    lead = len(old_content) - len(old_content.lstrip(_EDGE_SPACE))
+    trail = len(old_content) - len(old_content.rstrip(_EDGE_SPACE))
+    if not content.strip(_EDGE_SPACE) and (not content or lead or trail):
+        return "", max(lead, trail)
+    cut_left = min(lead, len(content) - len(content.lstrip(_EDGE_SPACE)))
+    cut_right = min(trail, len(content) - len(content.rstrip(_EDGE_SPACE)))
+    return content[cut_left:len(content) - cut_right], 0
+
+
+def _grow_over_edge_space(found: Any, separator: int) -> Any:
+    """*found* grown over up to *separator* spaces on its left, or on its right when the left
+    has none (a word at a paragraph start keeps no leading space)."""
+    if not separator:
+        return found
+    text = found.getText()
+    start = text.createTextCursorByRange(found.getStart())
+    grew = 0
+    for _unused in range(separator):
+        probe = text.createTextCursorByRange(start.getStart())
+        if not probe.goLeft(1, True) or not probe.getString() or probe.getString() not in _EDGE_SPACE:
+            break
+        start.goLeft(1, False)
+        grew += 1
+    grown = text.createTextCursorByRange(start.getStart())
+    grown.gotoRange(found.getEnd(), True)
+    for _unused in range(0 if grew else separator):
+        probe = text.createTextCursorByRange(grown.getEnd())
+        if not probe.goRight(1, True) or not probe.getString() or probe.getString() not in _EDGE_SPACE:
+            break
+        grown.goRight(1, True)
+    return grown
+
+
 # Named (``&amp;``), decimal (``&#36;``) and hex (``&#x24;``) character references.
 # Guards the plain-text unescape so a bare "&" is never touched.
 _ENTITY_RE = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});")
@@ -124,7 +190,7 @@ class GetDocumentContent(ToolBase):
             "max_chars": {"type": "integer", "description": "Maximum characters to return."},
             "start": {"type": "integer", "description": "Start character offset (0-based). Required for scope 'range'."},
             "end": {"type": "integer", "description": "End character offset (exclusive). Required for scope 'range'."},
-            "include_images": {"type": "boolean", "description": "Include embedded image data (base64) in export. Default false."},
+            "include_images": {"type": "boolean", "description": "Include embedded image data (base64) in export. Default false: an image comes back as its wrapper with the picture's name (<div|span ... id=\"Name\"><img src=\"\"/></...>); keep that wrapper in apply_document_content content to keep the picture there, drop it to delete the picture."},
         },
         "required": [],
     }
@@ -300,12 +366,12 @@ class ApplyDocumentContent(ToolBase):
     parameters: dict[str, Any] | None = {
         "type": "object",
         "properties": {
-            "content": {"type": "array", "items": {"type": "string"}, "description": ("List of HTML fragments or plain-text fragments (one per block); shape and math per the APPLY_DOCUMENT_CONTENT AND HTML rules — the editing-html guidance covers them if they are not already in your context. No Markdown.")},
+            "content": {"type": ["array", "string"], "items": {"type": "string"}, "description": ("List of HTML fragments or plain-text fragments (one per block), or one string. A string is one block; execute still joins a list with newlines. Shape and math per the APPLY_DOCUMENT_CONTENT AND HTML rules — the editing-html guidance covers them if they are not already in your context. No Markdown.")},
             "target": {"type": "string", "enum": ["beginning", "end", "selection", "full_document", "search"], "description": "Where to apply the content."},
             "old_content": {"type": "string", "description": ("Substring to find when target='search'. Not for whole-document replace — use target='full_document' instead.")},
             "all_matches": {"type": "boolean", "description": "Replace all occurrences (true) or first only. Default false. Only for target='search' with position='replace'."},
             "occurrence": {"type": "integer", "minimum": 0, "description": ("For target='search': 0-based index into replaceable Writer text matches (body/table/frame), not dry_run shape/comment rows. Omit for the existing first-match behavior. Cannot be combined with all_matches=true.")},
-            "position": {"type": "string", "enum": ["replace", "before", "after"], "description": ("For target='search': 'replace' (default) replaces the match; 'before'/'after' INSERT the content next to the match and leave the matched text untouched (result reports inserted=true instead of replaced_count).")},
+            "position": {"type": "string", "enum": ["replace", "before", "after"], "description": ("For target='search': 'replace' (default) replaces the match; 'before'/'after' INSERT the content next to the match and leave the matched text untouched (result reports inserted=true instead of replaced_count). Inline content (plain text, <b>, <i>, ...) goes at the exact match edge; block content (<p>, headings, lists, tables) goes before/after the whole paragraph that holds the match (result reports snapped_to_paragraph=true when that moved it).")},
             "dry_run": {"type": "boolean", "description": "For target='search': do NOT edit. Return replaceable matches (each tagged with occurrence) plus shape/comment previews, so you can check before committing."},
             "regex": {"type": "boolean", "description": "For target='search': treat old_content as a regular expression (default false = literal). Regex mode is single-paragraph (no cross-paragraph chaining)."},
             "case_sensitive": {"type": "boolean", "description": "For target='search': force case-sensitive (true) or case-insensitive (false) matching. Omit for the default lenient match."},
@@ -515,7 +581,7 @@ class ApplyDocumentContent(ToolBase):
                     session, doc,
                     lambda: format_support.replace_single_range_with_content(
                         doc, found, content, ctx.ctx, config_svc),
-                    track_reviewable, original_preview=original, proposed_preview=plain_preview)
+                    original_preview=original, proposed_preview=plain_preview)
 
         def run() -> list[dict[str, Any]]:
             mutate()
@@ -759,10 +825,19 @@ class ApplyDocumentContent(ToolBase):
         return _note_read_only_attrs(self._execute(ctx, **kwargs), kwargs.get("content"))
 
     def _execute(self, ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
-        if kwargs.get("dry_run"):
-            return self._dry_run_preview(ctx, **kwargs)
-        wait_seconds = self._review_wait_seconds(ctx.ctx)
         on_main = threading.current_thread() is threading.main_thread()
+        if kwargs.get("dry_run"):
+            # The preview reads ranges and text through UNO, so a worker-thread call
+            # (tool-sync-apply_document_content) marshals it like the edit path does.
+            if on_main:
+                return self._dry_run_preview(ctx, **kwargs)
+            from plugin.framework.queue_executor import execute_on_main_thread
+
+            def _preview() -> dict[str, Any]:
+                return self._dry_run_preview(ctx, **kwargs)
+
+            return execute_on_main_thread(_preview, timeout=60.0)
+        wait_seconds = self._review_wait_seconds(ctx.ctx)
         if get_agent_edit_review_mode(ctx.ctx) != "wait" or on_main:
             # No review-wait: review is off, it was toggled off after this call was dispatched
             # to a worker thread, or we ARE the main thread (where blocking would freeze the UI
@@ -928,17 +1003,18 @@ class ApplyDocumentContent(ToolBase):
             _nl_after_esc = content.count("\n")
             if _nl_after_esc != _nl_before_esc:
                 log.debug("apply_document_content: literal \\\\n/\\\\t escape expand (plain text) newline_count %d -> %d", _nl_before_esc, _nl_after_esc)
-            # What was wrong: the import path unescapes HTML entities (html_import
-            # `_ensure_html_linebreaks`, and LO's own filter), but this
-            # format-preserving path wrote raw_content straight into the document. How it
-            # happened: content_has_markup() sees no tag in "R&#36;5.000,00", so a model
-            # that escaped the dollar sign took the plain path and the six characters
-            # "&#36;" landed in the petition verbatim. Why this change fixes it: run the
-            # same html.unescape the import path uses, so both paths agree on what the
-            # model's text means. Decode ONLY complete references (_ENTITY_RE, ";" required):
-            # html.unescape on the whole string also expands semicolon-less names, so
-            # "&sect 2o" became "§ 2o" and "&not incluidos" became "¬ incluidos". A bare "&"
-            # in "Banco & Cia" is never touched.
+            # The import path unescapes HTML entities (html_import
+            # `_ensure_html_linebreaks`, and LO's own filter). This
+            # format-preserving path must do the same, or raw_content lands
+            # verbatim. content_has_markup() sees no tag in "R&#36;5.000,00",
+            # so a model that escaped the dollar sign takes the plain path and
+            # the six characters "&#36;" land in the petition. Run the same
+            # html.unescape the import path uses, so both paths agree on what
+            # the model's text means. Decode ONLY complete references
+            # (_ENTITY_RE, ";" required): html.unescape on the whole string
+            # also expands semicolon-less names, so "&sect 2o" becomes "§ 2o"
+            # and "&not incluidos" becomes "¬ incluidos". A bare "&" in
+            # "Banco & Cia" is never touched.
             if _ENTITY_RE.search(content):
                 _before_ent = content
                 content = _ENTITY_RE.sub(lambda m: html_mod.unescape(m.group(0)), content)
@@ -979,7 +1055,7 @@ class ApplyDocumentContent(ToolBase):
                 record_html_atomically(
                     session, ctx.doc,
                     lambda: format_support.replace_full_document(ctx.doc, ctx.ctx, content, config_svc=config_svc),
-                    track_reviewable, proposed_preview=_plain_preview(content))
+                    proposed_preview=_plain_preview(content))
             return {"status": "ok", "message": "Replaced entire document."}, session
         if target == "end":
             with session:
@@ -998,7 +1074,7 @@ class ApplyDocumentContent(ToolBase):
                 record_html_atomically(
                     session, ctx.doc,
                     lambda: format_support.insert_content_at_position(ctx.doc, ctx.ctx, content, "selection", config_svc=config_svc),
-                    track_reviewable, proposed_preview=_plain_preview(content))
+                    proposed_preview=_plain_preview(content))
             return attach_edited_context(
                 {"status": "ok", "message": "Inserted content at selection."}, anchor), session
         if target == "beginning":
@@ -1023,6 +1099,17 @@ class ApplyDocumentContent(ToolBase):
             # Parameter error (like old_content=None), not a search no-op: the search never ran,
             # so there's no replaced_count to report — use the standard tool error shape.
             return self._tool_error("old_content is empty after normalization."), session
+        # The search drops the spaces at old_content's edges. The replacement
+        # must drop the same edges, or old_content=" paragrafo" with content=""
+        # deletes only "paragrafo" and leaves "Primeiro  inteiro." with a
+        # double space (same for " paragrafo inteiro" -> " inteiro"). A
+        # deletion takes the space on one side along with the word.
+        separator = 0
+        if (position == "replace" and not kwargs.get("regex") and isinstance(content, str)
+                and not format_support.content_has_markup(content)
+                and not format_support.content_has_markup(str(old_content))):
+            content, separator = _match_stripped_edges(str(old_content), content)
+            raw_content = content
         doc = ctx.doc
         # replaced_count is the machine-readable success signal: 0 -> status "error" (a silent
         # no-op surfaced as a failure), N>0 -> "ok". No matched_count/warning/partial-replace:
@@ -1048,7 +1135,10 @@ class ApplyDocumentContent(ToolBase):
             ranges = (search_mod.find_ranges_regex_case(doc, _opts_pattern, _regex_opt, _opts_cs, all_matches=True)
                       if _use_opts else search_mod.find_all_ranges(doc, search_string))
             if not ranges:
-                return search_mod.build_search_not_found_response(all_matches=True), session
+                return search_mod.build_search_not_found_response(
+                    all_matches=True, tracked_deletions=search_mod.document_has_tracked_deletions(doc)), session
+            from plugin.writer.search import _MAX_SEARCH_REPLACEMENTS
+            max_limit_hit = len(ranges) >= _MAX_SEARCH_REPLACEMENTS
             # Decide before any replace. An empty replacement that is the last text
             # in a table deletes the table instead of leaving an empty shell; those
             # matches are not also cleared as text (that would add a second redline).
@@ -1082,6 +1172,7 @@ class ApplyDocumentContent(ToolBase):
                     for found in reversed(ranges):
                         if doomed_names and range_table_name(found) in doomed_names:
                             continue
+                        found = _grow_over_edge_space(found, separator)
                         # batch=True: this loop already holds the undo context, so the
                         # outline URL write stays in the same Ctrl+Z as the text.
                         reports, link_err = self._replace_found(
@@ -1111,6 +1202,9 @@ class ApplyDocumentContent(ToolBase):
                 resp = _table_deletion_result([name for _table, name in doomed], tracked_delete)
             else:
                 resp = search_mod.build_search_replace_response(count, use_preserve=use_preserve)
+                from plugin.writer.search import _MAX_SEARCH_REPLACEMENTS
+                if max_limit_hit:
+                    resp["message"] += f" Note: Replacement stopped at the safety limit of {_MAX_SEARCH_REPLACEMENTS} to avoid excessive document changes. The document is not fully updated."
                 if count > 1:
                     resp["message"] += " edited_context shows the first occurrence's neighborhood."
                 if doomed:
@@ -1185,7 +1279,8 @@ class ApplyDocumentContent(ToolBase):
                         None)
                     return self._annotate_review_status(ctx.ctx, result), session
                 return search_mod.build_search_not_found_response(shape_name=shape_name), session
-            return search_mod.build_search_not_found_response(all_matches=False), session
+            return search_mod.build_search_not_found_response(
+                all_matches=False, tracked_deletions=search_mod.document_has_tracked_deletions(doc)), session
         if position in ("before", "after"):
             # INSERT next to the match instead of replacing it: the single most common petition
             # edit ("add a paragraph after clause X") previously forced resending the clause
@@ -1194,14 +1289,13 @@ class ApplyDocumentContent(ToolBase):
             # HTML-import insert there; only the genuinely new text enters the review record.
             #
             # Two guarded gaps (clear error beats an opaque failure; the atomic wrapper would
-            # roll back either way): the mixed-math importer appends later segments at the
-            # DOCUMENT END (format.py per-segment goto-end), and the HTML import path is not
-            # cell-safe (same nested-XText hazard the replace path detects).
+            # roll back either way): math segments are not wired into the next-to-match insert
+            # below, and the HTML import path is not cell-safe (same nested-XText hazard the
+            # replace path detects).
             if format_support.html_fragment_contains_mixed_math(str(content)):
                 return self._tool_error(
-                    "position='before'/'after' does not support content with math segments yet "
-                    "(later segments would land at the document end); use position='replace' "
-                    "including the math, or target='end'."), session
+                    "position='before'/'after' does not support content with math segments yet; "
+                    "use position='replace' including the math, or target='end'."), session
             try:
                 in_cell = found.getText().createTextCursorByRange(
                     found.getStart()).getPropertyValue("TextTable") is not None
@@ -1212,41 +1306,87 @@ class ApplyDocumentContent(ToolBase):
                     "position='before'/'after' next to a match inside a table cell is not "
                     "supported yet; use position='replace' with plain text, or rewrite the "
                     "cell content."), session
+            # Inline content goes in at the exact match edge without a <p>.
+            # Block content (<p>, headings, tables) imported mid-paragraph
+            # splits the host paragraph, and LibreOffice merges the first
+            # imported block into the text before the cursor: anchoring on
+            # the end of "4. CABIMENTO ... EM DOBRO" leaves "4. CABIMENTO
+            # NOVA SECAO A" / "NOVA SECAO B" / "EM DOBRO", and even
+            # position='after' on the last words of a paragraph glues the
+            # new paragraph onto it. Plain text wrapped in <p> first splits
+            # the paragraph too. Block content goes between paragraphs --
+            # before the anchor's paragraph, or into a fresh paragraph
+            # opened right after it. A line break is a paragraph too: plain
+            # "Novo A\n\nNovo B" on the inline path goes in as manual line
+            # breaks glued onto the matched paragraph.
+            is_block = (format_support.content_has_block_markup(str(content))
+                        or "\n" in str(content) or "\\n" in str(content))
+            text_obj = found.getText()
             try:
-                edge = found.getStart() if position == "before" else found.getEnd()
-                insert_cursor = found.getText().createTextCursorByRange(edge)
+                if is_block:
+                    insert_cursor, snapped = _paragraph_boundary_cursor(text_obj, found, position)
+                else:
+                    edge = found.getStart() if position == "before" else found.getEnd()
+                    insert_cursor, snapped = text_obj.createTextCursorByRange(edge), False
             except Exception as e:
                 return self._tool_error("Could not anchor the %s-match insert: %s" % (position, e)), session
+
+            def _insert_next_to_match() -> None:
+                if not is_block:
+                    format_support.insert_inline_at_cursor(doc, ctx.ctx, insert_cursor, str(content), config_svc=config_svc)
+                    return
+                if position != "after":
+                    format_support.insert_html_at_cursor(doc, ctx.ctx, insert_cursor, content, config_svc=config_svc, apply_styles=False)
+                    return
+                # Importing at a paragraph END merges the first block into that paragraph; at a
+                # paragraph START it does not. Open an empty paragraph and import at its start.
+                text_obj.insertControlCharacter(insert_cursor, _PARAGRAPH_BREAK, False)
+                # The import puts every block (each with its own break) BEFORE that paragraph,
+                # which is then left over empty. This cursor stays at its start through the
+                # import (checked live, also with a table next and at the end of the text).
+                leftover = text_obj.createTextCursorByRange(insert_cursor.getStart())
+                format_support.insert_html_at_cursor(doc, ctx.ctx, insert_cursor, content, config_svc=config_svc, apply_styles=False)
+                leftover.gotoEndOfParagraph(True)
+                if leftover.getString() == "":
+                    # Delete the last imported block's break; a tracked insertion swallows it.
+                    leftover.collapseToStart()
+                    leftover.goLeft(1, True)
+                    leftover.setString("")
+
             anchor = collapsed_anchor(found)
             with session:
                 record_html_atomically(
-                    session, doc,
-                    lambda: format_support.insert_html_at_cursor(doc, ctx.ctx, insert_cursor, content, config_svc=config_svc, apply_styles=False),
-                    track_reviewable, proposed_preview=_plain_preview(content))
+                    session, doc, _insert_next_to_match,
+                    proposed_preview=_plain_preview(content))
+            where = ("%s the paragraph that contains the match (block content cannot go mid-paragraph "
+                     "without splitting it)" % position) if snapped else "%s the old_content match" % position
             insert_resp: dict[str, object] = {
                 "status": "ok",
-                "message": "Inserted content %s the old_content match (matched text left untouched)." % position,
+                "message": "Inserted content %s (matched text left untouched)." % where,
                 "inserted": True,
                 "position": position,
             }
+            if snapped:
+                insert_resp["snapped_to_paragraph"] = True
             if occurrence is not None:
                 insert_resp["occurrence"] = occurrence
             return attach_edited_context(insert_resp, anchor), session
 
+        found = _grow_over_edge_space(found, separator)
         # Anchor BEFORE the mutation: the found range's content is replaced (HTML path even
         # deletes-then-imports). edited_context uses this collapsed start. A preserve-format
         # replace's per-character setString pushes a cursor saved here forward, so the
         # outline URL is painted from the paragraph start (_select_replacement), not from
         # this anchor. Outline capture happens inside _replace_found, also before that delete.
         anchor = collapsed_anchor(found)
-        # What was wrong: an empty replacement inside a table only cleared that text and
-        # returned success, so a request to delete the table left the empty shell. How it
-        # happened: the table's name is a CSS class in the HTML, and the agent edited text
-        # instead of calling table_delete. Why this deletes: the replacement is the last
-        # text in the table, so the shell would be all that remained. A partial cell clear
-        # (other cells still have text, or the match is only part of its cell) falls
-        # through to the text replace below. Same delete path as table_delete, inside this
-        # edit's review session — not a second one.
+        # An empty replacement that is the last text in a table deletes
+        # the table. Clearing only that text and returning success leaves
+        # the empty shell: the table's name is a CSS class in the HTML,
+        # and the agent edited text instead of calling table_delete. A
+        # partial cell clear (other cells still have text, or the match
+        # is only part of its cell) falls through to the text replace
+        # below. Same delete path as table_delete, inside this edit's
+        # review session.
         from plugin.writer.specialized.tables import writer_tables_emptied_by_matches
 
         doomed = writer_tables_emptied_by_matches([found], content)

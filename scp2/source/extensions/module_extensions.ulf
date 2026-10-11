@@ -35,10 +35,10 @@ en-US = "Solver for Nonlinear Programming"
 en-US = "Solver for Nonlinear Programming"
 
 [STR_NAME_MODULE_OPTIONAL_EXTENSIONS_OFFICELABSAI]
-en-US = "OfficeLabs AI"
+en-US = "NAI Office AI"
 
 [STR_DESC_MODULE_OPTIONAL_EXTENSIONS_OFFICELABSAI]
-en-US = "OfficeLabs AI assistant for Writer, Calc, Impress and Draw."
+en-US = "NAI Office AI assistant for Writer, Calc, Impress and Draw."
 
 [STR_NAME_MODULE_OPTIONAL_EXTENSIONS_SCRIPT_PROVIDER_FOR_BEANSHELL]
 en-US = "Script provider for BeanShell"

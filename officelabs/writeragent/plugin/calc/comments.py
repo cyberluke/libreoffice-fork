@@ -24,6 +24,27 @@ def _cell_label(col: int, row: int) -> str:
     return format_address(col, row)
 
 
+def _annotation_date(dt: Any) -> str:
+    """Return a cell-comment date as text.
+
+    A string is the date LibreOffice already formatted.
+    ``XSheetAnnotation.getDate()`` returns that string
+    (``offapi/com/sun/star/sheet/XSheetAnnotation.idl``). Reading ``.Year``
+    on it raised, and both format attempts failed closed to empty text. A
+    struct is still formatted when an older bridge or a test double
+    provides one.
+    """
+    if isinstance(dt, str):
+        return dt
+    try:
+        return "%04d-%02d-%02d %02d:%02d" % (dt.Year, dt.Month, dt.Day, dt.Hours, dt.Minutes)
+    except Exception:
+        try:
+            return "%04d-%02d-%02d" % (dt.Year, dt.Month, dt.Day)
+        except Exception:
+            return ""
+
+
 def _parse_cell_ref(cell_ref: str) -> tuple[int, int]:
     """Parse 'B3' into (col, row) 0-based tuple."""
     return parse_address(cell_ref)
@@ -90,13 +111,14 @@ class ListCellComments(ToolCalcCommentBase):
             # whose getString()/getDate() come back empty in current LO.
             # Fall back to getAnnotationShape() for lazy .xlsx captions.
             cell_ann, text = _annotation_text(sheet, pos.Column, pos.Row)
+            date_str = _annotation_date(cell_ann.getDate())
             comments.append(
                 {
                     "cell": _cell_label(pos.Column, pos.Row),
                     "author": ann.getAuthor(),
                     # .xlsx has no date field on a comment element, so an
                     # empty date there is the format, not a failure.
-                    "date": cell_ann.getDate(),
+                    "date": date_str,
                     "text": text,
                     "is_visible": ann.getIsVisible(),
                 }
@@ -130,7 +152,12 @@ class AddCellComment(ToolCalcCommentBase):
 
         doc = ctx.doc
         sheet = resolve_sheet(doc, sheet_name)
-        col, row = _parse_cell_ref(cell_ref)
+
+        try:
+            col, row = _parse_cell_ref(cell_ref)
+        except ValueError as e:
+            return self._tool_error(str(e))
+
         cell = sheet.getCellByPosition(col, row)
 
         # Insert or update annotation
@@ -173,7 +200,11 @@ class DeleteCellComment(ToolCalcCommentBase):
 
         doc = ctx.doc
         sheet = resolve_sheet(doc, sheet_name)
-        col, row = _parse_cell_ref(cell_ref)
+
+        try:
+            col, row = _parse_cell_ref(cell_ref)
+        except ValueError as e:
+            return self._tool_error(str(e))
 
         annotations = sheet.getAnnotations()
         # Find and remove the annotation at this position

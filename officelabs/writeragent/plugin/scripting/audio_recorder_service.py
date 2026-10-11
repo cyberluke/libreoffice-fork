@@ -22,12 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from plugin.framework.config import get_config_str
 from plugin.framework.worker_pool import BackgroundHandle, StderrTail, run_in_background, start_stderr_drain
-from plugin.scripting.native_binaries import (
-    _CONTRIB_BASE_URL,
-    _download_url_to_file,
-    ensure_downloaded_audio_on_path,
-    run_vec_pack_download,
-)
+from plugin.scripting.native_binaries import ensure_native_binaries_on_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -38,18 +33,13 @@ from plugin.scripting.sandbox import resolve_venv_python, scrub_subprocess_env, 
 
 log = logging.getLogger(__name__)
 
-_AUDIO_RECORD_MAIN = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "venv", "audio_record_main.py"
-)
+_AUDIO_RECORD_MAIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "audio_record_main.py")
 _RECORDING_READY_TIMEOUT_SEC = 30
 _RECORDING_STOP_TIMEOUT_SEC = 15
 # Live stderr drains keyed by id(proc) — avoids pipe deadlock during record.
 _recording_stderr_drains: dict[int, StderrTail] = {}
 
-_VENV_NOT_CONFIGURED = (
-    "Set the Python venv path in WriterAgent Settings → Python, then run "
-    "'uv pip install sounddevice' in that venv."
-)
+_VENV_NOT_CONFIGURED = "Set the Python venv path in WriterAgent Settings → Python, then run 'uv pip install sounddevice' in that venv."
 
 
 def is_audio_recording_configured(ctx: Any) -> bool:
@@ -67,11 +57,7 @@ def resolve_recording_python(ctx: Any) -> tuple[str | None, str]:
         return None, _VENV_NOT_CONFIGURED
     exe = resolve_venv_python(venv_dir)
     if not exe:
-        return (
-            None,
-            f"No python executable found under configured venv: {venv_dir!r} "
-            "(expected bin/python, Scripts/python.exe, or env-root python.exe).",
-        )
+        return (None, f"No python executable found under configured venv: {venv_dir!r} (expected bin/python, Scripts/python.exe, or env-root python.exe).")
     return exe, ""
 
 
@@ -84,18 +70,11 @@ def _build_recording_env() -> dict[str, str]:
 
 
 def _popen_kwargs() -> dict[str, Any]:
-    popen_kw: dict[str, Any] = {
-        "stdin": subprocess.PIPE,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
-        "env": _build_recording_env(),
-        "text": True,
-        "bufsize": 1,
-    }
+    popen_kw: dict[str, Any] = {"stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "env": _build_recording_env(), "text": True, "bufsize": 1}
     if sys.platform == "win32":
         popen_kw["creationflags"] = subprocess.CREATE_NO_WINDOW
     else:
-        popen_kw["preexec_fn"] = os.setsid
+        popen_kw["start_new_session"] = True
     return popen_kw
 
 
@@ -103,12 +82,7 @@ def _silence_cli_args(config: SilenceDetectorConfig) -> list[str]:
     return [f"--silence-stop-ms={max(0, config.silence_stop_ms)}"]
 
 
-def spawn_recording_process(
-    exe: str,
-    output_path: str,
-    *,
-    silence_config: SilenceDetectorConfig | None = None,
-) -> subprocess.Popen[str]:
+def spawn_recording_process(exe: str, output_path: str, *, silence_config: SilenceDetectorConfig | None = None) -> subprocess.Popen[str]:
     """Start audio_record_main.py in the user venv."""
     cmd = [exe, _AUDIO_RECORD_MAIN, "--output", output_path]
     if silence_config is not None:
@@ -161,6 +135,10 @@ class RecordingStopHandoff:
         with self._lock:
             return self._path
 
+    def has_error(self) -> bool:
+        with self._lock:
+            return self._error is not None
+
     def wait_for_path(self, timeout_sec: float) -> str:
         """Block until ``note_ok`` / ``note_error``, or raise on timeout."""
         if not self._ready.wait(timeout_sec):
@@ -177,9 +155,9 @@ class RecordingStopHandoff:
 def _read_json_line(proc: subprocess.Popen[str], timeout: float) -> dict[str, Any]:
     if proc.stdout is None:
         raise RuntimeError("Recording subprocess stdout is not available.")
-    # Bugfix: this used to call stdout.readline() directly, so the ready/stop
-    # timeout was ignored when the child hung before emitting JSON. The shared
-    # IPC helper waits with a real deadline before reading the line.
+    # stdout.readline() ignores the ready/stop timeout when the child hangs
+    # before emitting JSON. The shared IPC helper waits with a real deadline
+    # before reading the line.
     try:
         payload = read_json_line(proc.stdout, timeout_sec=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -209,11 +187,87 @@ def wait_for_recording_ready(proc: subprocess.Popen[str], *, timeout_sec: float 
 
 
 def _reap_recording_process(proc: subprocess.Popen[str], timeout_sec: float) -> None:
+    """Wait, then escalate to the process group. Drop the stderr drain only after exit.
+
+    ``terminate`` alone left a PortAudio thread holding the mic, and dropping
+    the drain at the same time filled the stderr pipe and stalled the child.
+    """
     try:
         proc.wait(timeout=timeout_sec)
     except subprocess.TimeoutExpired:
         proc.terminate()
-    _recording_stderr_drains.pop(id(proc), None)
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            from plugin.scripting.venv_worker import _kill_process_tree
+
+            _kill_process_tree(proc)
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                log.warning("audio recorder pid=%s still alive after kill", proc.pid)
+    drain = _recording_stderr_drains.pop(id(proc), None)
+    if drain is not None:
+        drain.join(timeout=1.0)
+
+
+def _known_path(handoff: RecordingStopHandoff | None, fallback_path: str | None) -> str | None:
+    if handoff is not None:
+        known = handoff.snapshot_path()
+        if known:
+            return known
+    if isinstance(fallback_path, str) and fallback_path:
+        return fallback_path
+    return None
+
+
+def _stop_recording_via_handoff(
+    proc: subprocess.Popen[str],
+    handoff: RecordingStopHandoff,
+    *,
+    timeout_sec: float,
+    fallback_path: str | None,
+) -> str:
+    """Write stop and wait for the monitor. Do not read stdout."""
+    # _stop_recording_via_handoff can return or raise without reaping the child
+    # (wait_for_path timeout, stdin None, or an already-exited timeout).
+    # try/finally _reap_recording_process reaps it and drops the stderr drain
+    # on every exit.
+    try:
+        if proc.poll() is not None:
+            known = _known_path(handoff, fallback_path)
+            if known:
+                return known
+            try:
+                return handoff.wait_for_path(min(timeout_sec, 1.0))
+            except RuntimeError:
+                known = _known_path(handoff, fallback_path)
+                if known:
+                    return known
+                raise RuntimeError("Recording subprocess already exited without a WAV path.") from None
+
+        if proc.stdin is None:
+            known = _known_path(handoff, fallback_path)
+            if known:
+                return known
+            raise RuntimeError("Recording subprocess stdin is not available.")
+        try:
+            write_json_line(proc.stdin, {"command": "stop"})
+        except OSError as exc:
+            known = _known_path(handoff, fallback_path)
+            if known:
+                return known
+            raise RuntimeError(f"Failed to signal recording subprocess: {exc}") from exc
+
+        try:
+            return handoff.wait_for_path(timeout_sec)
+        except RuntimeError:
+            known = _known_path(handoff, fallback_path)
+            if known:
+                return known
+            raise
+    finally:
+        _reap_recording_process(proc, timeout_sec)
 
 
 def stop_recording_process(
@@ -225,121 +279,15 @@ def stop_recording_process(
 ) -> str:
     """Send stop, then return the WAV path.
 
-    When *handoff* is set the stdout monitor is the only reader (see
-    ``monitor_recording_stdout``). This function writes ``{"command":"stop"}``
-    and waits on that handoff. It must not also call ``read_json_line``: that
-    second reader stole ``ok`` and manual Stop Rec never got a path.
+    The stdout monitor is the sole pipe reader. This function delegates
+    to ``_stop_recording_via_handoff`` to signal stop and await the WAV path.
     """
-    if handoff is not None:
-        return _stop_recording_via_handoff(
-            proc,
-            handoff,
-            timeout_sec=timeout_sec,
-            fallback_path=fallback_path,
-        )
-
-    if proc.poll() is not None:
-        if proc.stdout is not None:
-            try:
-                payload = read_json_line(proc.stdout, timeout_sec=0.25)
-            except (subprocess.TimeoutExpired, ValueError, RuntimeError):
-                payload = None
-            if isinstance(payload, dict) and payload.get("status") == "ok":
-                path = payload.get("path")
-                if isinstance(path, str) and path:
-                    return path
-        if fallback_path:
-            return fallback_path
-        raise RuntimeError("Recording subprocess already exited without a WAV path.")
-
-    if proc.stdin is None:
-        raise RuntimeError("Recording subprocess stdin is not available.")
-    try:
-        write_json_line(proc.stdin, {"command": "stop"})
-    except OSError as exc:
-        raise RuntimeError(f"Failed to signal recording subprocess: {exc}") from exc
-
-    payload = _read_json_line(proc, timeout_sec)
-    status = payload.get("status")
-    if status != "ok":
-        message = payload.get("message") if status == "error" else f"Unexpected status {status!r}"
-        raise RuntimeError(str(message or "Audio recording failed to stop."))
-    path = payload.get("path")
-    if not isinstance(path, str) or not path:
-        raise RuntimeError("Recording subprocess did not return a WAV path.")
-
-    _reap_recording_process(proc, timeout_sec)
-    return path
+    if handoff is None:
+        handoff = RecordingStopHandoff()
+    return _stop_recording_via_handoff(proc, handoff, timeout_sec=timeout_sec, fallback_path=fallback_path)
 
 
-def _stop_recording_via_handoff(
-    proc: subprocess.Popen[str],
-    handoff: RecordingStopHandoff,
-    *,
-    timeout_sec: float,
-    fallback_path: str | None,
-) -> str:
-    """Write stop and wait for the monitor. Do not read stdout."""
-
-    def _fallback() -> str | None:
-        if isinstance(fallback_path, str) and fallback_path:
-            return fallback_path
-        return None
-
-    if proc.poll() is not None:
-        # Child already exited (typical after silence auto-stop). The monitor
-        # owns any ``ok`` still in the pipe; use the stashed path or the
-        # auto-stop fallback instead of a competing read.
-        known = handoff.snapshot_path() or _fallback()
-        if known:
-            _reap_recording_process(proc, timeout_sec)
-            return known
-        try:
-            path = handoff.wait_for_path(min(timeout_sec, 1.0))
-        except RuntimeError:
-            known = handoff.snapshot_path() or _fallback()
-            if known:
-                return known
-            raise RuntimeError("Recording subprocess already exited without a WAV path.") from None
-        _reap_recording_process(proc, timeout_sec)
-        return path
-
-    if proc.stdin is None:
-        known = handoff.snapshot_path() or _fallback()
-        if known:
-            return known
-        raise RuntimeError("Recording subprocess stdin is not available.")
-    try:
-        write_json_line(proc.stdin, {"command": "stop"})
-    except OSError as exc:
-        # Auto-stop can close stdin between poll() and the write. The WAV path
-        # is already on the handoff in that case.
-        known = handoff.snapshot_path() or _fallback()
-        if known:
-            _reap_recording_process(proc, timeout_sec)
-            return known
-        raise RuntimeError(f"Failed to signal recording subprocess: {exc}") from exc
-
-    try:
-        path = handoff.wait_for_path(timeout_sec)
-    except RuntimeError:
-        known = handoff.snapshot_path()
-        if known:
-            _reap_recording_process(proc, timeout_sec)
-            return known
-        raise
-    _reap_recording_process(proc, timeout_sec)
-    return path
-
-
-def _dispatch_recording_stdout(
-    payload: dict[str, Any],
-    *,
-    handoff: RecordingStopHandoff | None,
-    on_auto_stopped: Callable[[str], None],
-    on_silence_progress: Callable[[int], None] | None,
-    on_error: Callable[[str], None] | None,
-) -> None:
+def _dispatch_recording_stdout(payload: dict[str, Any], *, handoff: RecordingStopHandoff | None, on_auto_stopped: Callable[[str], None], on_silence_progress: Callable[[int], None] | None, on_error: Callable[[str], None] | None) -> None:
     """Handle one child IPC line. Stash ``ok`` before any callback that may stop.
 
     Callbacks run on this thread. ``note_ok`` / ``note_error`` must happen
@@ -372,14 +320,7 @@ def _dispatch_recording_stdout(
             on_error(message)
 
 
-def monitor_recording_stdout(
-    proc: subprocess.Popen[str],
-    *,
-    on_auto_stopped: Callable[[str], None],
-    on_silence_progress: Callable[[int], None] | None = None,
-    on_error: Callable[[str], None] | None = None,
-    handoff: RecordingStopHandoff | None = None,
-) -> BackgroundHandle:
+def monitor_recording_stdout(proc: subprocess.Popen[str], *, on_auto_stopped: Callable[[str], None], on_silence_progress: Callable[[int], None] | None = None, on_error: Callable[[str], None] | None = None, handoff: RecordingStopHandoff | None = None) -> BackgroundHandle:
     """Sole stdout reader for venv recorder IPC.
 
     Pass the same *handoff* to ``stop_recording_process``. This thread consumes
@@ -400,18 +341,25 @@ def monitor_recording_stdout(
                 if proc.poll() is not None:
                     break
                 continue
-            except (ValueError, RuntimeError) as exc:
+            except ValueError as exc:
+                # Non-JSON lines (ALSA/PortAudio warnings, stray prints) raise
+                # ValueError. Skip and log them so the monitor stays up until 'ok'.
+                log.warning("Skipping non-JSON line from recording subprocess: %s", exc)
+                continue
+            except RuntimeError as exc:
                 log.debug("Recording IPC monitor stopped: %s", exc)
                 break
             if payload is None:
+                # EOF after the child exited without an ok or error frame (a
+                # crash): report it and wake a Stop waiting on the handoff
+                # instead of leaving it to time out.
+                if proc.poll() is not None and handoff is not None and not handoff.snapshot_path() and not handoff.has_error():
+                    message = "Recording subprocess exited unexpectedly."
+                    handoff.note_error(message)
+                    if on_error is not None:
+                        on_error(message)
                 break
-            _dispatch_recording_stdout(
-                payload,
-                handoff=handoff,
-                on_auto_stopped=on_auto_stopped,
-                on_silence_progress=on_silence_progress,
-                on_error=on_error,
-            )
+            _dispatch_recording_stdout(payload, handoff=handoff, on_auto_stopped=on_auto_stopped, on_silence_progress=on_silence_progress, on_error=on_error)
 
     return run_in_background(_reader, name="audio-rec-stdout-monitor", daemon=True, dedicated=True)
 
@@ -426,15 +374,7 @@ def terminate_recording_process(proc: subprocess.Popen[str] | None) -> None:
                 write_json_line(proc.stdin, {"command": "stop"})
         except OSError:
             pass
-        try:
-            proc.terminate()
-            proc.wait(timeout=2)
-        except (subprocess.TimeoutExpired, OSError):
-            try:
-                proc.kill()
-            except OSError:
-                pass
-    _recording_stderr_drains.pop(id(proc), None)
+    _reap_recording_process(proc, 2.0)
 
 
 def make_temp_wav_path() -> str:
@@ -445,9 +385,10 @@ def make_temp_wav_path() -> str:
 
 def check_host_audio_supported() -> bool:
     """Check if host-side audio recording is supported by trying to import sounddevice."""
-    ensure_downloaded_audio_on_path()
+    ensure_native_binaries_on_path()
     try:
         import sounddevice as sd
+
         devices = sd.query_devices()
         return any(d.get("max_input_channels", 0) > 0 for d in devices)
     except Exception:
@@ -459,86 +400,6 @@ def is_audio_recording_supported(ctx: Any) -> bool:
     if is_audio_recording_configured(ctx):
         return True
     return check_host_audio_supported()
-
-
-def run_audio_download(on_display: Callable[[str], None], on_status: Callable[[str], None]) -> bool:
-    """Download the pure-Python audio source zip and the platform-specific compiled binaries from GitHub."""
-    import platform
-    import sysconfig
-    import zipfile
-
-    from plugin.framework.config import user_config_dir
-
-    ucd = user_config_dir()
-    if not ucd:
-        raise RuntimeError("User config directory not resolved.")
-
-    target_dir = os.path.join(ucd, "audio_binaries")
-    os.makedirs(target_dir, exist_ok=True)
-
-    ext_suffix = sysconfig.get_config_var("EXT_SUFFIX")
-    if not ext_suffix:
-        raise RuntimeError("Failed to determine Python EXT_SUFFIX.")
-
-    cffi_name = f"_cffi_backend{ext_suffix}"
-
-    portaudio_name = None
-    if platform.system() == "Darwin":
-        portaudio_name = "libportaudio.dylib"
-    elif platform.system() == "Windows":
-        is_arm = platform.machine().lower() in ("arm64", "aarch64")
-        platform_suffix = "arm64" if is_arm else "64bit"
-        portaudio_name = f"libportaudio{platform_suffix}.dll"
-
-    base_url = _CONTRIB_BASE_URL
-
-    on_display(f"Target directory: {target_dir}\n")
-    on_display(f"Platform: {platform.system()} ({platform.machine()})\n")
-    on_display(f"Python: {platform.python_version()}\n\n")
-
-    # Download pure Python source zip
-    zip_url = f"{base_url}audio_source.zip"
-    zip_dest = os.path.join(target_dir, "audio_source.zip")
-    on_display("Downloading pure Python audio libraries (audio_source.zip)...\n")
-    _download_url_to_file(zip_url, zip_dest, on_status)
-
-    # Extract audio_source.zip
-    on_status("Extracting audio_source.zip...")
-    on_display("Extracting audio_source.zip...\n")
-    try:
-        with zipfile.ZipFile(zip_dest, "r") as zf:
-            zf.extractall(target_dir)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to extract audio_source.zip: {exc}") from exc
-    finally:
-        if os.path.exists(zip_dest):
-            try:
-                os.remove(zip_dest)
-            except Exception:
-                pass
-
-    # Download CFFI binary
-    cffi_url = f"{base_url}audio/{cffi_name}"
-    cffi_dest = os.path.join(target_dir, cffi_name)
-    on_display(f"Downloading binary {cffi_name}...\n")
-    _download_url_to_file(cffi_url, cffi_dest, on_status)
-
-    # Download PortAudio binary if needed
-    if portaudio_name:
-        pa_url = f"{base_url}audio/_sounddevice_data/portaudio-binaries/{portaudio_name}"
-        pa_dest = os.path.join(target_dir, "_sounddevice_data", "portaudio-binaries", portaudio_name)
-        on_display(f"Downloading binary {portaudio_name}...\n")
-        _download_url_to_file(pa_url, pa_dest, on_status)
-
-    # Create _sounddevice_data/__init__.py placeholder
-    init_dest = os.path.join(target_dir, "_sounddevice_data", "__init__.py")
-    os.makedirs(os.path.dirname(init_dest), exist_ok=True)
-    with open(init_dest, "w") as f:
-        f.write("# Placeholder\n")
-
-    run_vec_pack_download(on_display, on_status, include_header=False)
-    on_display("\nAll downloaded files installed successfully!\n")
-    return True
 
 
 def _is_400_input_validation(err: Any) -> bool:
@@ -583,32 +444,50 @@ def try_native_audio_stt_fallback(host: Any, error: Any) -> bool | None:
 
     False: not a native-audio rejection, or STT cannot run. The caller
     continues with overflow and generic API handling.
-    True: the worker was respawned, or empty speech ended the turn.
-    None: transcription threw. Stop the drain without a second API error;
-    ``_transcribe_audio`` already reported it and deleted the WAV.
+    True: a replacement worker was spawned on this drain. The caller must
+    keep draining. The drain treats only True that way.
+    None: stop the drain without a second API error. Transcription threw
+    (``_transcribe_audio`` already reported it and deleted the WAV), or
+    empty speech already ended the turn (banner shown, no worker).
     """
     from plugin.audio.stt_service import uses_local_stt
     from plugin.framework.client.errors import is_audio_unsupported_error
-    from plugin.framework.client.model_fetcher import get_stt_model, get_text_model, set_native_audio_support
-    from plugin.framework.config import get_current_endpoint
+    from plugin.framework.client.model_fetcher import get_stt_model, set_native_audio_support
     from plugin.framework.i18n import _
 
     if not host.audio_wav_path or not (_is_400_input_validation(error) or is_audio_unsupported_error(error)):
         return False
 
-    current_model = get_text_model()
-    current_endpoint = get_current_endpoint()
-    log.warning("Model %s failed native audio, caching and falling back to STT" % current_model)
-    set_native_audio_support(current_model, current_endpoint, supported=False)
+    turn = getattr(host, "_turn", None)
+    # Read text_model and endpoint from the turn captured when the audio was
+    # attached. Re-reading the combobox mid-turn would mark the newly chosen
+    # model unsupported instead of the model the audio was sent to.
+    turn_model = getattr(turn, "text_model", None)
+    turn_endpoint = getattr(turn, "endpoint", None)
+    if not turn_model:
+        from plugin.framework.client.model_fetcher import get_text_model
+        from plugin.framework.config import get_current_endpoint
+
+        turn_model = get_text_model()
+        turn_endpoint = get_current_endpoint()
+    if turn_model:
+        log.warning("Model %s failed native audio, caching and falling back to STT", turn_model)
+        set_native_audio_support(turn_model, turn_endpoint, supported=False)
 
     stt_model = get_stt_model()
     # Local Whisper does not need an endpoint model id. Endpoint STT still does.
     local_stt = uses_local_stt()
-    retry_q = host._active_batched_q or host._active_q
+    retry_q = None
+    if turn is not None and getattr(turn, "alive", False):
+        retry_q = getattr(turn, "batcher", None) or getattr(turn, "queue", None)
     if (stt_model or local_stt) and retry_q is not None and host._active_client is not None:
         host._append_response("\n[Model does not support audio. Falling back to STT...]\n")
         try:
             transcript = host._transcribe_audio(host.audio_wav_path, stt_model)
+            if getattr(host, "_terminal_status", None) == "Stopped":
+                # Stop during fallback STT. None ends the drain. Do not show
+                # "No speech detected" or spawn another chat worker.
+                return None
             wav_path = host.audio_wav_path
             host.audio_wav_path = None
             if wav_path:
@@ -618,22 +497,31 @@ def try_native_audio_stt_fallback(host: Any, error: Any) -> bool | None:
                     log.debug("Failed to remove audio_wav_path after STT fallback: %s", rem_err)
             if not (transcript or "").strip():
                 # G27: empty STT must not spawn a blank chat POST.
+                # The drain keeps running only when on_error returns True,
+                # which means a replacement worker was spawned. Empty speech
+                # spawns nothing and posts no STREAM_DONE, so returning True
+                # left the sidebar on Stop. None means this turn is finished
+                # and a second API error should not be shown.
                 host._append_response("\n" + _("[No speech detected.]") + "\n")
                 host._terminal_status = ""
-                return True
+                return None
             combined = (host._active_query_text + "\n" + transcript).strip() if host._active_query_text else transcript
             if host.session.messages and host.session.messages[-1].get("role") == "user":
-                host.session.messages.pop()
-            host.session.add_user_message(combined)
+                host.session.messages[-1]["content"] = combined
+                if getattr(host.session, "db", None):
+                    rows = host.session.db.get_messages()
+                    # Find the last user row and replace it
+                    for row in reversed(rows):
+                        if row.get("role") == "user":
+                            row["content"] = combined
+                            break
+                    else:
+                        rows.append({"role": "user", "content": combined})
+                    host.session.db.replace_messages(rows)
+            else:
+                host.session.add_user_message(combined)
             host._active_query_text = combined
-            host._spawn_llm_worker(
-                retry_q,
-                host._active_client,
-                host._active_max_tokens,
-                host._active_tools or [],
-                host._sm_state.round_num,
-                query_text=combined,
-            )
+            host._spawn_llm_worker(retry_q, host._active_client, host._active_max_tokens, host._active_tools or [], host._sm_state.round_num, query_text=combined)
             return True
         except Exception:
             log.exception("STT fallback after native-audio error failed")

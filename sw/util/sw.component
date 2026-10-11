@@ -55,6 +55,10 @@
     <service name="com.sun.star.sdb.DataAccessDescriptor"/>
     <service name="com.sun.star.text.MailMerge"/>
   </implementation>
+  <implementation name="com.sun.star.comp.writer.Writer2027Semantic"
+      constructor="sw_writer2027semantic_get_implementation">
+    <service name="com.sun.star.text.Writer2027Semantic"/>
+  </implementation>
   <implementation name="lo.writer.MMCurrentEntryController"
       constructor="lo_writer_MMCurrentEntryController_get_implementation">
     <service name="com.sun.star.frame.ToolbarController"/>

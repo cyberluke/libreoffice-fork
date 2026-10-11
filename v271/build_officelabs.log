@@ -1,0 +1,41 @@
+cd D:/_SATIN_AI/LibreOffice/officelabs && make -j 24 -rs
+[build CUS] officelabs/writeragent-oxt
+[build LOC] top level modules: officelabs
+  Loaded framework config: plugin/plugin.yaml
+Scanning modules in D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\plugin...
+  Module order: main -> core -> agent_backend -> audio -> calc -> mcp -> chatbot -> doc -> draw -> embeddings -> scripting -> vision -> writer
+  Generated D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\build\generated\Addons.xcu
+  Generated D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\plugin\_manifest.py (13 modules)
+  Generated 7 XDL dialog pages in D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\build\generated\Dialogs
+  Generated 1 standalone config dialog(s) in D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\build\generated\Dialogs
+  Generated D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\build\generated\Accelerators.xcu
+  Generated D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\extension\META-INF\manifest.xml (21 entries)
+  Injected 6 tabs into SettingsDialog.xdl
+  Generated description.xml with version 0.8.82
+Done.
+compiled 35 catalog(s)
+  Pruned websockets for CDP client (12 paths)
+Vendored 10 packages into plugin/lib/
+  Pruned websockets for CDP client (12 paths)
+  Release build: stripped Debug menu from Addons.xcu
+  Stripping grammar_obs calls from D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\build/bundle using AST...
+  Done: Stripped grammar_obs calls from bundle.
+  Stripping log.debug/log.info calls (~849+~292 sites / ~105 KB as of 2026-08-10) from D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\build/bundle using AST...
+  Done: Stripped log.debug/log.info calls (~849+~292 sites / ~105 KB as of 2026-08-10) from bundle.
+  Stripping print/pprint calls (~49 sites / ~3 KB as of 2026-08-10; keep-list excluded) from D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\build/bundle using AST...
+  Done: Stripped print/pprint calls (~49 sites / ~3 KB as of 2026-08-10; keep-list excluded) from bundle.
+  Stripping main_thread_only decorators from D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\build/bundle using AST...
+  Done: Stripped main_thread_only decorators from bundle.
+  Stripping @deal.* decorators (~364 sites / ~34 KB as of 2026-08-10) from D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\build/bundle using AST...
+  Done: Stripped @deal.* decorators (~364 sites / ~34 KB as of 2026-08-10) from bundle.
+  Replacing D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\build/bundle\plugin\framework\thread_guard.py with minimal stubs...
+Assembled 871 files in D:\_SATIN_AI\LibreOffice\workdir\CustomTarget\officelabs\writeragent-oxt\src\build/bundle
+Created D:/_SATIN_AI/LibreOffice/workdir/OfficeLabsAI/WriterAgent.oxt with 868 files
+NAI Office extension OXT built: D:/_SATIN_AI/LibreOffice/workdir/OfficeLabsAI/WriterAgent.oxt
+[build CUS] officelabs/writeragent-oxt
+[build OXP] officelabs-ai
+[build BIN] officelabs
+[build MOD] officelabs
+[build BIN] top level modules: officelabs
+[build ALL] top level modules: build-non-l10n-only build-l10n-only
+OFFICELABS_BUILD_EXIT=0

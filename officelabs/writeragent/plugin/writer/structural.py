@@ -22,7 +22,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from plugin.doc.text_helpers import clone_text_range
+from plugin.doc.text_helpers import (
+    get_string_without_tracked_deletions,
+    with_view_cursor_left_body_locked as _with_left_body_locked,
+)
+from plugin.framework.errors import ToolExecutionError
 from plugin.framework.prompts import PARAGRAPH_INDEX_DIRECTIVE
 from plugin.framework.tool import ToolBase, ToolBaseDummy
 
@@ -48,48 +52,6 @@ def _at_page_anchor_page(obj: Any) -> Any | None:
         return obj.getPropertyValue("AnchorPageNo")
     except Exception:
         return None
-
-
-def _with_left_body_locked(doc: Any, vc: Any, scan_fn: Any) -> Any:
-    """Leave nested XText, lock for the scan, unlock before restore.
-
-    Why leave first: lockControllers while the view cursor sits in a table
-    cell makes gotoRange/getPage fail silently (Cneg: tables=[]). jumpToPage
-    is a no-op on the same page (the cell). Unlocked hop to
-    doc.getText().getStart() first.
-
-    Why lock after leave: headed visarea — never-lock C hits Y=37017 on
-    page-2 hops; leave+lock A does not. Flicker needs lock during the
-    multi-object scan.
-
-    Why unlock before restore: gotoRange into a nested cell fails while
-    locked. Save/restore uses clone_text_range (vc.getText()), not body
-    XText. If the leave hop fails, scan unlocked — empty page is valid.
-    """
-    saved = None
-    try:
-        # Nested XText (table cell / frame): body getText() cannot clone this range.
-        saved = clone_text_range(vc)
-    except Exception:
-        pass
-    in_body = False
-    try:
-        vc.gotoRange(doc.getText().getStart(), False)
-        in_body = True
-    except Exception:
-        pass
-    if in_body:
-        doc.lockControllers()
-    try:
-        return scan_fn()
-    finally:
-        if in_body:
-            doc.unlockControllers()
-        if saved is not None:
-            try:
-                vc.gotoRange(saved, False)
-            except Exception:
-                pass
 
 
 class SectionList(ToolWriterStructuralBase):
@@ -151,18 +113,35 @@ class GetPageObjects(ToolBase):
             locator = kwargs.get("locator")
             para_idx = kwargs.get("paragraph")
             if locator:
+                # resolve_locator turns heading_text/section/page and a missing
+                # bookmark into paragraph 0, and this .get defaults a missing
+                # index to 0 as well. The scan would then run on that page and
+                # return status ok. An unresolved locator is a tool error.
+                # Paragraph 0 is still valid when the resolver actually returns it.
                 try:
                     resolved = doc_svc.resolve_locator(doc, locator)
-                    para_idx = resolved.get("para_index", 0)
-                except ValueError as e:
+                    para_idx = resolved.get("para_index")
+                except (ValueError, ToolExecutionError) as e:
                     return self._tool_error(str(e))
+                if para_idx is None:
+                    return self._tool_error("Cannot resolve locator: %s" % locator)
             if para_idx is not None:
-                page = doc_svc.get_page_for_paragraph(doc, para_idx)
+                # What was wrong: get_page_for_paragraph swallowed exceptions and returned
+                # fallback 1, so failures were reported as status: ok, page: 1 (#1422).
+                # Why: page resolution failures must be surfaced as tool errors so callers
+                # and automated controllers do not act on false success.
+                try:
+                    page = doc_svc.get_page_for_paragraph(doc, para_idx)
+                except (ValueError, ToolExecutionError) as e:
+                    return self._tool_error(str(e))
             else:
                 try:
                     page = doc.getCurrentController().getViewCursor().getPage()
                 except Exception:
                     page = 1
+
+        if page is None or page <= 0:
+            return self._tool_error("Cannot resolve page: invalid page %s" % page)
 
         controller = doc.getCurrentController()
         vc = controller.getViewCursor()
@@ -326,8 +305,38 @@ def _resolve_para_index(ctx: ToolContext, kwargs: dict[str, Any]) -> int | None:
         doc_svc = ctx.services.document
         resolved = doc_svc.resolve_locator(ctx.doc, locator)
         para_index = resolved.get("para_index")
+        if para_index is None:
+            raise ToolExecutionError("Cannot resolve locator: %s" % locator)
 
     return para_index
+
+
+def _ensure_writer_tree(ctx: ToolContext) -> Any:
+    """Return ``writer_tree``, attaching it to this context when it was never loaded.
+
+    Looking up only ``ctx.services.get("writer_tree")`` misses on
+    native tool contexts from ``TestingFactory.create_context``.
+    Those register document and events and nothing else, so the tool
+    returns "writer_nav module not loaded" even though those two
+    services are enough to construct the writer tree. TreeService
+    reads ``writer_bookmarks`` in ``__init__``, so that service has
+    to land first. An already-registered tree is left alone
+    (bootstrap path).
+    """
+    services = ctx.services
+    existing = services.get("writer_tree")
+    if existing is not None:
+        return existing
+    if services.get("document") is None or services.get("events") is None:
+        return None
+    if services.get("writer_bookmarks") is None:
+        from plugin.writer.specialized.bookmarks import BookmarkService
+
+        services.register("writer_bookmarks", BookmarkService(services))
+    from plugin.writer.tree import TreeService
+
+    services.register("writer_tree", TreeService(services))
+    return services.get("writer_tree")
 
 
 class CloneHeadingBlock(ToolBaseDummy):
@@ -341,14 +350,18 @@ class CloneHeadingBlock(ToolBaseDummy):
     is_mutation: bool | None = True
 
     def execute(self, ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
-        from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK  # type: ignore
-
-        para_index = _resolve_para_index(ctx, kwargs)
+        try:
+            para_index = _resolve_para_index(ctx, kwargs)
+        except ToolExecutionError as exc:
+            return self._tool_error(str(exc))
         if para_index is None:
             return self._tool_error("Provide locator or paragraph_index.")
 
-        # Use writer_tree service to find the heading node and block size
-        tree_svc = ctx.services.get("writer_tree")
+        from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK  # type: ignore
+
+        # Use writer_tree service to find the heading node and block size.
+        # Load it onto this context when the caller did not bootstrap the writer module.
+        tree_svc = _ensure_writer_tree(ctx)
         if tree_svc is None:
             return self._tool_error("writer_nav module not loaded; cannot resolve heading block.")
 
@@ -376,15 +389,34 @@ class CloneHeadingBlock(ToolBaseDummy):
         if not elements:
             return self._tool_error("Could not collect heading block paragraphs.")
 
-        # Insert duplicates after the last element of the block
+        # Insert duplicates after the last element of the block.
+        # Snapshot text and style first. The cursor is created from the last
+        # block paragraph, and insertControlCharacter(PARAGRAPH_BREAK) at that
+        # paragraph's end retargets its UNO range onto the new paragraph.
+        # Re-reading the live range on the next iteration therefore clones the
+        # paragraph just inserted (the heading) instead of the source body, so
+        # the last paragraph is "My Heading" and the tracked-deletion-stripped
+        # body never gets written. get_string_without_tracked_deletions has to
+        # run before that split so the body clone is the visible text.
+        clones: list[tuple[str, Any]] = []
+        for el in elements:
+            clones.append((
+                get_string_without_tracked_deletions(el),
+                el.getPropertyValue("ParaStyleName"),
+            ))
+
         last = elements[-1]
         cursor = doc_text.createTextCursorByRange(last)
         cursor.gotoEndOfParagraph(False)
 
-        for el in elements:
-            txt = el.getString()
-            sty = el.getPropertyValue("ParaStyleName")
+        for txt, sty in clones:
             doc_text.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+            # This cursor is already in the new paragraph after the break
+            # (insertString fills it). gotoNextParagraph would skip that empty
+            # paragraph and write into whatever follows the block. html_export's
+            # temp-doc cursor stays before the break and must step forward;
+            # this one must not. Collapse to the end after styling so the next
+            # break is after the clone, not inside it.
             doc_text.insertString(cursor, txt, False)
             cursor.gotoStartOfParagraph(False)
             cursor.gotoEndOfParagraph(True)

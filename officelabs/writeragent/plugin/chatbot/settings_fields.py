@@ -9,9 +9,15 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from plugin.framework.config import get_config, set_config
+from plugin.chatbot.dialogs import (
+    get_checkbox_state,
+    get_control_text,
+    is_checkbox_control,
+    set_checkbox_state,
+    set_control_text,
+)
+from plugin.framework.config import get_config, set_configs
 from plugin.framework.config_schema import as_bool
-from plugin.framework.event_bus import global_event_bus
 from plugin.framework.i18n import _
 
 log = logging.getLogger(__name__)
@@ -147,13 +153,181 @@ def build_module_field_specs(
     return field_specs
 
 
+def _settings_option_labels(field: dict[str, Any]) -> tuple[str, ...]:
+    opts = field.get("options")
+    if not isinstance(opts, list):
+        return ()
+    labels: list[str] = []
+    for opt in opts:
+        if isinstance(opt, dict):
+            raw = opt.get("label", opt.get("value", ""))
+            labels.append(_(str(raw)))
+        elif opt is not None:
+            labels.append(_(str(opt)))
+    return tuple(labels)
+
+
+def populate_settings_control(ctrl: Any, field: dict[str, Any]) -> None:
+    """Fill one settings control from a field spec.
+
+    Checkboxes use state 0/1. int/float specs use ``setValue`` when the control
+    has it: a numeric edit also inherits ``setText``, but the live value is
+    ``setValue``. Option lists are ``StringItemList`` on the model.
+    """
+    if not ctrl:
+        return
+    field_type = str(field.get("type") or "")
+    if is_checkbox_control(ctrl):
+        set_checkbox_state(ctrl, 1 if as_bool(field.get("value")) else 0)
+        return
+    if "options" in field:
+        try:
+            labels = _settings_option_labels(field)
+            model = ctrl.getModel() if hasattr(ctrl, "getModel") else None
+            if labels and model is not None and hasattr(model, "StringItemList"):
+                model.StringItemList = labels
+        except Exception:
+            log.debug("set options failed for %s", field.get("name"), exc_info=True)
+    if field_type in ("int", "float") and hasattr(ctrl, "setValue"):
+        try:
+            ctrl.setValue(float(field["value"]))
+            return
+        except Exception:
+            log.debug("setValue failed for %s", field.get("name"), exc_info=True)
+    if hasattr(ctrl, "setText"):
+        ctrl.setText(str(field.get("value", "")))
+        return
+    set_control_text(ctrl, str(field.get("value", "")))
+
+
+def read_settings_control(ctrl: Any, field: dict[str, Any] | None = None) -> Any:
+    """Read one settings control. ``None`` means the control is missing.
+
+    Missing controls are skipped (callers must not persist ``""``).
+    Checkboxes are bool (WriterAgent). LibrePy maps that to ``\"true\"`` /
+    ``\"false\"``. int/float specs prefer ``getValue`` when the control has
+    it. ``getText`` on a spin button is the stale UnoControlEdit caption
+    and overwrites the live value.
+    """
+    if not ctrl:
+        return None
+    if is_checkbox_control(ctrl):
+        return get_checkbox_state(ctrl) == 1
+    field_type = str((field or {}).get("type") or "")
+    if field_type in ("int", "float") and hasattr(ctrl, "getValue"):
+        try:
+            return ctrl.getValue()
+        except Exception:
+            log.debug("getValue failed for %s", (field or {}).get("name"), exc_info=True)
+    if hasattr(ctrl, "getText"):
+        return ctrl.getText()
+    return get_control_text(ctrl)
+
+
+def stored_select_value(val: Any, options: Any) -> Any:
+    """Map a combo's visible text back to the option value.
+
+    Map the visible caption back to the option value. ``getText()`` is
+    the translated label; matching only the English spec label leaves
+    "Shared kernel" and Dutch "Uit" as captions instead of ``shared`` /
+    ``off``. A plain string option is its own id; the combo shows
+    ``_(that string)``.
+    """
+    if not isinstance(options, list):
+        return val
+    for opt in options:
+        if isinstance(opt, dict):
+            label = opt.get("label")
+            value = opt.get("value", val)
+            if val == value or val == label:
+                return value
+            if isinstance(label, str) and label and val == _(label):
+                return value
+            continue
+        if opt is None:
+            continue
+        raw = str(opt)
+        if val == raw or (raw and val == _(raw)):
+            return raw
+    return val
+
+
+def changed_config_values(pending: dict[str, Any], read: Any) -> dict[str, Any]:
+    """Keys whose value is not already on disk.
+
+    A value equal to the stored value, or to the schema default when the
+    key is omitted, is not a change. The default itself must not become a
+    write. ``read`` is ``get_config`` from the caller so a test patch of
+    that name is the disk this compare sees. This does not touch the config
+    lock or the per-key writer; the caller makes one ``set_configs`` of
+    what remains.
+    """
+    from plugin.framework.config_schema import coerce_config_value
+    from plugin.framework.errors import ConfigError, ConfigValidationError
+
+    changed: dict[str, Any] = {}
+    for key, value in pending.items():
+        try:
+            current = read(key)
+        except ConfigError:
+            changed[key] = value
+            continue
+        if _config_assignment_matches(key, value, current, coerce_config_value, ConfigError, ConfigValidationError):
+            continue
+        changed[key] = value
+    return changed
+
+
+def _config_assignment_matches(
+    key: str,
+    proposed: Any,
+    current: Any,
+    coerce_config_value: Any,
+    config_error: type[BaseException],
+    validation_error: type[BaseException],
+) -> bool:
+    """True when *proposed* would not change *current* after the same coerce OK uses.
+
+    An invalid value does not match, so ``set_configs`` still raises it.
+    Endpoint text may be a preset label; both sides go through the selector
+    normalizer before compare. Dict values (the API-key map) compare equal
+    as maps, not as rewritten blobs.
+    """
+    if key == "endpoint":
+        # config_ui_helpers is WriterAgent-only. LibrePy ships this module
+        # and must still import when that helper is absent.
+        try:
+            from plugin.chatbot.config_ui_helpers import endpoint_from_selector_text
+        except (ImportError, ModuleNotFoundError):
+            return str(proposed or "").strip() == str(current or "").strip()
+        return endpoint_from_selector_text(str(proposed or "")) == endpoint_from_selector_text(str(current or ""))
+    if isinstance(proposed, dict) or isinstance(current, dict):
+        return proposed == current
+    try:
+        coerced = coerce_config_value(key, proposed, fallback_value=current, strict=True)
+    except (config_error, validation_error):
+        return False
+    return coerced == current
+
+
 def apply_field_specs_result(ctx: Any, result: dict[str, Any], field_specs: list[dict[str, Any]]) -> None:
-    """Persist dialog values using each spec's ``config_key`` (or name with ``__`` → ``.``)."""
+    """Persist dialog values using each spec's ``config_key`` (or name with ``__`` → ``.``).
+
+    ``set_configs`` writes once and emits only when something changed, so
+    this function must not emit. Per-key ``set_config`` rewrites the file
+    and emits ``config:changed`` again, including when every value already
+    matched.
+    """
+    del ctx  # set_configs emits with the main-thread ctx; a second emit refreshed the sidebar.
     by_name = {f["name"]: f for f in field_specs}
+    pending: dict[str, Any] = {}
     for key, val in result.items():
         spec = by_name.get(key)
         if spec is None:
             continue
         save_key = str(spec.get("config_key") or key.replace("__", "."))
-        set_config(save_key, val)
-    global_event_bus.emit("config:changed", ctx=ctx)
+        pending[save_key] = stored_select_value(val, spec.get("options"))
+    # One write, and only keys that differ from disk or from an omitted default.
+    pending = changed_config_values(pending, get_config)
+    if pending:
+        set_configs(pending)

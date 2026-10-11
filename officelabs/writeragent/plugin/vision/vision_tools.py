@@ -9,9 +9,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from plugin.calc.base import ToolCalcVisionBase
-from plugin.framework.errors import ToolExecutionError
+from plugin.framework.errors import DocumentDisposedError, ToolExecutionError
 from plugin.framework.i18n import _
-from plugin.framework.queue_executor import execute_on_main_thread
 from plugin.vision.vision_runner import run_and_insert_vision_for_selection
 
 if TYPE_CHECKING:
@@ -49,7 +48,8 @@ class ExtractStructureFromImage(ToolCalcVisionBase):
 
     def execute(self, ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
         # Sub-agent / async tools run off the UI thread; use ctx.doc_type (no UNO) here.
-        # run_and_insert_vision_for_selection is marshaled to the main thread below.
+        # Do not marshal this whole call: venv OCR can take ~120s and would freeze the UI.
+        # run_and_insert_vision_for_selection marshals only the UNO export/insert parts.
         if ctx.doc_type not in _VISION_DOC_TYPES:
             return self._tool_error(_("Vision OCR requires a Writer or Calc document."), code="VISION_ERROR")
 
@@ -61,11 +61,19 @@ class ExtractStructureFromImage(ToolCalcVisionBase):
         if image_name:
             params_dict["image_name"] = image_name
 
-        def _run() -> dict[str, Any]:
-            return run_and_insert_vision_for_selection(ctx.ctx, doc, helper="extract_structure", params=params_dict or None, insert_into_document=insert_into_document)
+        stop_checker = getattr(ctx, "stop_checker", None)
 
         try:
-            result = execute_on_main_thread(_run)
+            result = run_and_insert_vision_for_selection(
+                ctx.ctx,
+                doc,
+                helper="extract_structure",
+                params=params_dict or None,
+                insert_into_document=insert_into_document,
+                stop_checker=stop_checker,
+            )
+        except DocumentDisposedError:
+            raise
         except ToolExecutionError as exc:
             return self._tool_error(str(exc), code=getattr(exc, "code", "VISION_ERROR"))
         except Exception as exc:
@@ -74,16 +82,30 @@ class ExtractStructureFromImage(ToolCalcVisionBase):
         if result.get("status") == "error":
             code = str(result.get("code") or "VISION_ERROR")
             message = str(result.get("message") or "Vision helper failed.")
-            return self._tool_error(message, code=code, vision_result=result)
+            # Partial OCR can insert some images then fail. Those fields used to
+            # live only inside vision_result, so callers reading details missed
+            # which image failed and what already landed. Lift them onto details.
+            partial_fields: dict[str, Any] = {}
+            if result.get("partial"):
+                partial_fields = {
+                    "partial": True,
+                    "images_processed": result.get("images_processed"),
+                    "image_names": result.get("image_names"),
+                    "failed_image": result.get("failed_image"),
+                    "inserted": bool(result.get("inserted")),
+                }
+            return self._tool_error(message, code=code, vision_result=result, **partial_fields)
 
-        out = {
+        # Default images_processed to 0 only when the key is missing.
+        # `or 1` turns a real 0 into 1.
+        out: dict[str, Any] = {
             "status": "ok",
             "helper": "extract_structure",
             "full_text": str(result.get("full_text") or ""),
             "metrics": result.get("metrics") if isinstance(result.get("metrics"), dict) else {},
             "warnings": result.get("warnings") if isinstance(result.get("warnings"), list) else [],
             "inserted": bool(result.get("inserted")),
-            "images_processed": int(result.get("images_processed") or 1),
+            "images_processed": int(result.get("images_processed", 0)),
             "message": str(result.get("message") or _("OCR complete.")),
         }
         names = result.get("image_names")

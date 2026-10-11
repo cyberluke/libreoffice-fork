@@ -45,8 +45,8 @@ ensure_plugin_on_path(
 
 # Inject downloaded binaries path (audio + serialization)
 try:
-    from plugin.scripting.native_binaries import ensure_downloaded_audio_on_path
-    ensure_downloaded_audio_on_path()
+    from plugin.scripting.native_binaries import ensure_native_binaries_on_path
+    ensure_native_binaries_on_path()
 except Exception:
     pass
 
@@ -81,6 +81,7 @@ from plugin.framework.uno_context import (
     get_extension_url,
     get_ctx,
     menu_icon_asset_url,
+    set_fallback_ctx,
     set_package_extension_id,
 )
 from plugin.framework.thread_guard import background
@@ -162,6 +163,10 @@ def bootstrap(ctx: Any | None = None) -> None:
         if ctx is not None:
             from plugin.framework.queue_executor import default_executor
 
+            # get_ctx() prefers this over uno.getComponentContext(). LibrePy
+            # already pins it; without it WriterAgent lookups can hit a
+            # different context (no VCL, wrong package, Desktop segfault).
+            set_fallback_ctx(ctx)
             default_executor.set_context(ctx)
 
         set_package_extension_id(EXTENSION_ID)
@@ -196,11 +201,16 @@ def bootstrap(ctx: Any | None = None) -> None:
 
         _services.register("main_thread", default_executor)
 
-        # Wire config service to events
+        # Wire config service to events, then load module.yaml public flags.
+        # initialize() fills _manifest. set_events alone leaves it empty, so
+        # a cross-module read of a key marked public in module.yaml is denied
+        # as private. initialize() does not start a second service lifecycle.
         config_svc = _services.get("config")
         events_svc = _services.get("events")
         if config_svc and events_svc:
             config_svc.set_events(events_svc)
+        if config_svc is not None:
+            config_svc.initialize(ctx)
 
         # Initialize i18n
         from plugin.framework.i18n import init_i18n
@@ -445,9 +455,6 @@ def _run_test_suite(test_func: Any, doc_checker: Callable[[Any], bool], test_nam
         msgbox(ctx, test_name, _("Tests failed to run: {0}").format(str(e)))
 
 
-_NOTEBOOK_RUN_CELL_PREFIX = "notebook.run_cell."
-
-
 def _dispatch_command(command: str) -> None:
     """Dispatch command using handler registry, falling back to module actions."""
     bootstrap()
@@ -461,12 +468,6 @@ def _dispatch_command(command: str) -> None:
             logging.getLogger("writeragent.main").debug("debug_sidebar omitted (release)")
         except Exception:
             logging.getLogger("writeragent.main").exception("chatbot.debug_sidebar failed")
-        return
-    if command.startswith(_NOTEBOOK_RUN_CELL_PREFIX):
-        from plugin.framework.uno_context import get_ctx
-        from plugin.notebook.notebook_runner import run_cell_by_hex
-
-        run_cell_by_hex(get_ctx(), command[len(_NOTEBOOK_RUN_CELL_PREFIX) :])
         return
     # First try the action registry
     handler = get_action_handler(command)
@@ -547,14 +548,11 @@ def get_menu_text(command: str) -> str | None:
         "main.report_bug": _("Report bug..."),
         "mcp.toggle_server": _("Toggle MCP Server"),
         "mcp.server_status": _("MCP Server Status"),
-        # What was wrong: JA menus kept the English Addons.xcu titles for
-        # these two items even though the catalogs had msgstrs.
-        # How: addStatusListener pushes get_menu_text() via FeatureStateEvent.
-        # Returning None leaves the en-US xcu string (Vision OCR was absent
-        # from this map). Debug was a raw English literal, so the event
-        # overwrote the catalog with "Debug".
-        # Why this works: the same _("literal") map already translates the
-        # other WriterAgent menu titles.
+        # addStatusListener pushes get_menu_text() via FeatureStateEvent.
+        # Returning None leaves the en-US Addons.xcu string (Vision OCR was
+        # absent from this map). A raw English literal overwrites the catalog
+        # ("Debug"). Use the same _("literal") map as the other WriterAgent
+        # menu titles so the JA msgstrs apply.
         "vision.open_settings": _("Vision OCR Settings..."),
         "main.NoOp": _("Debug"),
         "main.RunFormatTests": _("Run format tests"),
@@ -733,8 +731,9 @@ def _update_menu_icons_impl() -> None:
             resolve_menu_icon_pixel_size,
         )
 
-        # One-shot DPI probe → pixel size (16 on HiDPI, larger on 1x).
-        # Warm StyleSettings host so startup race does not stick on hidpi-safe 16.
+        # One-shot DPI probe → pixel size (16 at 1×, 32 on HiDPI).
+        # A probe miss caches 32 until a real VCL DPI reading. Warm
+        # StyleSettings so startup does not stick on that weak reading.
         try:
             from plugin.framework.appearance import get_style_window
 
@@ -991,7 +990,7 @@ class DispatchHandler(unohelper.Base, XDispatch, XDispatchProvider, XInitializat
             msgbox_with_report(
                 self.ctx,
                 _("Dispatch Error"),
-                _(str(e)),
+                str(e),
                 box_type=3,
                 reportable=True,
                 report_title="Dispatch Error",

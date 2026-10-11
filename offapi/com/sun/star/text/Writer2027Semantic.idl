@@ -1,0 +1,27 @@
+/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/*
+ * This file is part of the LibreOffice project.
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
+module com {  module sun {  module star {  module text {
+
+/** Bridge service for the canonical Writer 2027 semantic document layer.
+
+    Instantiate with the component context and query
+    ::com::sun::star::text::XWriter2027Semantic. Resolves the owning Writer
+    frame/document from the extension-provided frame; all type-system, kit,
+    editorial-block, story-view and preflight operations run through the
+    canonical writer 2027 implementation.
+
+    @since LibreOffice 8.4
+ */
+published service Writer2027Semantic : XWriter2027Semantic;
+
+
+}; }; }; };
+
+/* vim:set shiftwidth=4 softtabstop=4 expandtab: */

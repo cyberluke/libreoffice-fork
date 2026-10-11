@@ -79,7 +79,7 @@ def _odf_locale_from_meta_root(root: Element) -> str | None:
 def _read_zip_member(zf: zipfile.ZipFile, member: str) -> Element | None:
     try:
         return ET.fromstring(zf.read(member))
-    except (KeyError, ET.ParseError, OSError):
+    except Exception:
         return None
 
 
@@ -482,25 +482,30 @@ def _odf_paragraph_runs_from_roots(
     return paragraphs
 
 
-def extract_odf_paragraph_runs(path: str) -> list[tuple[str, list[LocaleTextRun]]]:
-    """Extract locale-tagged runs per paragraph from Writer ODF on disk."""
+def extract_odf_paragraph_runs(path: str) -> list[tuple[str, list[LocaleTextRun]]] | None:
+    """Extract locale-tagged runs per paragraph from Writer ODF on disk.
+
+    Returns None on read, zip, or XML parse failure so callers can skip indexing the file.
+    """
     ext = os.path.splitext(path)[1].lower()
     doc_default = resolve_document_locale_bcp47(path)
     try:
         if ext == ".fodt":
             root = ET.parse(path).getroot()
             if root is None:
-                return []
+                return None
             return _odf_paragraph_runs_from_roots(root, styles_root=root, doc_default=doc_default)
         with zipfile.ZipFile(path) as zf:
             content_root = _read_zip_member(zf, "content.xml")
             styles_root = _read_zip_member(zf, "styles.xml")
             if content_root is None:
-                return []
+                return None
             return _odf_paragraph_runs_from_roots(content_root, styles_root=styles_root, doc_default=doc_default)
     except (OSError, zipfile.BadZipFile, ET.ParseError):
+        # Return None when an ODF file cannot be read so the caller skips it.
+        # [] is a successful empty document (0 passages).
         log.debug("extract_odf_paragraph_runs failed for %s", path, exc_info=True)
-    return []
+        return None
 
 
 def _docx_lang_from_r_pr(r_pr: Element | None) -> str | None:

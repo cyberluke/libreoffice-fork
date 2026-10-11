@@ -556,17 +556,6 @@ case FN_WRITER2027_STORY:
         bApplyPageWidthZoom = true;
         break;
 
-    case FN_WRITER2027_INSERT_BLOCK:
-        // Insert Block gallery is now a UNO toolbar controller
-        // (Writer2027InsertBlockToolBoxControl) anchored under the button; the
-        // app never dispatches this slot for the notebookbar button.
-        break;
-
-    case FN_WRITER2027_DOCUMENT_KIT:
-        // Document Kit picker is now a UNO toolbar controller
-        // (Writer2027DocumentKitToolBoxControl) anchored under the button.
-        break;
-
     case FN_WRITER2027_PUBLISH_WEB:
         // Publish as Web: read-only export to a responsive semantic web
         // publication. Never mutates the document.

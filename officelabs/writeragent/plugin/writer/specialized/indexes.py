@@ -15,16 +15,23 @@ The reference table is ``indexes_create(kind="bibliography")``. After cite
 changes, ``indexes_update_all`` refreshes that table. One TOC row is
 ``indexes_refresh_toc_entry`` / ``indexes_insert_toc_entry`` /
 ``indexes_delete_toc_entry``. Those three do not call ``update()`` and do not
-edit neighboring rows. ``indexes_update_all`` still rebuilds a TOC and drops
-customized formatting. Outline ``HyperLinkURL`` on refresh goes through
+edit neighboring rows. ``indexes_list_toc_entries`` reads the same index
+paragraphs (visible text, Contents N level, HyperLinkURL) and also does not
+call ``update()`` or export the document. ``indexes_update_all`` still rebuilds
+a TOC and drops customized formatting. Outline ``HyperLinkURL`` on refresh goes through
 ``hyperlink_fixup``, which skips a title-only URL rewrite when the whole-span
-write already set it. Insert sets ``#…|outline`` on the new row only.
+write already set it. Insert sets ``#…|outline`` or ``#Name|table`` on the new
+row only. A table URL is the text table's name, not the visible title, so
+refresh does not rewrite it.
 """
 
+import logging
 from typing import Any, Callable, cast
 
 from ..specialized_base import ToolWriterIndexBase
 from ..target_resolver import resolve_target_cursor
+
+log = logging.getLogger("writeragent.writer.specialized.indexes")
 
 # Creation service → indexes_create kind. Prefer XDocumentIndex.getServiceName()
 # when listing: bibliography tables implement SwXDocumentIndex (same as
@@ -108,6 +115,8 @@ _BIB_FIELD_ALIASES = {
 }
 
 # BibliographyDataType constants (book=1 matches Insert → Bibliographic Entry).
+_BIB_TYPE_MAX = 21
+
 _BIB_TYPE_NAMES = {
     "article": 0,
     "book": 1,
@@ -126,6 +135,11 @@ _BIB_TYPE_NAMES = {
     "unpublished": 14,
     "email": 15,
     "www": 16,
+    "custom1": 17,
+    "custom2": 18,
+    "custom3": 19,
+    "custom4": 20,
+    "custom5": 21,
 }
 
 _BIB_CITE_SERVICE = "com.sun.star.text.textfield.Bibliography"
@@ -169,8 +183,11 @@ def resolve_bibliographic_type(value: Any) -> int | None:
     text = str(value).strip()
     if not text:
         return None
-    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
-        return int(text)
+    if text.isascii() and (text.isdigit() or (text.startswith("-") and text[1:].isdigit())):
+        val = int(text)
+        if 0 <= val <= _BIB_TYPE_MAX:
+            return val
+        return None
     return _BIB_TYPE_NAMES.get(text.lower().replace(" ", "").replace("-", ""))
 
 
@@ -435,7 +452,11 @@ def toc_match(doc: Any, anchor: Any, old_content: str, occurrence: Any) -> tuple
 
     ranges = search_mod.find_all_ranges(doc, old_content) or []
     text = anchor.getText()
-    inside = [found for found in ranges if _contained(text, anchor, found)]
+    inside = [
+        found for found in ranges
+        if _contained(text, anchor, found)
+        and _para_style_name(_paragraph_element(found)) != "Contents Heading"
+    ]
     pick = 0 if occurrence is None else occurrence
     if not inside or pick >= len(inside):
         if occurrence not in (None, 0):
@@ -513,7 +534,9 @@ def _commit_toc_mutation(
                 if titles and titles[0] == undo_title:
                     mgr.undo()
             except Exception:
-                pass
+                log.exception("TOC edit rollback failed")
+                if error is not None:
+                    error = tool._tool_error(fallback_message)
     if error is not None or not applied:
         if error is not None:
             return error
@@ -599,6 +622,93 @@ def _entry_text(para: Any) -> str:
     except Exception:
         return ""
     return value if isinstance(value, str) else ""
+
+
+def _outline_level(style: str) -> int | None:
+    """1-10 from a ``Contents N`` paragraph style, else None."""
+    if not _is_contents_level_style(style):
+        return None
+    return int(style[len(_CONTENTS_LEVEL_PREFIX):])
+
+
+def _paragraph_hyperlink(para: Any) -> str:
+    """Internal hyperlink on this TOC row.
+
+    Generated entries store ``HyperLinkURL`` on the text portions (often
+    ``#…|outline`` or a ``#__RefHeading___Toc…`` bookmark), not as a separate
+    field. An outline URL wins over another fragment; a fragment wins over an
+    external URL. This read does not export the paragraph.
+    """
+    outline = ""
+    internal = ""
+    other = ""
+    try:
+        portions = para.createEnumeration()
+    except Exception:
+        portions = None
+    if portions is not None:
+        while _enum_has_more(portions):
+            portion = portions.nextElement()
+            try:
+                url = portion.getPropertyValue("HyperLinkURL") or ""
+            except Exception:
+                url = ""
+            if not isinstance(url, str) or not url:
+                continue
+            if "|outline" in url:
+                outline = url
+                break
+            if url.startswith("#") and not internal:
+                internal = url
+            elif not other:
+                other = url
+    if outline or internal or other:
+        return outline or internal or other
+    try:
+        url = para.getPropertyValue("HyperLinkURL") or ""
+    except Exception:
+        return ""
+    return url if isinstance(url, str) else ""
+
+
+def toc_entry_rows(anchor: Any) -> list[dict[str, Any]]:
+    """Visible text, outline level, and hyperlink for each TOC row.
+
+    Walks paragraphs inside the index anchor, the same read insert and delete
+    already use. Does not call ``ContentIndex.update()`` and does not export
+    the document. The ``Contents Heading`` title is not a row.
+    """
+    rows: list[dict[str, Any]] = []
+    for para in _paragraphs_in_anchor(anchor):
+        style = _para_style_name(para)
+        if style == "Contents Heading":
+            continue
+        text = _entry_text(para)
+        if not text.strip():
+            continue
+        rows.append({
+            "text": text,
+            "level": _outline_level(style),
+            "hyperlink_url": _paragraph_hyperlink(para),
+        })
+    return rows
+
+
+def _single_toc_position(doc: Any) -> int | None:
+    """Document-index position of the only TOC. None when it cannot be named."""
+    try:
+        indexes = doc.getDocumentIndexes()
+        count = indexes.getCount()
+    except Exception:
+        return None
+    found = None
+    for i in range(count):
+        if index_kind_from_uno(indexes.getByIndex(i)) != "toc":
+            continue
+        if found is not None:
+            return found
+        found = i
+    return found
 
 
 def _compose_toc_line(content: str, page: str | None, sibling_text: str) -> tuple[str, str, bool]:
@@ -777,7 +887,7 @@ def _insert_toc_paragraph(
     return lived if isinstance(lived, str) else new_text
 
 
-def _remove_paragraph(text: Any, para: Any) -> None:
+def _remove_paragraph(text: Any, para: Any, anchor: Any = None) -> None:
     """Delete *para* including its paragraph break, leaving the next row intact.
 
     Select from this paragraph start to the next paragraph start so the range
@@ -791,10 +901,11 @@ def _remove_paragraph(text: Any, para: Any) -> None:
     sel.gotoStartOfParagraph(False)
     nxt = text.createTextCursorByRange(sel.getStart())
     if nxt.gotoNextParagraph(False) is True:
-        nxt.gotoStartOfParagraph(False)
-        sel.gotoRange(nxt.getStart(), True)
-        sel.setString("")
-        return
+        if anchor is None or _contained(text, anchor, nxt):
+            nxt.gotoStartOfParagraph(False)
+            sel.gotoRange(nxt.getStart(), True)
+            sel.setString("")
+            return
     prev = text.createTextCursorByRange(sel.getStart())
     if prev.gotoPreviousParagraph(False) is True:
         prev.gotoEndOfParagraph(False)
@@ -842,6 +953,8 @@ class IndexesRefreshTocEntry(ToolWriterIndexBase):
             return self._tool_error("old_content must be a non-empty string.", code="INVALID_PARAM")
         if not isinstance(content, str):
             return self._tool_error("content must be plain text.", code="INVALID_PARAM")
+        if "\n" in content or "\r" in content:
+            content = content.replace("\n", " ").replace("\r", " ")
         from ..format import content_has_markup
         if content_has_markup(content):
             return self._tool_error(
@@ -853,6 +966,8 @@ class IndexesRefreshTocEntry(ToolWriterIndexBase):
             if not isinstance(raw_url, str) or not raw_url.strip():
                 return self._tool_error("hyperlink_url must be a non-empty string.", code="INVALID_PARAM")
             override = raw_url
+            if "\n" in override or "\r" in override:
+                override = override.replace("\n", "").replace("\r", "")
         occurrence = kwargs.get("occurrence")
         if occurrence is not None and (isinstance(occurrence, bool) or not isinstance(occurrence, int) or occurrence < 0):
             return self._tool_error("occurrence must be a non-negative integer.", code="INVALID_PARAM")
@@ -1017,7 +1132,7 @@ class IndexesDeleteTocEntry(ToolWriterIndexBase):
             return preview
 
         def mutate() -> dict[str, Any] | None:
-            _remove_paragraph(anchor.getText(), para)
+            _remove_paragraph(anchor.getText(), para, anchor)
             return None
 
         error = _commit_toc_mutation(
@@ -1042,10 +1157,11 @@ class IndexesInsertTocEntry(ToolWriterIndexBase):
         "Insert one new row into an existing table of contents. "
         "Does not call index update(), and does not modify neighboring entries. "
         "Clones the sibling row's Contents N paragraph style, direct character formatting, "
-        "and tab stops. Set hyperlink_url to an outline target (#…|outline). "
+        "and tab stops. Set hyperlink_url to an outline target (#…|outline) or a text-table "
+        "target (#Name|table). "
         "Page numbers follow the sibling row: plain text after a tab (generated TOC rows "
-        "store digits in the entry, not a page field). Pass page to set that text; omit it "
-        "to copy the sibling's page text. "
+        "store digits in the entry, not a page field). Pass page to set that text when the "
+        "new row is not on the sibling's page; omit it to copy the sibling's page text. "
         "position is before, after (both need old_content), or end (after the last TOC entry). "
         "indexes_update_all is the full rebuild and drops customized TOC formatting. "
         "The agent decides what is missing; this tool does not sync the outline."
@@ -1055,7 +1171,7 @@ class IndexesInsertTocEntry(ToolWriterIndexBase):
         "properties": {
             "content": {"type": "string", "description": "Plain text of the new entry title. May be the full line (Title followed by a tab and the page) when page is omitted."},
             "page": {"type": "string", "description": "Plain page text written after a tab. Omit to copy the sibling row's page text. Not a page-number field."},
-            "hyperlink_url": {"type": "string", "description": "Outline target (#…|outline) for the new row only. Omit to leave the new row unlinked."},
+            "hyperlink_url": {"type": "string", "description": "Outline target (#…|outline) or text-table target (#Name|table) for the new row only. Omit to leave the new row unlinked."},
             "position": {"type": "string", "enum": ["before", "after", "end"], "description": "Where to insert the one row. before/after need old_content. end appends after the last TOC entry. Default end."},
             "old_content": {"type": "string", "description": "Plain text of the existing TOC entry to insert before or after. Not used when position is end."},
             "level": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Contents N paragraph style (1-10). Omit to clone the sibling entry's style."},
@@ -1073,6 +1189,8 @@ class IndexesInsertTocEntry(ToolWriterIndexBase):
         if not isinstance(content, str) or not content.strip():
             return self._tool_error("content must be a non-empty string.", code="INVALID_PARAM")
         content = content.strip()
+        if "\n" in content or "\r" in content:
+            content = content.replace("\n", " ").replace("\r", " ")
         if _reject_markup(content):
             return self._tool_error(
                 "indexes_insert_toc_entry takes plain text so the new entry's formatting can be cloned.",
@@ -1080,6 +1198,8 @@ class IndexesInsertTocEntry(ToolWriterIndexBase):
         page, page_error = self._page_text(kwargs.get("page"))
         if page_error:
             return self._tool_error(page_error, code="INVALID_PARAM")
+        if page is not None and ("\n" in page or "\r" in page):
+            page = page.replace("\n", " ").replace("\r", " ")
         if page is not None and _reject_markup(page):
             return self._tool_error("page must be plain text.", code="INVALID_PARAM")
         if page is not None and "\t" in content:
@@ -1089,6 +1209,8 @@ class IndexesInsertTocEntry(ToolWriterIndexBase):
         url, url_error = self._outline_url(kwargs.get("hyperlink_url"))
         if url_error:
             return self._tool_error(url_error, code="INVALID_PARAM")
+        if url is not None and ("\n" in url or "\r" in url):
+            url = url.replace("\n", "").replace("\r", "")
         position = kwargs.get("position") or "end"
         if position not in ("before", "after", "end"):
             return self._tool_error("position must be before, after, or end.", code="INVALID_PARAM")
@@ -1206,8 +1328,14 @@ class IndexesInsertTocEntry(ToolWriterIndexBase):
         if not isinstance(raw, str) or not raw.strip():
             return None, "hyperlink_url must be a non-empty string."
         url = raw.strip()
-        if not url.startswith("#") or "|outline" not in url:
-            return None, "hyperlink_url must be an outline target (#…|outline)."
+        # Discussion #1426: a TOC row may jump to a text table. LibreOffice stores
+        # that as #Name|table. The table:Name locator is a different address, and
+        # this string is not an outline title, so it is stored as given.
+        if not url.startswith("#") or ("|outline" not in url and "|table" not in url):
+            return None, (
+                "hyperlink_url must be an outline target (#…|outline) "
+                "or a text-table target (#Name|table)."
+            )
         return url, None
 
     def _level(self, raw: Any) -> tuple[int | None, str | None]:
@@ -1247,7 +1375,8 @@ class IndexesList(ToolWriterIndexBase):
     description: str = (
         "List document indexes (TOC, alphabetical, user, bibliography tables). "
         "type matches indexes_create kind (bibliography via getServiceName). "
-        "For in-flow cites use indexes_list_cites, not this tool."
+        "For in-flow cites use indexes_list_cites, not this tool. "
+        "For TOC row text, outline level, and the internal hyperlink use indexes_list_toc_entries."
     )
     parameters: dict[str, Any] | None = {"type": "object", "properties": {}, "required": []}
     is_mutation: bool | None = False
@@ -1270,6 +1399,65 @@ class IndexesList(ToolWriterIndexBase):
                 "type": index_kind_from_uno(idx),
             })
         return {"status": "ok", "indexes": result, "count": count}
+
+
+class IndexesListTocEntries(ToolWriterIndexBase):
+    name: str | None = "indexes_list_toc_entries"
+    intent: str | None = "examine"
+    description: str = (
+        "List table-of-contents rows by reading the index paragraphs. "
+        "Each row is the visible text, the outline level (Contents 1-10), "
+        "and the internal hyperlink (HyperLinkURL, including #…|outline). "
+        "Does not export the document and does not call index update(). "
+        "Use this to inspect or validate TOC entries. "
+        "indexes_list returns only the index name and type. "
+        "Do not use get_document_content for a linked TOC: that export runs "
+        "the XHTML Writer filter, entry text often comes back empty, and a long outline can hang."
+    )
+    parameters: dict[str, Any] | None = {
+        "type": "object",
+        "properties": {
+            "index": {"type": "integer", "minimum": 0, "description": "Document index position from indexes_list. Omit when the document has exactly one TOC."},
+        },
+        "required": [],
+    }
+    is_mutation: bool | None = False
+
+    def execute(self, ctx: Any, **kwargs: Any) -> dict[str, Any]:
+        # Listing TOC rows must not call get_document_content. That
+        # exports the whole document through the XHTML Writer filter on
+        # the LibXSLT thread. A linked TOC comes back with empty entry
+        # text, and a long outline can sit there for minutes, while the
+        # UI stays on "Running delegate (indexes)". The one-row update,
+        # insert, and delete tools already read these paragraphs and do
+        # not hang. This listing uses that same read: text, level, and
+        # hyperlink, without a full-document export and without
+        # ContentIndex.update() (update rebuilds every row and drops
+        # customized formatting).
+        doc = ctx.doc
+        index = kwargs.get("index")
+        idx, index_error = resolve_toc(doc, index)
+        if index_error or idx is None:
+            return self._tool_error(
+                index_error or "Could not find the table of contents.",
+                code="INVALID_PARAM")
+        try:
+            anchor = idx.getAnchor()
+        except Exception:
+            return self._tool_error(
+                "Could not read the table of contents.",
+                code="TOOL_EXECUTION_ERROR")
+        entries = toc_entry_rows(anchor)
+        if isinstance(index, int) and not isinstance(index, bool):
+            position: int | None = index
+        else:
+            position = _single_toc_position(doc)
+        return {
+            "status": "ok",
+            "index": position,
+            "count": len(entries),
+            "entries": entries,
+        }
 
 
 class IndexesListCites(ToolWriterIndexBase):
@@ -1295,7 +1483,7 @@ class IndexesListCites(ToolWriterIndexBase):
         cites: list[Any] = []
         hf_labels: dict[int, str] = {}
         scanned = 0
-        while enum.hasMoreElements():
+        while _enum_has_more(enum):
             field = enum.nextElement()
             scanned += 1
             if not is_bibliography_text_field(field):
@@ -1369,7 +1557,9 @@ class IndexesCreate(ToolWriterIndexBase):
                 "object": "com.sun.star.text.ObjectIndex",
                 "bibliography": "com.sun.star.text.Bibliography",
             }
-            service_name = service_map.get(index_kind, "com.sun.star.text.ContentIndex")
+            if index_kind not in service_map:
+                return self._tool_error(f"Unknown index kind: {index_kind}", code="INVALID_PARAM")
+            service_name = service_map[index_kind]
 
             index = doc.createInstance(service_name)
             if title is not None and hasattr(index, "Title"):
@@ -1458,6 +1648,8 @@ class IndexesAddMark(ToolWriterIndexBase):
             return self._tool_error("Failed to resolve target location.")
 
         try:
+            if index_kind not in ("alphabetical", "user", "bibliography"):
+                return self._tool_error(f"Unknown index mark kind: {index_kind}", code="INVALID_PARAM")
             if index_kind == "bibliography":
                 return self._insert_bibliography_cite(
                     doc, cursor, kwargs, unused_reserved
@@ -1469,10 +1661,10 @@ class IndexesAddMark(ToolWriterIndexBase):
 
             mark = doc.createInstance(service_name)
 
-            if hasattr(mark, "MarkEntry"):
-                mark.MarkEntry = mark_text
-            elif hasattr(mark, "PrimaryKey") and hasattr(mark, "SecondaryKey"):
-                pass  # DocumentIndexMark handles these via properties
+            try:
+                mark.setPropertyValue("AlternativeText", mark_text)
+            except Exception:
+                log.debug("Failed to set AlternativeText on index mark", exc_info=True)
 
             if index_kind == "alphabetical":
                 if hasattr(mark, "PrimaryKey") and primary_key is not None:

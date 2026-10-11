@@ -2,7 +2,7 @@
 # Copyright (c) 2026 KeithCu (modifications and relicensing)
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Monaco editor IPC protocol (pickle protocol 5) and failure formatting for user-visible dialogs."""
+"""Monaco editor IPC protocol (pickle protocol 5)."""
 
 # =========================================================================================
 # WARNING: PARITY INVARIANT WITH MONACO JAVASCRIPT FRONTEND
@@ -15,20 +15,23 @@
 
 from __future__ import annotations
 
-import traceback
 import uuid
 from typing import Any, IO, Mapping
 
 from plugin.framework.deal_shim import (
     DEAL_MAX_CMD_ARGS,
-    DEAL_MAX_SOURCE,
     DEAL_MAX_TOKEN,
-    UNDER_CROSSHAIR,
     ascii_bounded,
     deal,
-    str_bounded,
+)
+from plugin.scripting.editor_errors import (
+    _profile,
+    exception_traceback,
+    failure_detail,
+    failure_message,
 )
 from plugin.scripting.ipc import (
+    _write_all,
     DEFAULT_MAX_PAYLOAD_BYTES,
     IpcFrameError,
     pack_pickle_frame,
@@ -36,9 +39,25 @@ from plugin.scripting.ipc import (
     unpack_pickle_frame,
 )
 
+__all__ = [
+    "EDITOR_DEFAULT_TITLE",
+    "exception_traceback",
+    "failure_detail",
+    "failure_message",
+    "message_type",
+    "new_session_id",
+    "normalize_target",
+    "read_message",
+    "session_id_of",
+    "stamp_session",
+    "target_from_load",
+    "target_identity_key",
+    "write_message",
+]
+
 EDITOR_DEFAULT_TITLE = " "
 
-# JSON-safe identity keys on every session message (omit empties).
+# Identity keys on every session message (omit empties).
 _TARGET_KEYS = ("cell_address", "script_name", "script_origin", "doc_url", "resource")
 
 def read_message(stream: IO[bytes]) -> dict[str, Any] | None:
@@ -65,8 +84,7 @@ def write_message(stream: IO[bytes], message: dict[str, Any]) -> None:
         frame = pack_pickle_frame(message, max_payload_bytes=DEFAULT_MAX_PAYLOAD_BYTES)
     except IpcFrameError as exc:
         raise ValueError("Editor message exceeds maximum payload size") from exc
-    stream.write(frame)
-    stream.flush()
+    _write_all(stream, frame)
 
 
 def message_type(message: dict[str, Any]) -> str:
@@ -81,10 +99,11 @@ def new_session_id() -> str:
 
 
 def _deal_ipc_dict_ok_pytest(msg: object) -> bool:
-    return type(msg) is dict and len(msg) <= DEAL_MAX_CMD_ARGS and all(
-        type(k) is str and ascii_bounded(k, DEAL_MAX_TOKEN) and (v is None or not isinstance(v, str) or str_bounded(v, DEAL_MAX_TOKEN))
-        for k, v in msg.items()
-    )
+    # Editor IPC carries script source, doc URLs, and stderr. The old pre
+    # capped every string at DEAL_MAX_TOKEN (64) and the dict at 32 keys, so
+    # stamp_session raised PreContractError before it copied the message.
+    # A dict of any size is in domain; the body reads the keys it knows.
+    return isinstance(msg, dict)
 
 
 def _deal_ipc_dict_ok_crosshair(msg: object, allow_nested: bool = True) -> bool:
@@ -98,7 +117,7 @@ def _deal_ipc_dict_ok_crosshair(msg: object, allow_nested: bool = True) -> bool:
     )
 
 
-_deal_ipc_dict_ok = _deal_ipc_dict_ok_crosshair if UNDER_CROSSHAIR else _deal_ipc_dict_ok_pytest
+_deal_ipc_dict_ok = _profile(_deal_ipc_dict_ok_pytest, _deal_ipc_dict_ok_crosshair)
 
 
 @deal.pre(lambda target: target is None or _deal_ipc_dict_ok(target))
@@ -148,14 +167,17 @@ def target_from_load(msg: Mapping[str, Any]) -> dict[str, str]:
     lambda mode, target: ascii_bounded(mode, DEAL_MAX_TOKEN)
     and (target is None or _deal_ipc_dict_ok(target))
 )
-def target_identity_key(mode: str, target: Mapping[str, str] | None) -> tuple[str, str, str, str, str]:
+def target_identity_key(mode: str, target: Mapping[str, str] | None) -> tuple[str, str, str, str, str, str]:
     """Stable key so reopening the same cell/script reuses ``session_id``."""
     # crosshair: off  # nested IPC dict domain (cover-all 33293627157: ~9m, 159k lines). Doable later; thin wrapper over normalize_target.
     t = normalize_target(target)
+    # Include script_origin. Omitting it gave user and document scripts with
+    # the same name one session_id, so a save overwrote the other target.
     return (
         str(mode or ""),
         t.get("cell_address", ""),
         t.get("script_name", ""),
+        t.get("script_origin", ""),
         t.get("doc_url", ""),
         t.get("resource", ""),
     )
@@ -191,53 +213,3 @@ def stamp_session(
         merged.update(dict(target))
     out["target"] = normalize_target(merged)
     return out
-
-
-def _deal_exc_ok_pytest(exc: object) -> bool:
-    return isinstance(exc, BaseException)
-
-
-def _deal_exc_ok_crosshair(exc: object) -> bool:
-    return exc is None
-
-
-_deal_exc_ok = _deal_exc_ok_crosshair if UNDER_CROSSHAIR else _deal_exc_ok_pytest
-
-
-@deal.pre(lambda exc: _deal_exc_ok(exc))
-def exception_traceback(exc: BaseException) -> str:
-    """Full traceback string for *exc*."""
-    # crosshair: off  # BaseException/traceback formatting; CrossHair pre forces exc is None so covering is circular (cover-all 33293627157: ~11m, 92k lines). Doable later.
-    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-
-
-@deal.pre(
-    lambda detail=None, exc=None: (detail is None or str_bounded(detail, DEAL_MAX_SOURCE))
-    and exc is None
-)
-@deal.post(lambda result: isinstance(result, str))
-def failure_detail(*, detail: str | None = None, exc: BaseException | None = None) -> str:
-    """Combine subprocess stderr, probe output, and/or an exception traceback."""
-    # crosshair: off  # detail/traceback join still slow with bounds (cover-all 33293627157: ~4m, 61k lines). Doable later.
-    chunks: list[str] = []
-    detail_text = (detail or "").strip()
-    if detail_text:
-        chunks.append(detail_text)
-    if exc is not None:
-        chunks.append(exception_traceback(exc).rstrip())
-    return "\n\n".join(chunks)
-
-
-@deal.pre(
-    lambda summary, detail=None, exc=None: str_bounded(summary, DEAL_MAX_SOURCE)
-    and (detail is None or str_bounded(detail, DEAL_MAX_SOURCE))
-    and exc is None
-)
-@deal.post(lambda result: isinstance(result, str))
-def failure_message(summary: str, *, detail: str | None = None, exc: BaseException | None = None) -> str:
-    """Build a msgbox body: *summary* plus optional detail/traceback blocks."""
-    # crosshair: off  # thin wrapper over failure_detail (cover-all 33293627157: ~2m, 40k lines). Doable later.
-    body = failure_detail(detail=detail, exc=exc)
-    if body:
-        return f"{summary}\n\n{body}"
-    return summary

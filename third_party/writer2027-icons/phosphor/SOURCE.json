@@ -1,0 +1,1 @@
+{"name":"Phosphor Icons","repository":"https://github.com/phosphor-icons/core","source_tree":"assets","commit":"2b75f3ad12b420c9504ef05df8d2564a28f8500e","license":"MIT","weight_policy":"regular = <name>.svg (24px/lc_; 32px); bold = <name>-bold.svg (16px/sc_). Phosphor bold assets are suffixed '-bold'; not every regular icon exists in bold."}

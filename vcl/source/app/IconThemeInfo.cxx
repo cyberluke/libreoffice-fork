@@ -115,6 +115,15 @@ IconThemeInfo::ThemeIdToDisplayName(const OUString& themeId)
         throw std::runtime_error("IconThemeInfo::ThemeIdToDisplayName() called with invalid id.");
     }
 
+    // Writer 2027 themes are product features, not "SVG variants": expose the
+    // product-facing names instead of the mechanical "Writer2027 carbon (SVG)".
+    if (themeId == u"writer2027_carbon_svg")
+        return u"Writer 2027 - Carbon"_ustr;
+    if (themeId == u"writer2027_phosphor_svg")
+        return u"Writer 2027 - Phosphor"_ustr;
+    if (themeId == u"tdesign_svg")
+        return u"TDesign"_ustr;
+
     // Strip _svg and _dark filename "extensions"
     OUString aDisplayName = themeId;
 

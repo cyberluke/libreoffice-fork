@@ -1,0 +1,11 @@
+cd D:/_SATIN_AI/LibreOffice/postprocess && make -j 24 -rs
+[build XCD] main
+[build CUS] postprocess/registry
+[build PKG] postprocess_registry
+[build LOC] postprocess
+[build LOC] top level modules: postprocess
+[build BIN] postprocess
+[build MOD] postprocess
+[build BIN] top level modules: postprocess
+[build ALL] top level modules: build-non-l10n-only build-l10n-only
+POSTPROCESS_BUILD_EXIT=0

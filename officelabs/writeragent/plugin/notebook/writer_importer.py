@@ -43,7 +43,7 @@ from com.sun.star.text.TextContentAnchorType import AS_CHARACTER
 
 from plugin.contrib.nbformat import read_ipynb
 from plugin.notebook.cell_registry import NotebookDocState, _cell_heading, _coerce_notebook_text, _prepare_display_text, init_registry_execution_counter, insert_output_start_bookmark, new_code_cell_entry, save_notebook_source_path, save_registry
-from plugin.notebook.notebook_controls import _insert_code_input_in_flow, _insert_run_button_in_flow, _log_shape_add, _resolve_para_style, _style_control_paragraph, _text_area_width_units
+from plugin.notebook.notebook_controls import _CODE_FONT_NAME, _insert_code_input_in_flow, _insert_run_button_in_flow, _log_shape_add, _resolve_para_style, _style_control_paragraph, _text_area_width_units
 from plugin.writer.images.image_tools import _apply_graphic_properties, _create_embedded_graphic, _file_url_for_path, _mm_to_units, insert_image_at_locator
 
 log = logging.getLogger("writeragent.notebook")
@@ -53,7 +53,7 @@ _MAX_OUTPUTS_PER_CELL = 200
 _MAX_IMAGE_DECODE_BYTES = 8 * 1024 * 1024
 _MAX_IMAGE_DISPLAY_WIDTH_MM = 170
 _DEFAULT_IMAGE_HEIGHT_MM = 80
-_IMAGE_MIME_SUFFIX = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/svg+xml": ".svg"}
+_IMAGE_MIME_SUFFIX = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif", "image/svg+xml": ".svg"}
 _NOTEBOOK_IN_CHAR_COLOR = 0x307FC1
 _HTTP_IMAGE_TIMEOUT_SEC = 2
 
@@ -69,6 +69,9 @@ _STYLE_BODY = "Text Body"
 
 # Auto-created on import for Jupyter-like In [n]: gutter (1/100 mm margins).
 _STYLE_NOTEBOOK_IN = "WriterAgent Notebook In"
+# Used only when Preformatted Text is not in the document. Stdout left as
+# Text Body is a cell boundary, so a re-run would keep the old paragraph.
+_STYLE_NOTEBOOK_OUT = "WriterAgent Notebook Output"
 _NOTEBOOK_IN_CHAR_HEIGHT = 9
 _NOTEBOOK_IN_MARGIN_TOP = 200
 _NOTEBOOK_IN_MARGIN_BOTTOM = 40
@@ -309,6 +312,39 @@ def _ensure_notebook_import_styles(doc: Any) -> str | None:
     except Exception:
         log.debug("notebook import could not update In keep properties", exc_info=True)
     return _resolve_para_style(doc, _STYLE_NOTEBOOK_IN)
+
+
+def output_para_style(doc: Any) -> str | None:
+    """Style name for cell stdout: Preformatted Text, or a created fallback.
+
+    ``_is_next_cell_boundary`` treats non-empty Text Body as the next cell.
+    When Preformatted Text does not resolve, ``_apply_para_style`` used to
+    leave the new paragraph as Text Body, ``clear_cell_output`` stopped
+    there, and the next run stacked another copy of stdout.
+    """
+    resolved = _resolve_para_style(doc, _STYLE_OUTPUT)
+    if resolved:
+        return resolved
+    para_styles = _get_para_styles(doc)
+    if para_styles is None:
+        return None
+    parent_body = _resolve_para_style(doc, _STYLE_BODY) or _STYLE_BODY
+    no_lang = _no_spellcheck_locale()
+    # FontPitch.FIXED (1): stay monospace if Liberation Mono is not installed.
+    _create_import_para_style(
+        doc,
+        para_styles,
+        _STYLE_NOTEBOOK_OUT,
+        parent_style=parent_body,
+        property_updates={
+            "CharFontName": _CODE_FONT_NAME,
+            "CharFontPitch": 1,
+            "CharLocale": no_lang,
+            "CharLocaleAsian": no_lang,
+            "CharLocaleComplex": no_lang,
+        },
+    )
+    return _resolve_para_style(doc, _STYLE_NOTEBOOK_OUT)
 
 
 # ---------------------------------------------------------------------------
@@ -1016,17 +1052,87 @@ def _svg_pixel_size(raw: bytes) -> tuple[int, int] | None:
     return None
 
 
+def _webp_pixel_size(raw: bytes) -> tuple[int, int] | None:
+    """Canvas size from a RIFF WebP (VP8X, else VP8L, else a VP8 keyframe).
+
+    Container layout is the WebP RIFF spec: VP8X stores width-1 and height-1
+    as 24-bit little-endian. Without VP8X, VP8L packs those minus-one sizes in
+    14 bits, and a VP8 keyframe stores 14-bit width/height after ``9d 01 2a``.
+    """
+    if len(raw) < 16 or raw[:4] != b"RIFF" or raw[8:12] != b"WEBP":
+        return None
+    offset = 12
+    vp8: int | None = None
+    vp8l: int | None = None
+    while offset + 8 <= len(raw) and offset < 512:
+        tag = raw[offset : offset + 4]
+        size = int.from_bytes(raw[offset + 4 : offset + 8], "little")
+        payload = offset + 8
+        if tag == b"VP8X" and payload + 10 <= len(raw):
+            width = 1 + int.from_bytes(raw[payload + 4 : payload + 7], "little")
+            height = 1 + int.from_bytes(raw[payload + 7 : payload + 10], "little")
+            if width >= 1 and height >= 1:
+                return width, height
+        elif tag == b"VP8L" and vp8l is None:
+            vp8l = payload
+        elif tag == b"VP8 " and vp8 is None:
+            vp8 = payload
+        step = 8 + size + (size & 1)
+        if step < 8:
+            break
+        offset += step
+    if vp8l is not None and vp8l + 5 <= len(raw) and raw[vp8l] == 0x2F:
+        bits = int.from_bytes(raw[vp8l + 1 : vp8l + 5], "little")
+        width = (bits & 0x3FFF) + 1
+        height = ((bits >> 14) & 0x3FFF) + 1
+        if width >= 1 and height >= 1:
+            return width, height
+    if vp8 is not None and vp8 + 10 <= len(raw) and (raw[vp8] & 1) == 0 and raw[vp8 + 3 : vp8 + 6] == b"\x9d\x01\x2a":
+        width = int.from_bytes(raw[vp8 + 6 : vp8 + 8], "little") & 0x3FFF
+        height = int.from_bytes(raw[vp8 + 8 : vp8 + 10], "little") & 0x3FFF
+        if width >= 1 and height >= 1:
+            return width, height
+    return None
+
+
+def _gif_pixel_size(raw: bytes) -> tuple[int, int] | None:
+    """Logical screen size from a GIF87a/GIF89a header.
+
+    Width and height are little-endian uint16 at offsets 6 and 8. Without
+    them the insert path uses a fixed box and the aspect ratio is wrong.
+    """
+    if len(raw) < 10 or raw[:6] not in (b"GIF87a", b"GIF89a"):
+        return None
+    width = int.from_bytes(raw[6:8], "little")
+    height = int.from_bytes(raw[8:10], "little")
+    if width < 1 or height < 1:
+        return None
+    return width, height
+
+
 def _image_mime_from_bytes(raw: bytes, path: str) -> str:
     if raw[:8] == b"\x89PNG\r\n\x1a\n":
         return "image/png"
     if len(raw) >= 2 and raw[:2] == b"\xff\xd8":
         return "image/jpeg"
+    # Was falling through to image/png, so a .webp download was written as
+    # .png and GraphicProvider rejected it.
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    # Same failure as WebP: a .gif download labeled image/png was rejected
+    # or drawn as the wrong type by GraphicProvider.
+    if len(raw) >= 6 and raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
     lower = (path or "").lower()
     head = raw.lstrip()[:256].lower()
     if lower.endswith(".svg") or b"<svg" in head:
         return "image/svg+xml"
     if lower.endswith((".jpg", ".jpeg")):
         return "image/jpeg"
+    if lower.endswith(".webp"):
+        return "image/webp"
+    if lower.endswith(".gif"):
+        return "image/gif"
     return "image/png"
 
 
@@ -1038,6 +1144,10 @@ def _display_size_units(raw: bytes, mime: str, *, max_width_mm: float | None = N
         px_size = _png_pixel_size(raw)
     elif mime in ("image/jpeg", "image/jpg"):
         px_size = _jpeg_pixel_size(raw)
+    elif mime == "image/webp":
+        px_size = _webp_pixel_size(raw)
+    elif mime == "image/gif":
+        px_size = _gif_pixel_size(raw)
     elif mime == "image/svg+xml":
         px_size = _svg_pixel_size(raw)
     if px_size is not None:
@@ -1057,7 +1167,7 @@ def _display_size_units(raw: bytes, mime: str, *, max_width_mm: float | None = N
 
 def _notebook_image_payload(data: dict[str, Any]) -> tuple[str, str] | None:
     """Return (mime, base64) for the first supported image bundle in a notebook output."""
-    for mime in ("image/png", "image/jpeg", "image/jpg"):
+    for mime in ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"):
         if mime in data:
             b64 = _coerce_notebook_text(data[mime])
             if b64.strip():
@@ -1232,7 +1342,7 @@ def _outputs_contain_image(outputs: list[Any]) -> bool:
 
 
 def _import_image_outputs_in_flow(doc: Any, outputs: list[Any], cell_index: int, *, images_before: int, ctx: Any | None = None) -> int:
-    """Insert image/png/jpeg outputs in the document body. Returns number of images added."""
+    """Insert image/png, jpeg, webp, or gif outputs in the document body. Returns number of images added."""
     added = 0
     out_list = outputs or []
     if len(out_list) > _MAX_OUTPUTS_PER_CELL:
@@ -1462,8 +1572,15 @@ def _import_cells(doc: Any, nb: Any, stats: dict[str, int], cell_count: int, run
             # Invisible output bookmark at the end of the field paragraph — not a
             # visible "Output" heading. A bookmark inside "Output" leaked as "/" .
             if registry_state is not None and registry_state.code_cells:
-                bm_name = registry_state.code_cells[-1].output_start_bookmark
-                insert_output_start_bookmark(doc, bm_name)
+                cell_entry = registry_state.code_cells[-1]
+                bm_name = cell_entry.output_start_bookmark
+                if not insert_output_start_bookmark(doc, bm_name):
+                    # A saved name with no bookmark made later runs look for an
+                    # anchor that was never created and append output in the
+                    # wrong place. Drop the claim; the runner then uses the
+                    # code-field paragraph instead.
+                    log.warning("notebook import: output bookmark %r was not inserted for cell %d", bm_name, idx)
+                    cell_entry.output_start_bookmark = ""
             # Interleave in notebook order. Used to dump all text, then all
             # images, so [display image, print(...)] rendered print-then-image.
             segments, n_text = _format_outputs_for_body(outputs, idx, execution_count=ec)
@@ -1471,7 +1588,7 @@ def _import_cells(doc: Any, nb: Any, stats: dict[str, int], cell_count: int, run
             for kind, payload in segments:
                 if kind == "text":
                     if str(payload).strip():
-                        _append_body_text_block(doc, str(payload), _STYLE_OUTPUT, lead_break=True)
+                        _append_body_text_block(doc, str(payload), output_para_style(doc), lead_break=True)
                 else:
                     _append_paragraph_break_at_end(doc)
                     images_added = _import_image_outputs_in_flow(doc, [payload], idx, images_before=stats["images"], ctx=ctx)

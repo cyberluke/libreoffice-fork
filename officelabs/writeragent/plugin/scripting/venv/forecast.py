@@ -15,10 +15,11 @@ from plugin.scripting.calc_functions_common import (
 )
 from plugin.scripting.venv.coerce import (
     CoerceResult,
-    coerce_to_dataframe,
     ok_result as _ok_result,
     error_result as _error_result,
+    parse_trusted_spec as _parse_trusted_spec,
     missing_package_error as _missing_package_error,
+    resolve_df as _resolve_df,
     table_from_df as _table_from_df,
 )
 
@@ -26,23 +27,6 @@ log = logging.getLogger(__name__)
 
 _MIN_FORECAST_POINTS = 8
 _MIN_DECOMPOSE_CYCLES = 2
-
-
-def _resolve_df(data: Any, *, headers: bool = True, header_row: int = 0, sheet_hint: str | None = None) -> CoerceResult:
-    if isinstance(data, CoerceResult):
-        return data
-    if hasattr(data, "columns") and hasattr(data, "index"):
-        df = data.copy()
-        meta: dict[str, Any] = {
-            "n_rows": int(len(df)),
-            "n_cols": int(len(df.columns)),
-            "numeric_cols": [str(c) for c in df.select_dtypes(include="number").columns],
-            "dropped_rows": 0,
-        }
-        if sheet_hint:
-            meta["sheet_hint"] = sheet_hint
-        return CoerceResult(df=df, metadata=meta)
-    return coerce_to_dataframe(data, headers=headers, header_row=header_row, sheet_hint=sheet_hint)
 
 
 def _require_statsmodels(helper: str) -> Any | None:
@@ -135,7 +119,7 @@ def _weekday_daily(series: Any, step: Any) -> bool:
 
     if not isinstance(step, pd.Timedelta):
         return False
-    days = float(step / pd.Timedelta(days=1))
+    days = float(step.total_seconds() / 86400.0)
     if not 0.5 <= days <= 1.5:
         return False
     weekdays = {int(day) for day in series.index.dayofweek}
@@ -152,7 +136,7 @@ def _period_from_gaps(series: Any) -> int | None:
     step = deltas.median()
     if not isinstance(step, pd.Timedelta):
         return None
-    days = float(step / pd.Timedelta(days=1))
+    days = float(step.total_seconds() / 86400.0)
     if _weekday_daily(series, step):
         return 5
     if 0.5 <= days <= 1.5:
@@ -262,6 +246,68 @@ def _forecast_moving_average(series: Any, *, periods: int) -> tuple[Any, str, di
     return forecast_df, "moving_average", metrics
 
 
+# HoltWintersResults has forecast/predict/simulate and no get_prediction.
+# get_prediction lives on ETSResults / statespace results (statsmodels
+# tsa.holtwinters.results.HoltWintersResults). Calling it always raised
+# AttributeError, which was swallowed as "confidence intervals unavailable".
+_HW_SIM_REPETITIONS = 400
+_HW_INTERVALS_UNAVAILABLE = (
+    "Holt-Winters prediction intervals are omitted. "
+    "HoltWintersResults has no analytic get_prediction; "
+    "simulate() did not return a 95% band. The forecast column is the point forecast."
+)
+
+
+def _forecast_point(forecast_vals: Any, idx: int) -> float:
+    if hasattr(forecast_vals, "iloc"):
+        return float(forecast_vals.iloc[idx])
+    return float(forecast_vals[idx])
+
+
+def _holt_winters_intervals(fit: Any, periods: int) -> tuple[Any, Any] | None:
+    """95% band from ``HoltWintersResults.simulate`` state-space paths.
+
+    Returns ``(lower, upper)`` aligned by position with the horizon, or
+    ``None`` when simulation cannot build a band. Callers must say so in
+    ``interval_note`` instead of inventing lower/upper.
+    """
+    import numpy as np
+    import pandas as pd
+
+    try:
+        sims = fit.simulate(
+            periods,
+            repetitions=_HW_SIM_REPETITIONS,
+            error="add",
+            rng=np.random.default_rng(0),
+        )
+    except TypeError:
+        # statsmodels before 0.14 named this argument random_state.
+        try:
+            sims = fit.simulate(
+                periods,
+                repetitions=_HW_SIM_REPETITIONS,
+                error="add",
+                random_state=0,
+            )
+        except Exception:
+            log.exception("Holt-Winters interval simulation failed")
+            return None
+    except Exception:
+        log.exception("Holt-Winters interval simulation failed")
+        return None
+
+    if not isinstance(sims, pd.DataFrame) or len(sims) != periods or sims.shape[1] < 2:
+        return None
+    lower = sims.quantile(0.025, axis=1)
+    upper = sims.quantile(0.975, axis=1)
+    if len(lower) != periods or len(upper) != periods:
+        return None
+    if not np.isfinite(lower.to_numpy()).all() or not np.isfinite(upper.to_numpy()).all():
+        return None
+    return lower, upper
+
+
 def _forecast_holt_winters(series: Any, *, periods: int, seasonal_periods: int) -> tuple[Any, str, dict[str, Any], list[str]]:
     import pandas as pd
     from statsmodels.tsa.holtwinters import ExponentialSmoothing
@@ -278,23 +324,20 @@ def _forecast_holt_winters(series: Any, *, periods: int, seasonal_periods: int) 
 
     rows: list[dict[str, Any]] = []
     flags: list[str] = []
-    try:
-        pred = fit.get_prediction(start=len(series), end=len(series) + periods - 1)
-        summary = pred.summary_frame(alpha=0.05)
+    intervals = _holt_winters_intervals(fit, periods)
+    if intervals is None:
+        flags.append(_HW_INTERVALS_UNAVAILABLE)
         for idx, dt in enumerate(future_dates):
-            row: dict[str, Any] = {
+            rows.append({"date": dt, "forecast": _forecast_point(forecast_vals, idx)})
+    else:
+        lower, upper = intervals
+        for idx, dt in enumerate(future_dates):
+            rows.append({
                 "date": dt,
-                "forecast": float(forecast_vals.iloc[idx]) if hasattr(forecast_vals, "iloc") else float(forecast_vals[idx]),
-            }
-            if "mean_ci_lower" in summary.columns and "mean_ci_upper" in summary.columns:
-                row["lower"] = float(summary["mean_ci_lower"].iloc[idx])
-                row["upper"] = float(summary["mean_ci_upper"].iloc[idx])
-            rows.append(row)
-    except Exception:
-        flags.append("confidence intervals unavailable")
-        for idx, dt in enumerate(future_dates):
-            val = float(forecast_vals.iloc[idx]) if hasattr(forecast_vals, "iloc") else float(forecast_vals[idx])
-            rows.append({"date": dt, "forecast": val})
+                "forecast": _forecast_point(forecast_vals, idx),
+                "lower": float(lower.iloc[idx]),
+                "upper": float(upper.iloc[idx]),
+            })
 
     forecast_df = pd.DataFrame(rows)
     metrics: dict[str, Any] = {
@@ -308,6 +351,12 @@ def _forecast_holt_winters(series: Any, *, periods: int, seasonal_periods: int) 
         metrics["aic"] = float(fit.aic)
     if hasattr(fit, "sse"):
         metrics["sse"] = float(fit.sse)
+    if intervals is None:
+        metrics["interval_note"] = {
+            "available": False,
+            "method": "HoltWintersResults.simulate",
+            "message": _HW_INTERVALS_UNAVAILABLE,
+        }
     return forecast_df, "holt_winters", metrics, flags
 
 
@@ -370,7 +419,9 @@ def forecast_time_series(
     if series is None:
         return _error_result("INSUFFICIENT_DATA", "No valid time series", helper=helper)
 
-    periods = max(1, int(periods))
+    # A huge horizon used to be passed straight to statsmodels. Same idea as
+    # monte_carlo capping sims at 1_000_000.
+    periods = max(1, min(int(periods), 10_000))
     model_name = str(model or "auto").strip().lower()
     flags: list[str] = _duplicate_date_flags(coerced)
 
@@ -656,23 +707,10 @@ def run_forecast(
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Spec-driven dispatcher — single trusted entry for host RPC."""
-    if isinstance(spec, str):
-        spec_dict: dict[str, Any] = {"helper": spec}
-    elif isinstance(spec, dict):
-        spec_dict = spec
-    else:
-        return _error_result("INVALID_SPEC", "spec must be a dict or helper name string")
-
-    helper = str(spec_dict.get("helper") or "").strip()
-    if not helper:
-        return _error_result("MISSING_HELPER", "spec.helper is required")
-    if helper not in HELPER_NAMES:
-        return _error_result("UNKNOWN_HELPER", f"Unknown helper {helper!r}", helper=helper)
-
-    params: dict[str, Any] = spec_dict["params"] if isinstance(spec_dict.get("params"), dict) else {}
-    headers = bool(spec_dict.get("headers", True))
-    header_row = int(spec_dict.get("header_row", 0))
-    ctx = context if isinstance(context, dict) else {}
+    parsed = _parse_trusted_spec(spec, helper_names=HELPER_NAMES, context=context)
+    if isinstance(parsed, dict):
+        return parsed
+    helper, params, headers, header_row, ctx, _spec = parsed
 
     try:
         result = _dispatch_helper(helper, data, params, headers=headers, header_row=header_row, context=ctx)

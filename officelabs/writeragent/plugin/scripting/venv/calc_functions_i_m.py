@@ -9,15 +9,24 @@ Semantics mirror the inline helpers formerly pasted by spreadsheet import transl
 
 from __future__ import annotations
 
+import cmath
 import datetime as dt
 import math
-import re
 from collections import Counter
 from typing import Any, Callable
 
 import numpy as np
 
-from .coerce import is_missing_value
+from .calc_functions_util import (
+    _collect_a_values,
+    _extract_numeric_array,
+    _from_complex,
+    _is_calc_error,
+    _npf_result,
+    _to_complex,
+    match_criteria,
+)
+from .coerce import is_blank_value, is_na_value
 
 
 __all__ = [
@@ -93,9 +102,10 @@ __all__ = [
 
 
 def iferror(f: Callable[[], Any], alt: Any) -> Any:
+    # NaN and Calc error tokens (#VALUE!, #REF!, …). A float-only check misses the tokens.
     try:
         val = f()
-        if isinstance(val, float) and np.isnan(val):
+        if _is_calc_error(val):
             return alt
         return val
     except Exception:
@@ -105,314 +115,204 @@ def iferror(f: Callable[[], Any], alt: Any) -> Any:
 def ifna(f: Callable[[], Any], alt: Any) -> Any:
     try:
         val = f()
-        if is_missing_value(val):
+        if is_na_value(val):
             return alt
         return val
     except Exception:
         return alt
 
 
-def imabs(inumber: Any) -> float:
-    from plugin.scripting.venv.calc_functions_a_c import _to_complex
+def _im_unary(fn: Callable[[complex], complex]) -> Callable[[Any], str]:
+    def wrapper(inumber: Any) -> str:
+        try:
+            c = _to_complex(inumber)
+            res = fn(c)
+            return _from_complex(res)
+        except (ValueError, TypeError, OverflowError, ZeroDivisionError):
+            return "#VALUE!"
 
-    try:
-        return float(abs(_to_complex(inumber)))
-    except (ValueError, TypeError):
-        return float("nan")
-
-
-def imaginary(inumber: Any) -> float:
-    from plugin.scripting.venv.calc_functions_a_c import _to_complex
-
-    try:
-        return float(_to_complex(inumber).imag)
-    except (ValueError, TypeError):
-        return float("nan")
+    return wrapper
 
 
-def imargument(inumber: Any) -> float:
-    from plugin.scripting.venv.calc_functions_a_c import _to_complex
+def _im_binary(fn: Callable[[complex, complex], complex]) -> Callable[[Any, Any], str]:
+    def wrapper(inumber1: Any, inumber2: Any) -> str:
+        try:
+            c1 = _to_complex(inumber1)
+            c2 = _to_complex(inumber2)
+            return _from_complex(fn(c1, c2))
+        except (ValueError, TypeError, OverflowError, ZeroDivisionError):
+            return "#VALUE!"
 
-    try:
-        import cmath
-
-        return float(cmath.phase(_to_complex(inumber)))
-    except (ValueError, TypeError):
-        return float("nan")
-
-
-def imconjugate(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        c = _to_complex(inumber)
-        return _from_complex(c.conjugate())
-    except (ValueError, TypeError):
-        return "#VALUE!"
+    return wrapper
 
 
-def imcos(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
+def _im_float(fn: Callable[[complex], float]) -> Callable[[Any], float]:
+    def wrapper(inumber: Any) -> float:
+        try:
+            return float(fn(_to_complex(inumber)))
+        except (ValueError, TypeError, OverflowError, ZeroDivisionError):
+            return float("nan")
 
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(cmath.cos(c))
-    except (ValueError, TypeError):
-        return "#VALUE!"
+    return wrapper
 
 
-def imcosh(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(cmath.cosh(c))
-    except (ValueError, TypeError):
-        return "#VALUE!"
+@_im_float
+def imabs(c: complex) -> float:
+    return abs(c)
 
 
-def imcot(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(1.0 / cmath.tan(c))
-    except (ValueError, TypeError, ZeroDivisionError):
-        return "#VALUE!"
+@_im_float
+def imaginary(c: complex) -> float:
+    return c.imag
 
 
-def imcsc(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(1.0 / cmath.sin(c))
-    except (ValueError, TypeError, ZeroDivisionError):
-        return "#VALUE!"
+@_im_float
+def imargument(c: complex) -> float:
+    return cmath.phase(c)
 
 
-def imcsch(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(1.0 / cmath.sinh(c))
-    except (ValueError, TypeError, ZeroDivisionError):
-        return "#VALUE!"
+@_im_unary
+def imconjugate(c: complex) -> complex:
+    return c.conjugate()
 
 
-def imdiv(inumber1: Any, inumber2: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        c1 = _to_complex(inumber1)
-        c2 = _to_complex(inumber2)
-        return _from_complex(c1 / c2)
-    except (ValueError, TypeError, ZeroDivisionError):
-        return "#VALUE!"
+@_im_unary
+def imcos(c: complex) -> complex:
+    return cmath.cos(c)
 
 
-def imexp(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(cmath.exp(c))
-    except (ValueError, TypeError):
-        return "#VALUE!"
+@_im_unary
+def imcosh(c: complex) -> complex:
+    return cmath.cosh(c)
 
 
-def imln(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(cmath.log(c))
-    except (ValueError, TypeError):
-        return "#VALUE!"
+@_im_unary
+def imcot(c: complex) -> complex:
+    return 1.0 / cmath.tan(c)
 
 
-def imlog10(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(cmath.log10(c))
-    except (ValueError, TypeError):
-        return "#VALUE!"
+@_im_unary
+def imcsc(c: complex) -> complex:
+    return 1.0 / cmath.sin(c)
 
 
-def imlog2(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
+@_im_unary
+def imcsch(c: complex) -> complex:
+    return 1.0 / cmath.sinh(c)
 
-    try:
-        import cmath
 
-        c = _to_complex(inumber)
-        return _from_complex(cmath.log(c, 2))
-    except (ValueError, TypeError):
-        return "#VALUE!"
+@_im_binary
+def imdiv(c1: complex, c2: complex) -> complex:
+    return c1 / c2
+
+
+@_im_unary
+def imexp(c: complex) -> complex:
+    return cmath.exp(c)
+
+
+@_im_unary
+def imln(c: complex) -> complex:
+    return cmath.log(c)
+
+
+@_im_unary
+def imlog10(c: complex) -> complex:
+    return cmath.log10(c)
+
+
+@_im_unary
+def imlog2(c: complex) -> complex:
+    if c == 0:
+        raise ValueError("log of zero")
+    logged = cmath.log(c, 2)
+    if not (math.isfinite(logged.real) and math.isfinite(logged.imag)):
+        raise ValueError("non-finite log2")
+    return logged
 
 
 def impower(inumber: Any, number: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
     try:
         c = _to_complex(inumber)
         p = float(number)
-        return _from_complex(c**p)
-    except (ValueError, TypeError):
+        result = c**p
+        # macOS libm returns a non-finite complex for (1+1j)**inf and does
+        # not raise. _from_complex would then print "nannani" (nan
+        # concatenated, because nan > 0 is false). Linux raises
+        # OverflowError, which this except already maps to #VALUE!. A
+        # non-finite power is the same failure.
+        if not (math.isfinite(result.real) and math.isfinite(result.imag)):
+            return "#VALUE!"
+        return _from_complex(result)
+    except (ValueError, TypeError, OverflowError, ZeroDivisionError):
         return "#VALUE!"
 
 
 def improduct(*args: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
     try:
-        import builtins
-
-        res = builtins.complex(1, 0)
+        res = complex(1, 0)
         for arg in args:
-            for v in np.asarray(arg).ravel():
+            for v in np.asarray(arg, dtype=object).ravel():
                 res *= _to_complex(v)
         return _from_complex(res)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError, ZeroDivisionError):
         return "#VALUE!"
 
 
-def imreal(inumber: Any) -> float:
-    from plugin.scripting.venv.calc_functions_a_c import _to_complex
-
-    try:
-        return float(_to_complex(inumber).real)
-    except (ValueError, TypeError):
-        return float("nan")
+@_im_float
+def imreal(c: complex) -> float:
+    return c.real
 
 
-def imsec(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(1.0 / cmath.cos(c))
-    except (ValueError, TypeError, ZeroDivisionError):
-        return "#VALUE!"
+@_im_unary
+def imsec(c: complex) -> complex:
+    return 1.0 / cmath.cos(c)
 
 
-def imsech(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(1.0 / cmath.cosh(c))
-    except (ValueError, TypeError, ZeroDivisionError):
-        return "#VALUE!"
+@_im_unary
+def imsech(c: complex) -> complex:
+    return 1.0 / cmath.cosh(c)
 
 
-def imsin(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(cmath.sin(c))
-    except (ValueError, TypeError):
-        return "#VALUE!"
+@_im_unary
+def imsin(c: complex) -> complex:
+    return cmath.sin(c)
 
 
-def imsinh(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(cmath.sinh(c))
-    except (ValueError, TypeError):
-        return "#VALUE!"
+@_im_unary
+def imsinh(c: complex) -> complex:
+    return cmath.sinh(c)
 
 
-def imsqrt(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(cmath.sqrt(c))
-    except (ValueError, TypeError):
-        return "#VALUE!"
+@_im_unary
+def imsqrt(c: complex) -> complex:
+    return cmath.sqrt(c)
 
 
-def imsub(inumber1: Any, inumber2: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        c1 = _to_complex(inumber1)
-        c2 = _to_complex(inumber2)
-        return _from_complex(c1 - c2)
-    except (ValueError, TypeError):
-        return "#VALUE!"
+@_im_binary
+def imsub(c1: complex, c2: complex) -> complex:
+    return c1 - c2
 
 
 def imsum(*args: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
     try:
-        import builtins
-
-        res = builtins.complex(0, 0)
+        res = complex(0, 0)
         for arg in args:
-            for v in np.asarray(arg).ravel():
+            for v in np.asarray(arg, dtype=object).ravel():
                 res += _to_complex(v)
         return _from_complex(res)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError, ZeroDivisionError):
         return "#VALUE!"
 
 
-def imtan(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(cmath.tan(c))
-    except (ValueError, TypeError):
-        return "#VALUE!"
+@_im_unary
+def imtan(c: complex) -> complex:
+    return cmath.tan(c)
 
 
-def imtanh(inumber: Any) -> str:
-    from plugin.scripting.venv.calc_functions_a_c import _from_complex, _to_complex
-
-    try:
-        import cmath
-
-        c = _to_complex(inumber)
-        return _from_complex(cmath.tanh(c))
-    except (ValueError, TypeError):
-        return "#VALUE!"
+@_im_unary
+def imtanh(c: complex) -> complex:
+    return cmath.tanh(c)
 
 
 def intercept(data_y: Any, data_x: Any) -> float:
@@ -428,7 +328,7 @@ def intercept(data_y: Any, data_x: Any) -> float:
 
 
 def intrate(settlement: Any, maturity: Any, investment: Any, redemption: Any, basis: Any = 0) -> float:
-    from plugin.scripting.venv.calc_functions_a_c import _year_frac
+    from .calc_functions_t_z import yearfrac
 
     try:
         s = float(settlement)
@@ -436,12 +336,14 @@ def intrate(settlement: Any, maturity: Any, investment: Any, redemption: Any, ba
         inv = float(investment)
         red = float(redemption)
         b = int(float(basis))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
+        # int(float(basis)) raises OverflowError on ±inf. That used to escape
+        # the helper. Excel INTRATE is #NUM!, which this module reports as NaN.
         return float("nan")
     if s >= m or inv <= 0 or red <= 0 or b < 0 or b > 4:
         return float("nan")
-    yf = _year_frac(s, m, b)
-    if yf == 0:
+    yf = yearfrac(s, m, b)
+    if yf == 0 or math.isnan(yf):
         return float("nan")
     return (red - inv) / inv / yf
 
@@ -449,47 +351,36 @@ def intrate(settlement: Any, maturity: Any, investment: Any, redemption: Any, ba
 def ipmt(rate: Any, per: Any, nper: Any, pv_val: Any, fv_val: Any = 0, type_val: Any = 0) -> float:
     try:
         r = float(rate)
+        # Excel/Calc truncate the period. A fractional per is a different
+        # numpy-financial payment, not the truncated one.
         p = int(float(per))
         n = float(nper)
         pv_f = float(pv_val)
         fv_f = float(fv_val)
-        t = int(float(type_val))
-    except (ValueError, TypeError):
+        t = 1 if int(float(type_val)) == 1 else 0
+    except (ValueError, TypeError, OverflowError):
+        # int(float(per)) and int(float(type_val)) raise OverflowError on ±inf.
+        # That used to escape the helper. Excel IPMT is #NUM!, reported as NaN.
         return float("nan")
+    # GetIpmt / Excel: per outside 1..nper is #NUM!. numpy-financial returns
+    # 0 once per > nper (and NaN only for per < 1).
     if p < 1 or p > n:
         return float("nan")
-
-    if r == 0:
-        return 0.0
-
-    # PMT
-    factor = (1 + r) ** n
-    if t == 1:
-        pmt_amt = -(pv_f * factor + fv_f) * r / ((factor - 1) * (1 + r))
-    else:
-        pmt_amt = -(pv_f * factor + fv_f) * r / (factor - 1)
-
-    if t == 0:
-        # End of period
-        bal = pv_f * ((1 + r) ** (p - 1)) + pmt_amt * (((1 + r) ** (p - 1)) - 1) / r
-        interest = -bal * r
-        return interest
-    else:
-        # Beginning of period
-        if p == 1:
-            return 0.0
-        bal = pv_f * ((1 + r) ** (p - 1)) + pmt_amt * (((1 + r) ** (p - 1)) - 1) / r
-        # Since payment is at beginning, the interest for period p is based on balance after payment p-1
-        interest = -(bal - (-pmt_amt)) * r if bal != 0 else 0.0
-        # Actually standard IPMT formula:
-        bal2 = pv_f * ((1 + r) ** (p - 2)) + pmt_amt * (((1 + r) ** (p - 2)) - 1) / r
-        return -(bal2 + pmt_amt) * r
+    return _npf_result("ipmt", r, p, n, pv_f, fv_f, t)
 
 
 def irr(values: Any, guess: Any = 0.1) -> float:
-    vals = np.asarray(values, dtype=float).ravel()
+    # numpy-financial 1.1 irr ignores guess and returns one polynomial root
+    # (smallest magnitude). Excel IRR(values, guess) is Newton's method from
+    # that guess: guess 0.1 and 0.5 on [-5, 10.5, 1, -8, 1] are different
+    # roots (~0.089 and ~0.71). Keep this solver.
+    # dtype=float and float(guess) raise on a text cell. Sibling helpers return NaN.
+    try:
+        vals = np.asarray(values, dtype=float).ravel()
+        x = float(guess)
+    except (ValueError, TypeError, OverflowError):
+        return float("nan")
     # Simple Newton's method for IRR
-    x = float(guess)
     for _unused in range(100):
         f = 0.0
         df = 0.0
@@ -506,17 +397,17 @@ def irr(values: Any, guess: Any = 0.1) -> float:
 
 
 def isblank(val: Any) -> bool:
-    return is_missing_value(val)
+    return is_blank_value(val)
 
 
 def iserr(val: Any) -> bool:
-    if isinstance(val, str) and val.startswith("#"):
-        return not val.upper().startswith("#N/A")
-    return False
+    # Real Calc error tokens, excluding #N/A. '#hashtag' is text.
+    return _is_calc_error(val) and not is_na_value(val)
 
 
 def iserror(val: Any) -> bool:
-    return isinstance(val, str) and val.startswith("#")
+    # Real Calc error tokens and NaN (NA()). '#hashtag' is text.
+    return _is_calc_error(val)
 
 
 def iseven(val: Any) -> bool:
@@ -524,8 +415,9 @@ def iseven(val: Any) -> bool:
         f = float(val)
         if np.isnan(f):
             return False
+        # int(inf) raises OverflowError, which the old handler let escape.
         return int(f) % 2 == 0
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return False
 
 
@@ -539,7 +431,7 @@ def islogical(val: Any) -> bool:
 
 
 def isna(val: Any) -> bool:
-    return is_missing_value(val)
+    return is_na_value(val)
 
 
 def isnontext(val: Any) -> bool:
@@ -547,7 +439,8 @@ def isnontext(val: Any) -> bool:
 
 
 def isnumber(val: Any) -> bool:
-    return isinstance(val, (int, float)) and not isinstance(val, bool)
+    # np.integer and np.floating count. bool and np.bool_ do not: they are logical.
+    return isinstance(val, (int, float, np.integer, np.floating)) and not isinstance(val, (bool, np.bool_))
 
 
 def isodd(val: Any) -> bool:
@@ -556,7 +449,7 @@ def isodd(val: Any) -> bool:
         if np.isnan(f):
             return False
         return int(f) % 2 != 0
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return False
 
 
@@ -576,6 +469,10 @@ def ispmt(rate: Any, per: Any, nper: Any, pv_val: Any) -> float:
         pv_f = float(pv_val)
     except (ValueError, TypeError):
         return float("nan")
+    # nper == 0 used to raise ZeroDivisionError (pv / nper). Excel/Calc are
+    # #NUM!; this module returns NaN. Same guard as pmt.
+    if n == 0:
+        return float("nan")
     # ISPMT calculates interest for a loan with even principal payments
     # principal payment = pv / nper
     # balance after per periods = pv - (pv / nper) * per
@@ -590,7 +487,8 @@ def isref(val: Any) -> bool:
 
 
 def istext(val: Any) -> bool:
-    return isinstance(val, str) and not (isinstance(val, str) and val.startswith("#"))
+    # Text, except a real Calc error token. '#hashtag' is text.
+    return isinstance(val, str) and not _is_calc_error(val)
 
 
 def jis(text: Any) -> str | float:
@@ -603,72 +501,122 @@ def jis(text: Any) -> str | float:
 
 
 def kurt(*args: Any) -> float:
-    vals = []
-    for arg in args:
-        for v in np.asarray(arg).ravel():
-            try:
-                vals.append(float(v))
-            except (ValueError, TypeError):
-                pass
-    n = len(vals)
-    if n < 4:
+    try:
+        import scipy.stats
+    except ImportError:
         return float("nan")
-    arr = np.asarray(vals)
-    m = np.mean(arr)
-    s = np.std(arr, ddof=1)
-    if s == 0:
+    arr = _extract_numeric_array(*args, ignore_text=True, ignore_bool=True)
+    if len(arr) < 4 or np.std(arr, ddof=1) == 0:
         return float("nan")
-    # Excel/Calc kurtosis formula
-    z = (arr - m) / s
-    term1 = (n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3))
-    term2 = np.sum(z**4)
-    term3 = (3 * (n - 1) ** 2) / ((n - 2) * (n - 3))
-    return float(term1 * term2 - term3)
+    try:
+        res = float(scipy.stats.kurtosis(arr, bias=False))
+        return res if math.isfinite(res) else float("nan")
+    except Exception:
+        return float("nan")
 
 
 def large(r: Any, k: Any) -> float:
-    arr = sorted([float(x) for x in np.asarray(r).ravel() if x is not None and x != ""], reverse=True)
-    ki = int(float(k))
-    return float(arr[ki - 1]) if 0 < ki <= len(arr) else float("nan")
-
-
-def linest(*args: Any) -> Any:
-    # A complete implementation using numpy.polyfit or similar
+    # Numbers only. Text such as '5', bools, and NaN are ignored, not sorted in.
+    arr = _extract_numeric_array(r, propagate_nan=False)
     try:
-        import numpy as np
+        ki = int(float(k))
+    except (ValueError, TypeError, OverflowError):
+        return float("nan")
+    if not 0 < ki <= len(arr):
+        return float("nan")
+    arr.sort()
+    return float(arr[-ki])
 
-        data_y = np.asarray(args[0]).ravel()
+
+def linest(*args: Any, **kwargs: Any) -> Any:
+    # Excel order is [mk, …, m1, b]. const=False forces b = 0. A row-oriented
+    # known_x is transposed so it lines up with known_y.
+    try:
+        raw_y = np.asarray(args[0]).ravel()
+        if any(isinstance(v, str) for v in raw_y):
+            return "#VALUE!"
+        data_y = np.asarray(args[0], dtype=float).ravel()
+        if data_y.size == 0 or np.any(np.isnan(data_y)):
+            return "#VALUE!"
         if len(args) > 1:
-            data_x = np.asarray(args[1])
+            raw_x = np.asarray(args[1]).ravel()
+            if any(isinstance(v, str) for v in raw_x):
+                return "#VALUE!"
+            data_x = np.asarray(args[1], dtype=float)
+            if np.any(np.isnan(data_x)):
+                return "#VALUE!"
             if data_x.ndim == 1:
                 data_x = data_x[:, np.newaxis]
+            elif data_x.ndim == 2:
+                if data_x.shape[0] != len(data_y) and data_x.shape[1] == len(data_y):
+                    data_x = data_x.T
         else:
-            data_x = np.arange(1, len(data_y) + 1)[:, np.newaxis]
+            data_x = np.arange(1, len(data_y) + 1, dtype=float)[:, np.newaxis]
 
-        # Simple fallback for 1D or 2D:
-        c, _unused, _unused2, _unused3 = np.linalg.lstsq(np.c_[data_x, np.ones(data_x.shape[0])], data_y, rcond=None)
-        return c.tolist()
+        if data_x.shape[0] != len(data_y):
+            return "#VALUE!"
+
+        const = bool(kwargs.get("const", args[2] if len(args) > 2 else True))
+
+        if const:
+            c, _unused, _unused2, _unused3 = np.linalg.lstsq(
+                np.c_[data_x, np.ones(data_x.shape[0])], data_y, rcond=None
+            )
+            slopes = c[:-1].tolist()
+            intercept = float(c[-1])
+            return [*slopes[::-1], intercept]
+        else:
+            c, _unused, _unused2, _unused3 = np.linalg.lstsq(data_x, data_y, rcond=None)
+            slopes = c.tolist()
+            return [*slopes[::-1], 0.0]
     except Exception:
         return "#VALUE!"
 
 
-def logest(*args: Any) -> Any:
+def logest(*args: Any, **kwargs: Any) -> Any:
+    # Excel order reverses the slopes. const=False forces b = 1. A row-oriented
+    # known_x is transposed so it lines up with known_y.
     try:
-        import numpy as np
-
-        data_y = np.asarray(args[0]).ravel()
+        raw_y = np.asarray(args[0]).ravel()
+        if any(isinstance(v, str) for v in raw_y):
+            return "#VALUE!"
+        data_y = np.asarray(args[0], dtype=float).ravel()
+        if data_y.size == 0 or np.any(np.isnan(data_y)):
+            return "#VALUE!"
+        if np.any(data_y <= 0):
+            return "#VALUE!"
         data_y = np.log(data_y)
         if len(args) > 1:
-            data_x = np.asarray(args[1])
+            raw_x = np.asarray(args[1]).ravel()
+            if any(isinstance(v, str) for v in raw_x):
+                return "#VALUE!"
+            data_x = np.asarray(args[1], dtype=float)
+            if np.any(np.isnan(data_x)):
+                return "#VALUE!"
             if data_x.ndim == 1:
                 data_x = data_x[:, np.newaxis]
+            elif data_x.ndim == 2:
+                if data_x.shape[0] != len(data_y) and data_x.shape[1] == len(data_y):
+                    data_x = data_x.T
         else:
-            data_x = np.arange(1, len(data_y) + 1)[:, np.newaxis]
+            data_x = np.arange(1, len(data_y) + 1, dtype=float)[:, np.newaxis]
 
-        c, _unused, _unused2, _unused3 = np.linalg.lstsq(np.c_[data_x, np.ones(data_x.shape[0])], data_y, rcond=None)
-        c[:-1] = np.exp(c[:-1])
-        c[-1] = np.exp(c[-1])
-        return c.tolist()
+        if data_x.shape[0] != len(data_y):
+            return "#VALUE!"
+
+        const = bool(kwargs.get("const", args[2] if len(args) > 2 else True))
+
+        if const:
+            c, _unused, _unused2, _unused3 = np.linalg.lstsq(
+                np.c_[data_x, np.ones(data_x.shape[0])], data_y, rcond=None
+            )
+            slopes = np.exp(c[:-1]).tolist()
+            intercept = float(np.exp(c[-1]))
+            return [*slopes[::-1], intercept]
+        else:
+            c, _unused, _unused2, _unused3 = np.linalg.lstsq(data_x, data_y, rcond=None)
+            slopes = np.exp(c).tolist()
+            return [*slopes[::-1], 1.0]
     except Exception:
         return "#VALUE!"
 
@@ -676,7 +624,6 @@ def logest(*args: Any) -> Any:
 def loginv(p: Any, mean: Any, stdev: Any) -> float:
     try:
         import scipy.stats as st
-        import math
 
         prob = float(p)
         m = float(mean)
@@ -691,7 +638,6 @@ def loginv(p: Any, mean: Any, stdev: Any) -> float:
 def lognormdist(x: Any, mean: Any, stdev: Any, c: Any = 1) -> float:
     try:
         import scipy.stats as st
-        import math
 
         x_val = float(x)
         m = float(mean)
@@ -707,80 +653,38 @@ def lognormdist(x: Any, mean: Any, stdev: Any, c: Any = 1) -> float:
 
 
 def lookup(lookup_val: Any, *args: Any) -> Any:
+    # dtype=object keeps numbers as numbers. Text compares case-insensitively.
     if len(args) == 1:
-        vec = np.asarray(args[0]).ravel()
+        vec = np.asarray(args[0], dtype=object).ravel()
         result = vec
     else:
-        lookup_vec = np.asarray(args[0]).ravel()
-        result = np.asarray(args[1]).ravel()
+        lookup_vec = np.asarray(args[0], dtype=object).ravel()
+        result = np.asarray(args[1], dtype=object).ravel()
         vec = lookup_vec
     best_idx = None
     for i, v in enumerate(vec):
         try:
             if float(v) <= float(lookup_val):
                 best_idx = i
-        except (ValueError, TypeError):
-            if str(v) <= str(lookup_val):
+        except (ValueError, TypeError, OverflowError):
+            if isinstance(v, str) and isinstance(lookup_val, str):
+                if v.casefold() <= lookup_val.casefold():
+                    best_idx = i
+            elif str(v) <= str(lookup_val):
                 best_idx = i
     if best_idx is None:
         return None
+    if best_idx >= len(result):
+        return "#N/A"
     return result[best_idx]
 
 
-def match_criteria(val: Any, crit: Any) -> bool:
-    if is_missing_value(crit):
-        return is_missing_value(val)
-    if isinstance(crit, str):
-        m = re.match(r"^([<>=]+)(.*)$", crit)
-        if m:
-            op, val_str = m.groups()
-            try:
-                c_num = float(val_str)
-                v_num = float(val)
-            except (ValueError, TypeError):
-                c_str = val_str
-                v_str = str(val)
-                if op in ("=", "=="):
-                    return v_str == c_str
-                if op == "<>":
-                    return v_str != c_str
-                if op == "<":
-                    return v_str < c_str
-                if op == "<=":
-                    return v_str <= c_str
-                if op == ">":
-                    return v_str > c_str
-                if op == ">=":
-                    return v_str >= c_str
-            else:
-                if op in ("=", "=="):
-                    return v_num == c_num
-                if op == "<>":
-                    return v_num != c_num
-                if op == "<":
-                    return v_num < c_num
-                if op == "<=":
-                    return v_num <= c_num
-                if op == ">":
-                    return v_num > c_num
-                if op == ">=":
-                    return v_num >= c_num
-    try:
-        if float(val) == float(crit):
-            return True
-    except (ValueError, TypeError):
-        pass
-    return str(val) == str(crit)
+
 
 
 def maxa(*args: Any) -> float:
-    from plugin.scripting.venv.calc_functions_a_c import _to_float_a
-
-    vals = []
-    for arg in args:
-        for v in np.asarray(arg).ravel():
-            vals.append(_to_float_a(v))
-    if not vals:
+    vals = _collect_a_values(*args)
+    if not vals.size:
         return 0.0
     return float(np.max(vals))
 
@@ -807,7 +711,9 @@ def mduration(settlement: Any, maturity: Any, coupon: Any, yld: Any, frequency: 
         y = float(yld)
         f = float(frequency)
         b = int(float(basis))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
+        # int(float(basis)) raises OverflowError on ±inf. That used to escape
+        # the helper. Excel MDURATION is #NUM!, which this module reports as NaN.
         return float("nan")
     macd = duration(s, m, c, y, f, b)
     if math.isnan(macd):
@@ -816,13 +722,8 @@ def mduration(settlement: Any, maturity: Any, coupon: Any, yld: Any, frequency: 
 
 
 def mina(*args: Any) -> float:
-    from plugin.scripting.venv.calc_functions_a_c import _to_float_a
-
-    vals = []
-    for arg in args:
-        for v in np.asarray(arg).ravel():
-            vals.append(_to_float_a(v))
-    if not vals:
+    vals = _collect_a_values(*args)
+    if not vals.size:
         return 0.0
     return float(np.min(vals))
 
@@ -846,24 +747,10 @@ def mirr(values: Any, finance_rate: Any, reinvest_rate: Any) -> float:
         rr = float(reinvest_rate)
     except (ValueError, TypeError):
         return float("nan")
-    n = len(vals) - 1
-    if n < 1:
-        return float("nan")
-
-    # NPV of negative flows at finance rate
-    npv_neg = sum(v / ((1 + fr) ** i) for i, v in enumerate(vals) if v < 0)
-    # FV of positive flows at reinvest rate
-    fv_pos = sum(v * ((1 + rr) ** (n - i)) for i, v in enumerate(vals) if v > 0)
-
-    if npv_neg == 0 or fv_pos == 0:
-        return float("nan")
-
-    try:
-        # standard formula:
-        # MIRR = (-fv_pos / npv_neg) ** (1/n) - 1
-        return (-fv_pos / npv_neg) ** (1.0 / n) - 1.0
-    except (ValueError, TypeError):
-        return float("nan")
+    # rate == -1 used to divide by zero (later negative flows) or return a
+    # finite number (reinvest rate -1). numpy-financial's NPV is undefined
+    # there and returns NaN, which is Excel #NUM!.
+    return _npf_result("mirr", vals, fr, rr)
 
 
 def mmult(array1: Any, array2: Any) -> Any:
@@ -882,21 +769,51 @@ def mmult(array1: Any, array2: Any) -> Any:
 
 
 def mode(r: Any) -> Any:
-    vals = [x for x in np.asarray(r).ravel() if x is not None and x != ""]
+    # dtype=object. A bare asarray stringifies a mixed range, so 1 comes back as text.
+    vals = [x for x in np.asarray(r, dtype=object).ravel() if x is not None and x != ""]
     if not vals:
         return float("nan")
     counts = Counter(vals)
-    return counts.most_common(1)[0][0]
+    best = max(counts.values())
+    # Excel/Calc MODE is #N/A when nothing repeats. na() is float nan, which
+    # isna() already treats as #N/A. most_common used to return a singleton.
+    if best < 2:
+        return float("nan")
+    winners = [v for v, c in counts.items() if c == best]
+    # Tie-break is the lowest value, not the first one Counter saw
+    # (mode([2, 2, 1, 1]) was 2).
+    try:
+        return min(winners)
+    except TypeError:
+        return winners[0]
 
 
 def mround(number: Any, multiple: Any) -> float:
-    n = float(number)
-    m = float(multiple)
+    # float() on text or a blank cell used to raise ValueError.
+    try:
+        n = float(number)
+        m = float(multiple)
+    except (ValueError, TypeError, OverflowError):
+        return float("nan")
+    # math.floor/ceil raise OverflowError on ±inf and ValueError on NaN.
+    # A huge quotient (1e308 / 1e-308) overflows the same way. Excel MROUND
+    # is #NUM! for a non-finite argument; this module reports that as NaN.
+    if not math.isfinite(n) or not math.isfinite(m):
+        return float("nan")
+    # multiple 0 returns 0. LibreOffice analysis.cxx getMround
+    # (if fMult == 0.0 return fMult) and Excel agree; it is not #DIV/0!.
     if m == 0:
         return 0.0
     if (n > 0 and m < 0) or (n < 0 and m > 0):
         return float("nan")
-    return float(round(n / m) * m)
+    # Python round() is banker's rounding (half to even), so MROUND(2.5, 1)
+    # was 2. Excel/Calc round halves away from zero (result 3). Same-sign
+    # inputs make the quotient non-negative; floor(q + 0.5) is that rounding.
+    quot = n / m
+    if not math.isfinite(quot):
+        return float("nan")
+    rounded = math.floor(quot + 0.5) if quot >= 0 else math.ceil(quot - 0.5)
+    return float(rounded * m)
 
 
 def mtrans(matrix: Any) -> Any:
@@ -932,13 +849,11 @@ def munit(dimension: Any) -> Any:
 
 
 def n(val: Any) -> float:
-    if isinstance(val, (int, float)) and not isinstance(val, bool):
+    # N() of any text is 0, including a numeric-looking string such as "5".
+    if isinstance(val, (int, float, np.integer, np.floating)) and not isinstance(val, (bool, np.bool_)):
         return float(val)
-    if isinstance(val, bool):
+    if isinstance(val, (bool, np.bool_)):
         return 1.0 if val else 0.0
     if isinstance(val, str):
-        try:
-            return float(val)
-        except ValueError:
-            return 0.0
+        return 0.0
     return 0.0

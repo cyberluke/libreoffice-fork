@@ -77,6 +77,24 @@ def nodunder_getattr(obj, name, default=None):
     return getattr(obj, name, default)
 
 
+def _reject_shared_object_mutation(obj: Any) -> None:
+    """Block assignment onto a module or a type.
+
+    ``import numpy`` returns the live module (wrapping it SIGILLs).
+    ``setattr(np, "array", ...)`` or ``list.append = ...`` would change every
+    later cell and trusted action in this process. Instance assignment stays.
+    """
+    import types
+
+    if isinstance(obj, (types.ModuleType, type)):
+        raise InterpreterError("Cannot assign attributes on a module or a type")
+
+
+def _guarded_setattr(obj: Any, name: str, value: Any) -> None:
+    _reject_shared_object_mutation(obj)
+    setattr(obj, name, value)
+
+
 BASE_PYTHON_TOOLS = {
     "print": custom_print,
     "isinstance": isinstance,
@@ -126,7 +144,7 @@ BASE_PYTHON_TOOLS = {
     "callable": callable,
     "getattr": nodunder_getattr,
     "hasattr": hasattr,
-    "setattr": setattr,
+    "setattr": _guarded_setattr,
     "issubclass": issubclass,
     "type": type,
     "complex": complex,
@@ -310,35 +328,36 @@ def timeout(timeout_seconds: int):
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            # BUGFIX: Executing matplotlib or other non-thread-safe compiled C-extensions (like numpy/PyQt6/etc.)
-            # inside a background thread of a ThreadPoolExecutor often triggers garbage collection crashes (SIGILL)
-            # or backend context crashes. On Unix/Linux systems when called on the main thread, we prefer using a
-            # signal-based alarm, which executes the code entirely on the main thread. We gracefully fall back to the
-            # ThreadPoolExecutor if signal.alarm is not supported or if not running on the main thread.
+            # Executing matplotlib or other non-thread-safe compiled C-extensions
+            # inside a ThreadPoolExecutor thread crashes (SIGILL). On the main
+            # thread, signal.alarm runs the cell on that thread. Fall back to a
+            # thread only when alarm cannot be installed.
             import signal
+
+            def sigalrm_handler(signum, frame):
+                raise ExecutionTimeoutError(f"Code execution exceeded the maximum execution time of {timeout_seconds} seconds")
+
             try:
-                def sigalrm_handler(signum, frame):
-                    raise ExecutionTimeoutError(
-                        f"Code execution exceeded the maximum execution time of {timeout_seconds} seconds"
-                    )
                 old_handler = signal.signal(signal.SIGALRM, sigalrm_handler)
                 signal.alarm(timeout_seconds)
-                try:
-                    return func(*args, **kwargs)
-                finally:
-                    signal.alarm(0)
-                    signal.signal(signal.SIGALRM, old_handler)
             except (ValueError, AttributeError):
-                # Fallback to ThreadPoolExecutor if SIGALRM is not supported or not on the main thread
+                # InterpreterError subclasses ValueError. Catching it around the
+                # cell treated a real timeout as "alarm unsupported", re-ran the
+                # cell on a thread, and ThreadPoolExecutor.shutdown waited for
+                # that thread. The compute host then SIGKILLed the process and
+                # dropped every other shared session on it. Only setup failures
+                # (not the main thread, or Windows) take this path.
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(func, *args, **kwargs)
                     try:
-                        result = future.result(timeout=timeout_seconds)
-                        return result
+                        return future.result(timeout=timeout_seconds)
                     except FuturesTimeoutError:
-                        raise ExecutionTimeoutError(
-                            f"Code execution exceeded the maximum execution time of {timeout_seconds} seconds"
-                        )
+                        raise ExecutionTimeoutError(f"Code execution exceeded the maximum execution time of {timeout_seconds} seconds")
+            try:
+                return func(*args, **kwargs)
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, old_handler)
 
         return wrapper
 
@@ -847,7 +866,48 @@ def set_value(
         obj[key] = value
     elif isinstance(target, ast.Attribute):
         obj = evaluate_ast(target.value, state, static_tools, custom_tools, authorized_imports)
+        _reject_shared_object_mutation(obj)
         setattr(obj, target.attr, value)
+
+
+def _reject_numpy_code_exec(func: Any, args: list[Any], kwargs: dict[str, Any]) -> None:
+    """Block pickle and ctypes escapes on the live NumPy module.
+
+    ``get_safe_module`` returns NumPy raw (wrapping it has crashed with SIGILL).
+    ``evaluate_call`` invokes the callee before ``DANGEROUS_FUNCTIONS`` runs, so
+    ``np.load(..., allow_pickle=True)`` and ``numpy.ctypeslib.load_library``
+    executed inside the worker. Numeric ``np.load`` / ``np.save`` without an
+    explicit ``allow_pickle=True`` stay allowed.
+    """
+    module = getattr(func, "__module__", "") or ""
+    name = getattr(func, "__name__", "") or ""
+    if not module.startswith("numpy"):
+        return
+    # NumPy is returned raw so dir() will not import f2py and SIGILL; this call
+    # check is what blocks the compiler entry points.
+    _NUMPY_CALL_DENIED = ("numpy.ctypeslib", "numpy.f2py", "numpy.distutils", "numpy.testing")
+    if name == "load_library" or any(module.startswith(prefix) for prefix in _NUMPY_CALL_DENIED):
+        raise InterpreterError(f"Forbidden call to {module}.{name}")
+    if name not in ("load", "save"):
+        return
+    allow = kwargs.get("allow_pickle", False)
+    # load(file, mmap_mode=None, allow_pickle=False); save(file, arr, allow_pickle=True)
+    if "allow_pickle" not in kwargs and len(args) >= 3:
+        allow = args[2]
+    if allow:
+        raise InterpreterError(f"numpy.{name}(allow_pickle=True) is not allowed")
+
+
+def _reject_pandas_pickle(func: Any, args: list[Any], kwargs: dict[str, Any]) -> None:
+    """Block pandas pickle the same way NumPy ``allow_pickle=True`` is blocked.
+
+    ``read_pickle`` unpickles outside the AST walker and can import ``os``.
+    """
+    del args, kwargs
+    module = getattr(func, "__module__", "") or ""
+    name = getattr(func, "__name__", "") or ""
+    if module.startswith("pandas") and name in ("read_pickle", "to_pickle"):
+        raise InterpreterError(f"Forbidden call to {module}.{name}")
 
 
 def evaluate_call(
@@ -943,6 +1003,8 @@ def evaluate_call(
             and (func.__name__ not in ALLOWED_DUNDER_METHODS)
         ):
             raise InterpreterError(f"Forbidden call to dunder function: {func.__name__}")
+        _reject_numpy_code_exec(func, args, kwargs)
+        _reject_pandas_pickle(func, args, kwargs)
         return func(*args, **kwargs)
 
 
@@ -1393,9 +1455,8 @@ def evaluate_import(expression, state, authorized_imports):
                 raw_module = import_module(alias.name)
                 state[alias.asname or alias.name] = get_safe_module(raw_module, authorized_imports)
             else:
-                raise InterpreterError(
-                    f"Import of {alias.name} is not allowed. Authorized imports are: {str(authorized_imports)}"
-                )
+                # Bugfix: keep import-failure messages short; dumping authorized_imports exposes duckdb.
+                raise InterpreterError(f"Import of {alias.name} is not allowed.")
         return None
     elif isinstance(expression, ast.ImportFrom):
         if check_import_authorized(expression.module, authorized_imports):
@@ -1416,9 +1477,8 @@ def evaluate_import(expression, state, authorized_imports):
                     else:
                         raise InterpreterError(f"Module {expression.module} has no attribute {alias.name}")
         else:
-            raise InterpreterError(
-                f"Import from {expression.module} is not allowed. Authorized imports are: {str(authorized_imports)}"
-            )
+            # Bugfix: keep import-failure messages short; dumping authorized_imports exposes duckdb.
+            raise InterpreterError(f"Import from {expression.module} is not allowed.")
         return None
 
 

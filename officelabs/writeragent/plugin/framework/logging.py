@@ -22,11 +22,15 @@ Also: redaction helpers for debug logs that would otherwise embed large base64 (
 Concurrency: ``init_logging`` may run from bootstrap while workers already
 log. ``_init_lock`` serializes installing the file handler and remembering
 the ``writeragent_debug.log`` path. ``_activity_lock`` protects the
-watchdog’s “last activity” timestamps (a dedicated background thread
+watchdog’s “last activity” timestamps (a dedicated background job
 flushes or pokes health). ``_debug_log_flush_lock`` rate-limits
 ``flush()`` so every log line does not fsync. Actual line writes go
 through Python’s ``logging`` handler lock; you do not need another mutex
-around ``log.info``.
+around ``log.info``. The debug-file handler, the exception-hook flag, and
+the watchdog-started flag live on ``sys`` (``_writeragent_debug_file_handler``,
+``_writeragent_exception_hooks_installed``, ``_writeragent_watchdog_started``),
+same as ``sys._writeragent_event_bus``, so a second import of this package
+does not wrap ``sys.excepthook`` or start another watchdog.
 """
 
 from __future__ import annotations
@@ -41,8 +45,6 @@ import logging
 from copy import deepcopy
 from typing import Any
 
-from plugin.framework.worker_pool import run_in_background
-from plugin.framework.thread_guard import background
 from plugin.framework.errors import ConfigError, format_error_payload
 from plugin.framework.json_utils import safe_json_loads
 from plugin.framework import config
@@ -52,7 +54,6 @@ _debug_log_path = None
 _enable_agent_log = False
 _log_level_numeric = 10  # Default to DEBUG
 _init_lock = threading.Lock()
-_exception_hooks_installed = False
 
 log = logging.getLogger("writeragent")
 
@@ -70,13 +71,15 @@ def resolve_log_level(level_str: str | None) -> int:
     return int(getattr(logging, name))
 
 
-# Watchdog: shared state (main thread updates, watchdog reads)
+# Watchdog: shared state (main thread updates, watchdog reads).
+# Started-flag lives on sys so a second import cannot start another job.
 _activity_state = {"phase": "", "round_num": -1, "tool_name": None, "last_activity": 0.0}
 _activity_lock = threading.Lock()
-_watchdog_started = False
 _watchdog_interval_sec = 15
 _watchdog_threshold_sec = 30
 _watchdog_hung_shown = False
+# True once this stall episode's thread stack dump was logged; cleared when activity resumes.
+_watchdog_stacks_dumped = False
 
 DEBUG_LOG_FILENAME = "writeragent_debug.log"
 
@@ -85,8 +88,23 @@ LOG_REDACT_IMAGE_PLACEHOLDER = "<image base64 data truncated, length=%d>"
 LOG_REDACT_SIGNATURE_PLACEHOLDER = "<signature truncated, length=%d>"
 # Image-model reasoning_details[].signature blobs are thousands of chars; keep short values readable.
 LOG_REDACT_SIGNATURE_MIN_LEN = 256
-# Dict keys whose string values are credentials. Matched case-insensitively.
-_SECRET_LOG_KEYS = frozenset({"api_key", "authorization", "bearer", "password"})
+# Exact casefolded names, not substrings (max_tokens must survive).
+_SECRET_LOG_KEYS = frozenset(
+    {
+        "api_key",
+        "api-key",
+        "x-api-key",
+        "authorization",
+        "bearer",
+        "password",
+        "token",
+        "secret",
+        "access_token",
+        "refresh_token",
+        "id_token",
+    }
+)
+_API_KEYS_BY_ENDPOINT = "api_keys_by_endpoint"
 LOG_REDACT_SECRET_PLACEHOLDER = "<redacted>"
 
 
@@ -94,7 +112,14 @@ def _redact_sensitive_inplace(o: Any) -> None:
     """Strip large base64, long signature blobs, and secret dict values from nested API-shaped JSON."""
     if isinstance(o, dict):
         for key, val in list(o.items()):
-            if isinstance(key, str) and key.casefold() in _SECRET_LOG_KEYS and isinstance(val, str):
+            if isinstance(key, str) and key.casefold() == _API_KEYS_BY_ENDPOINT and isinstance(val, dict):
+                # api_keys_by_endpoint is a URL→raw key map. An exact-name
+                # string check leaves every key in the debug log. Replace
+                # each string value; non-strings stay for the walk below.
+                for inner_key, inner_val in list(val.items()):
+                    if isinstance(inner_val, str):
+                        val[inner_key] = LOG_REDACT_SECRET_PLACEHOLDER
+            elif isinstance(key, str) and key.casefold() in _SECRET_LOG_KEYS and isinstance(val, str):
                 o[key] = LOG_REDACT_SECRET_PLACEHOLDER
         if o.get("type") == "input_audio":
             ia = o.get("input_audio")
@@ -137,11 +162,20 @@ class OptionalFlushFileHandler(logging.FileHandler):
     # FileHandler assigns stream in __init__ with no annotation basedpyright can see.
     stream: Any
 
-    def flush(self) -> None:
+    def emit(self, record: logging.LogRecord) -> None:
+        super().emit(record)
+        # Flush is rate-limited to at most once per second, and nothing else
+        # flushed the tail after a burst. A crash then lost recent warnings.
+        # WARNING+ always force-flushes so those records reach disk without
+        # waiting for the 1s interval.
+        if record.levelno >= logging.WARNING:
+            self.flush(force=True)
+
+    def flush(self, force: bool = False) -> None:
         global _debug_log_last_flush
         now = _monotonic()
         with _debug_log_flush_lock:
-            if now - _debug_log_last_flush < FLUSH_INTERVAL_SEC:
+            if not force and now - _debug_log_last_flush < FLUSH_INTERVAL_SEC:
                 return
             _debug_log_last_flush = now
         super().flush()
@@ -186,8 +220,41 @@ class OptionalFlushFileHandler(logging.FileHandler):
 # One handler shared by the writeragent and plugin loggers. Two handlers
 # on the same path rotate on separate fds: after the first rename, the other fd
 # keeps writing the inode that is now writeragent_debug.log.1, and that backup
-# is never size-checked, so it grows past the cap.
-_debug_file_handler: OptionalFlushFileHandler | None = None
+# is never size-checked, so it grows past the cap. The object lives on sys so
+# a second import of this package does not open another fd.
+
+
+def _debug_file_handler_from_sys() -> OptionalFlushFileHandler | None:
+    handler = getattr(sys, "_writeragent_debug_file_handler", None)
+    if isinstance(handler, OptionalFlushFileHandler):
+        return handler
+    return None
+
+
+def _shared_debug_file_handler() -> OptionalFlushFileHandler:
+    """Return the process's debug-log handler, creating it when the path changes.
+
+    One handler, stored on sys. A module global opened a second FileHandler
+    on the same path when LibreOffice imported this package twice, and the
+    two fds fought over rotation.
+    """
+    path = _debug_log_path
+    if not isinstance(path, str) or not path:
+        raise RuntimeError("debug log path is not set")
+    current = _debug_file_handler_from_sys()
+    if current is not None and getattr(current, "baseFilename", "") == path:
+        return current
+    # A path change must close the previous FileHandler before the replace,
+    # or its fd stays alive. A close error must not block the new file.
+    if current is not None:
+        try:
+            current.close()
+        except Exception:
+            pass
+    handler = OptionalFlushFileHandler(path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s"))
+    setattr(sys, "_writeragent_debug_file_handler", handler)
+    return handler
 
 
 def redact_sensitive_payload_for_log(obj: Any) -> Any:
@@ -223,21 +290,6 @@ def _strip_stray_handlers(logger: logging.Logger) -> bool:
     return has_matching
 
 
-def _shared_debug_file_handler() -> OptionalFlushFileHandler:
-    """Return the process's debug-log handler, creating it when the path changes."""
-    global _debug_file_handler
-    path = _debug_log_path
-    if not isinstance(path, str) or not path:
-        raise RuntimeError("debug log path is not set")
-    current = _debug_file_handler
-    if current is not None and getattr(current, "baseFilename", "") == path:
-        return current
-    handler = OptionalFlushFileHandler(path, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s"))
-    _debug_file_handler = handler
-    return handler
-
-
 def _ensure_debug_file_handler(logger: logging.Logger) -> None:
     if not _debug_log_path:
         return
@@ -262,7 +314,10 @@ def init_logging(ctx: Any | None = None) -> None:
         first_init = _debug_log_path is None
         try:
             if ctx is not None:
-                config.init_config(ctx)
+                try:
+                    config.init_config(ctx)
+                except ConfigError:
+                    pass
             udir = config.user_config_dir()
             # Eval uses MagicMock ctx; skip file logging unless the dir is real.
             if udir and os.path.isdir(udir):
@@ -317,13 +372,21 @@ def init_logging(ctx: Any | None = None) -> None:
 
 
 def _install_global_exception_hooks() -> None:
-    """Install sys.excepthook and threading.excepthook to log unhandled exceptions. Idempotent."""
-    global _exception_hooks_installed
-    if _exception_hooks_installed:
-        return
-    _exception_hooks_installed = True
+    """Install sys.excepthook and threading.excepthook to log unhandled exceptions.
 
-    _original_excepthook = sys.excepthook
+    The installed flag lives on sys, and we also return when the current hook
+    is already ours. A module global let LibreOffice import this package
+    twice and wrap sys.excepthook again.
+    """
+    current_hook = sys.excepthook
+    if getattr(current_hook, "_writeragent_hook", False):
+        setattr(sys, "_writeragent_exception_hooks_installed", True)
+        return
+    if getattr(sys, "_writeragent_exception_hooks_installed", False):
+        return
+    setattr(sys, "_writeragent_exception_hooks_installed", True)
+
+    _original_excepthook = current_hook
 
     def _writeragent_excepthook(exc_type: Any, exc_value: Any, exc_tb: Any) -> None:
         try:
@@ -342,28 +405,36 @@ def _install_global_exception_hooks() -> None:
         except Exception:
             pass
 
+    setattr(_writeragent_excepthook, "_writeragent_hook", True)
     sys.excepthook = _writeragent_excepthook
 
-    if getattr(threading, "excepthook", None) is not None:
-        _original_threading_excepthook = threading.excepthook
+    if getattr(threading, "excepthook", None) is None:
+        return
+    # Same marker as the sys hook. Resetting only sys.excepthook (tests, or
+    # a second import that already wrapped sys) must not wrap
+    # threading.excepthook again.
+    if getattr(threading.excepthook, "_writeragent_hook", False):
+        return
+    _original_threading_excepthook = threading.excepthook
 
-        def _writeragent_threading_excepthook(args: Any) -> None:
+    def _writeragent_threading_excepthook(args: Any) -> None:
+        try:
+            msg = "Unhandled exception in thread %s: %s\n%s" % (getattr(args, "thread", None), getattr(args, "exc_type", args), "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)) if getattr(args, "exc_type", None) else "")
             try:
-                msg = "Unhandled exception in thread %s: %s\n%s" % (getattr(args, "thread", None), getattr(args, "exc_type", args), "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)) if getattr(args, "exc_type", None) else "")
-                try:
-                    payload = format_error_payload(args.exc_value)
-                    msg += f"\nPayload context: {payload.get('details', {})}"
-                except Exception:
-                    pass
-                log.error(f"[Excepthook] {msg.strip()}")
+                payload = format_error_payload(args.exc_value)
+                msg += f"\nPayload context: {payload.get('details', {})}"
             except Exception:
                 pass
-            try:
-                _original_threading_excepthook(args)
-            except Exception:
-                pass
+            log.error(f"[Excepthook] {msg.strip()}")
+        except Exception:
+            pass
+        try:
+            _original_threading_excepthook(args)
+        except Exception:
+            pass
 
-        threading.excepthook = _writeragent_threading_excepthook
+    setattr(_writeragent_threading_excepthook, "_writeragent_hook", True)
+    threading.excepthook = _writeragent_threading_excepthook
 
 
 class SafeLogger:
@@ -451,11 +522,18 @@ def log_exception(ex: BaseException, context: str = "WriterAgent") -> None:
         pass
 
 
+def _redacted_display_args(args: Any) -> Any:
+    """Same secret walk as the debug log, before the display truncates reprs."""
+    if isinstance(args, dict):
+        return redact_sensitive_payload_for_log(args)
+    return args
+
+
 def format_tool_call_for_display(tool: Any, args: Any, method: Any = None) -> str:
     """Format an MCP tool call or generic method call for UI display, summarizing long arguments."""
     try:
         if tool:
-            args_dict = args or {}
+            args_dict = _redacted_display_args(args or {})
             arg_vals = []
             if isinstance(args_dict, dict):
                 for k, v in args_dict.items():
@@ -506,7 +584,7 @@ def format_tool_result_for_display(tool: Any, result: Any, args: Any = None) -> 
 
         args_str = ""
         if args:
-            args_dict = args if isinstance(args, dict) else {}
+            args_dict = _redacted_display_args(args) if isinstance(args, dict) else {}
             arg_vals = []
             for k, v in args_dict.items():
                 if isinstance(k, str) and k.casefold() in _SECRET_LOG_KEYS and isinstance(v, str):
@@ -532,23 +610,33 @@ def agent_log(location: str, message: str, data: Any = None, hypothesis_id: Any 
     """Write one structured agent trace line to writeragent_debug.log when enable_agent_log is True."""
     if not _enable_agent_log:
         return
-    payload = {"location": location, "message": message, "timestamp": int(time.time() * 1000)}
-    if data is not None:
-        # Copy first so a logged payload cannot mutate the caller's dict.
-        if isinstance(data, (dict, list)):
-            data = redact_sensitive_payload_for_log(data)
-        payload["data"] = data
-    if hypothesis_id is not None:
-        payload["hypothesisId"] = hypothesis_id
-    if run_id is not None:
-        payload["runId"] = run_id
+    # redact_sensitive_payload_for_log deepcopy's the payload. A Lock (or
+    # anything deepcopy rejects) raises TypeError. Redaction and dumps share
+    # this try so a bad payload is dropped instead of raised out of
+    # best-effort logging.
     try:
+        payload = {"location": location, "message": message, "timestamp": int(time.time() * 1000)}
+        if data is not None:
+            # Copy first so a logged payload cannot mutate the caller's dict.
+            if isinstance(data, (dict, list)):
+                data = redact_sensitive_payload_for_log(data)
+            payload["data"] = data
+        if hypothesis_id is not None:
+            payload["hypothesisId"] = hypothesis_id
+        if run_id is not None:
+            payload["runId"] = run_id
         log.debug("[Agent] %s", json.dumps(payload, ensure_ascii=False))
     except Exception:
         pass
 
 
-def update_activity_state(phase: str, round_num: Any = None, tool_name: str | None = None) -> None:
+def note_activity() -> None:
+    """Note recent activity to prevent false Hung statuses, without changing phase or logging."""
+    with _activity_lock:
+        _activity_state["last_activity"] = time.monotonic()
+
+
+def update_activity_state(phase: str, round_num: Any = None, tool_name: str | None = None, status_control: Any = None) -> None:
     """Update shared activity state (call from main thread at phase boundaries).
     Pass phase='' when returning control to LibreOffice so the watchdog stops checking."""
     with _activity_lock:
@@ -558,6 +646,20 @@ def update_activity_state(phase: str, round_num: Any = None, tool_name: str | No
             _activity_state["round_num"] = round_num
         if tool_name is not None:
             _activity_state["tool_name"] = tool_name
+        if status_control is not None:
+            _activity_state["status_control"] = status_control
+
+        ctrl_to_clear = _activity_state.get("status_control")
+        if not phase:
+            _activity_state["status_control"] = None
+
+    if not phase and ctrl_to_clear is not None:
+        try:
+            from plugin.framework.queue_executor import post_to_main_thread
+
+            post_to_main_thread(_clear_hung_status, ctrl_to_clear)
+        except Exception:
+            pass
 
 
 def _clear_hung_status(status_control: Any) -> None:
@@ -571,74 +673,128 @@ def _clear_hung_status(status_control: Any) -> None:
         status_control.setText("")
 
 
+def _flush_debug_log() -> None:
+    handler = getattr(sys, "_writeragent_debug_file_handler", None)
+    if isinstance(handler, OptionalFlushFileHandler):
+        handler.flush(force=True)
+
+
+def _dump_thread_stacks() -> None:
+    """Log every thread's current Python stack as one DEBUG record.
+
+    Why: a hang log only said "no activity". We suspect the main thread holds
+    the SolarMutex in the stream drain while a worker blocks freeing a PyUNO
+    proxy; the stacks show where each thread is actually waiting.
+    """
+    try:
+        names = {t.ident: t for t in threading.enumerate()}
+        lines = ["[Chat] WATCHDOG: thread stack dump\n"]
+        for ident, frame in sys._current_frames().items():
+            thread = names.get(ident)
+            name = thread.name if thread else "?"
+            daemon = thread.daemon if thread else "?"
+            lines.append("--- Thread %s (ident=%s, daemon=%s) ---\n" % (name, ident, daemon))
+            lines.extend(traceback.format_stack(frame))
+        log.debug("".join(lines))
+    except Exception:
+        log.debug("watchdog: thread stack dump failed", exc_info=True)
+
+
 def _watchdog_check(status_control: Any) -> None:
     """One watchdog pass. Posts Hung: after the idle threshold, and clears it when activity resumes."""
-    global _watchdog_hung_shown
+    global _watchdog_hung_shown, _watchdog_stacks_dumped
+    # Flush the debug file on each watchdog check. The activity timestamps
+    # alone leave the unwritten tail in memory after a burst stops.
+    _flush_debug_log()
     with _activity_lock:
         phase = _activity_state["phase"]
         round_num = _activity_state["round_num"]
         tool_name = _activity_state["tool_name"]
         last = _activity_state["last_activity"]
+        active_status_control: Any = _activity_state.get("status_control", status_control)
+    if active_status_control is None:
+        active_status_control = status_control
     if not phase:
         return
     last_val = last if isinstance(last, (int, float)) else 0.0
     elapsed = time.monotonic() - last_val
     if elapsed < _watchdog_threshold_sec:
-        if _watchdog_hung_shown and status_control is not None:
+        _watchdog_stacks_dumped = False
+        if _watchdog_hung_shown and active_status_control is not None:
             try:
                 from plugin.framework.queue_executor import post_to_main_thread
 
-                post_to_main_thread(_clear_hung_status, status_control)
+                post_to_main_thread(_clear_hung_status, active_status_control)
                 _watchdog_hung_shown = False
             except Exception:
                 log.debug("watchdog: failed to clear Hung status", exc_info=True)
         return
     msg = "WATCHDOG: no activity for %ds; phase=%s round=%s tool=%s" % (int(elapsed), phase, round_num, tool_name if tool_name else "")
     log.debug(f"[Chat] {msg}")
-    if status_control:
+    # Once per stall episode: later ticks of the same stall would only repeat it.
+    if not _watchdog_stacks_dumped:
+        _watchdog_stacks_dumped = True
+        _dump_thread_stacks()
+        # Write it now; a hang that ends in a crash may not reach the next tick.
+        _flush_debug_log()
+    if active_status_control:
         hung_text = "Hung: %s round %s" % (phase, round_num)
         if tool_name:
             hung_text += " %s" % tool_name
         try:
             from plugin.framework.queue_executor import post_to_main_thread
 
-            post_to_main_thread(status_control.setText, hung_text)
+            post_to_main_thread(active_status_control.setText, hung_text)
             _watchdog_hung_shown = True
         except Exception:
             log.debug("watchdog: failed to post Hung status to main thread", exc_info=True)
 
 
-@background
 def _watchdog_loop(status_control: Any) -> None:
-    """Daemon thread: if no activity for threshold, log and set status to Hung: ..."""
+    """Dedicated pool job: if no activity for threshold, log and set status to Hung: ..."""
     while True:
         time.sleep(_watchdog_interval_sec)
         _watchdog_check(status_control)
 
 
 def start_watchdog_thread(ctx: Any, status_control: Any = None) -> None:
-    """Start the hang-detection watchdog (idempotent). Pass status_control to set Hung: ... in UI."""
-    global _watchdog_started
+    """Start the hang-detection watchdog (idempotent). Pass status_control to set Hung: ... in UI.
+
+    The flag is on sys. A module global let a second import start another
+    job, and the pool imports ran at module import (LibrePy imports logging
+    and never starts the watchdog). The job is a dedicated pool task, not a
+    raw thread. ctx is unused; callers still pass the component context.
+    """
+    del ctx
     with _activity_lock:
-        if _watchdog_started:
+        if getattr(sys, "_writeragent_watchdog_started", False):
             return
-        _watchdog_started = True
-    run_in_background(_watchdog_loop, status_control, name="watchdog", daemon=True, dedicated=True)
+        setattr(sys, "_writeragent_watchdog_started", True)
+    from plugin.framework.thread_guard import background
+    from plugin.framework.worker_pool import run_in_background
 
+    @background
+    def _watchdog_job(status: Any) -> None:
+        _watchdog_loop(status)
 
-# Custom LogRecord Factory for PyUNO safety in Python 3.12+
-_log_record_factory_installed = False
+    run_in_background(_watchdog_job, status_control, name="watchdog", daemon=True, dedicated=True)
 
 
 def _install_safe_log_record_factory() -> None:
     """Install a custom LogRecord factory to prevent TypeError in Python 3.12+
-    when logging a single PyUNO proxy object."""
-    global _log_record_factory_installed
-    if _log_record_factory_installed:
-        return
-    _log_record_factory_installed = True
+    when logging a single PyUNO proxy object.
 
-    _original_factory = logging.getLogRecordFactory()
+    A marker on the factory and a sys flag make a second import a no-op.
+    A module global wrapped the factory again.
+    """
+    current = logging.getLogRecordFactory()
+    if getattr(current, "_writeragent_safe_factory", False):
+        setattr(sys, "_writeragent_log_record_factory_installed", True)
+        return
+    if getattr(sys, "_writeragent_log_record_factory_installed", False):
+        return
+
+    _original_factory = current
 
     def safe_logRecordFactory(*args: Any, **kwargs: Any) -> Any:
         # args contains (name, level, fn, lno, msg, args, exc_info, func, sinfo)
@@ -657,7 +813,9 @@ def _install_safe_log_record_factory() -> None:
                     kwargs["args"] = tuple(str(x) if type(x).__name__ == "pyuno" else x for x in log_args)
         return _original_factory(*args, **kwargs)
 
+    setattr(safe_logRecordFactory, "_writeragent_safe_factory", True)
     logging.setLogRecordFactory(safe_logRecordFactory)
+    setattr(sys, "_writeragent_log_record_factory_installed", True)
 
 
 _install_safe_log_record_factory()

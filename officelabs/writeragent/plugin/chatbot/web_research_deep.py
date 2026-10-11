@@ -25,11 +25,13 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any
 
+from plugin.framework.config_schema import as_bool
 from plugin.framework.constants import now_aware
 
 from plugin.framework.errors import ToolExecutionError, format_error_payload
@@ -39,6 +41,9 @@ from plugin.framework.json_utils import safe_json_loads
 log = logging.getLogger("writeragent.web_research_deep")
 
 MAX_CONTEXT_WORDS = 25000
+# Stop joins the pool. A worker that sees the captured checker returns and
+# the join finishes. One stuck in HTTP must not hold the send forever.
+_STOP_POOL_JOIN_SEC = 30.0
 
 JSON_BLOCK_PATTERNS = [
     re.compile(r"```(?:json)?\s*(?P<payload>[\s\S]*?)```", re.IGNORECASE),
@@ -57,6 +62,9 @@ URL_PATTERN = re.compile(r"https?://[^\s\]\)>\",;]+")
 
 WebAgentRunner = Callable[[str, str, str | None], str | dict[str, Any]]
 LlmChatFn = Callable[[list[dict[str, str]], int], str]
+# Each pool task returns its own (run_web_agent, extraction llm_chat). The
+# parent llm_chat stays on the planning thread and is not safe to share.
+WorkerFactory = Callable[[], tuple[WebAgentRunner, LlmChatFn, Callable[[], None]]]
 StopChecker = Callable[[], bool] | None
 StatusCallback = Callable[[str], None] | None
 ProgressCallback = Callable[["ResearchProgress"], None] | None
@@ -91,11 +99,16 @@ def parse_search_queries_response(response: str, num_queries: int) -> list[dict[
         candidate_queries = parsed.get("queries") or parsed.get("searchQueries") or parsed.get("items")
 
     if isinstance(candidate_queries, list):
-        parsed_queries = [
-            {"query": str(item["query"]).strip(), "researchGoal": str(item["researchGoal"]).strip()}
-            for item in candidate_queries
-            if isinstance(item, dict) and item.get("query") and item.get("researchGoal")
-        ]
+        parsed_queries = []
+        for item in candidate_queries:
+            if isinstance(item, dict):
+                q = str(item.get("query") or "").strip()
+                g = str(item.get("researchGoal") or "").strip() or f"Research: {q}"
+                if q:
+                    parsed_queries.append({"query": q, "researchGoal": g})
+            elif isinstance(item, str) and item.strip():
+                q = item.strip()
+                parsed_queries.append({"query": q, "researchGoal": f"Research: {q}"})
         if parsed_queries:
             return parsed_queries[:num_queries]
 
@@ -147,7 +160,7 @@ def parse_research_results_response(response: str, num_learnings: int) -> dict[s
         learnings_payload = parsed.get("learnings", [])
         follow_up_payload = parsed.get("followUpQuestions") or parsed.get("questions") or []
         learnings: list[str] = []
-        citations: dict[str, str] = {}
+        citations: dict[str, list[str]] = {}
         if isinstance(learnings_payload, list):
             for item in learnings_payload:
                 if isinstance(item, dict):
@@ -159,8 +172,15 @@ def parse_research_results_response(response: str, num_learnings: int) -> dict[s
                 if learning:
                     learnings.append(learning)
                     if citation:
-                        citations[learning] = citation
-        questions = [str(item).strip() for item in follow_up_payload if str(item).strip()]
+                        citations.setdefault(learning, []).append(citation)
+        # A bare string used to be iterated here. ``"What about beta?"`` became
+        # one fake question per character (a dict became its keys). Sibling
+        # parsers already require a list before they walk the payload.
+        questions = (
+            [str(item).strip() for item in follow_up_payload if str(item).strip()]
+            if isinstance(follow_up_payload, list)
+            else []
+        )
         if learnings or questions:
             return {
                 "learnings": learnings[:num_learnings],
@@ -170,7 +190,7 @@ def parse_research_results_response(response: str, num_learnings: int) -> dict[s
 
     line_learnings: list[str] = []
     line_questions: list[str] = []
-    line_citations: dict[str, str] = {}
+    line_citations: dict[str, list[str]] = {}
     for raw_line in response.replace("```json", "").replace("```", "").splitlines():
         line = raw_line.strip()
         if not line:
@@ -188,7 +208,7 @@ def parse_research_results_response(response: str, num_learnings: int) -> dict[s
             if learning:
                 line_learnings.append(learning)
                 if citation:
-                    line_citations[learning] = citation
+                    line_citations.setdefault(learning, []).append(citation)
         elif question_match:
             line_questions.append(question_match.group("question").strip())
     return {
@@ -204,26 +224,42 @@ def count_words(text: Any) -> int:
     return len(str(text).split())
 
 
-def trim_context_to_word_limit(context_list: list[str], max_words: int = MAX_CONTEXT_WORDS) -> list[str]:
+def trim_context_to_word_limit(learnings: list[str], context_chunks: list[str], max_words: int = MAX_CONTEXT_WORDS) -> list[str]:
     total_words = 0
+    for item in learnings:
+        words = count_words(item)
+        if total_words + words <= max_words:
+            total_words += words
+        else:
+            if total_words < max_words:
+                rem = max_words - total_words
+                total_words += rem
+            break
+
     trimmed_context: list[str] = []
-    for item in reversed(context_list):
+    for item in reversed(context_chunks):
         words = count_words(item)
         if total_words + words <= max_words:
             trimmed_context.insert(0, item)
             total_words += words
-        elif not trimmed_context:
+        elif not trimmed_context and total_words < max_words:
             text = " ".join(str(part) for part in item) if isinstance(item, list) else str(item)
-            trimmed_context.insert(0, " ".join(text.split()[:max_words]))
+            rem = max_words - total_words
+            trimmed_context.insert(0, " ".join(text.split()[:rem]))
             break
         else:
             break
+
     return trimmed_context
+
+
+def _user_stopped_payload() -> dict[str, Any]:
+    return format_error_payload(ToolExecutionError("Web search stopped by user.", code="USER_STOPPED"))
 
 
 def _check_stopped(stop_checker: StopChecker) -> dict[str, Any] | None:
     if stop_checker and stop_checker():
-        return format_error_payload(ToolExecutionError("Web search stopped by user.", code="USER_STOPPED"))
+        return _user_stopped_payload()
     return None
 
 
@@ -233,7 +269,7 @@ class ResearchProgress:
 
     current_round: int = 1
     max_rounds: int = 1
-    completed_queries: int = 0
+    started_queries: int = 0
     max_sub_queries: int = 14
     current_query: str | None = None
 
@@ -241,7 +277,7 @@ class ResearchProgress:
         q = (self.current_query or "")[:50]
         return (
             f"Deep research round {self.current_round}/{self.max_rounds}, "
-            f"query {self.completed_queries}/{self.max_sub_queries}"
+            f"query {self.started_queries}/{self.max_sub_queries}"
             + (f": {q}..." if q else "")
         )
 
@@ -249,10 +285,10 @@ class ResearchProgress:
 @dataclass
 class _ResearchAccumulator:
     learnings: list[str] = field(default_factory=list)
-    citations: dict[str, str] = field(default_factory=dict)
+    citations: dict[str, list[str]] = field(default_factory=dict)
     context_chunks: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
-    completed_queries: int = 0
+    started_queries: int = 0
     budget_lock: threading.Lock = field(default_factory=threading.Lock)
     last_branch_error: dict[str, Any] | None = None
 
@@ -283,11 +319,17 @@ def parse_assessment_response(response: str) -> dict[str, Any]:
         gaps = [str(g).strip() for g in gaps_raw if str(g).strip()] if isinstance(gaps_raw, list) else []
         queries = [str(q).strip() for q in queries_raw if str(q).strip()] if isinstance(queries_raw, list) else []
         stop_flag = parsed.get("stop")
+        # ``bool("false")``, ``bool("0")``, and ``bool("no")`` are True, so a
+        # stringified flag ended the research loop early. `as_bool` correctly
+        # handles standard boolean token strings. Parse tokens the way score
+        # is coerced above: only a real boolean counts, and bad input falls
+        # back to "do not stop".
+        stop = as_bool(stop_flag) if stop_flag is not None else False
         return {
             "score": score,
             "knowledge_gaps": gaps,
             "suggested_queries": queries,
-            "stop": bool(stop_flag) if stop_flag is not None else False,
+            "stop": stop,
             "reasoning": str(parsed.get("reasoning") or ""),
         }
     return {"score": 0.0, "knowledge_gaps": [], "suggested_queries": [], "stop": False, "reasoning": ""}
@@ -297,14 +339,15 @@ def assess_research_coverage(
     llm_chat: LlmChatFn,
     original_query: str,
     learnings: list[str],
-    citations: dict[str, str],
+    citations: dict[str, list[str]],
     *,
     quality_threshold: int,
 ) -> dict[str, Any]:
     cited = []
-    for learning in learnings[:40]:
-        citation = citations.get(learning, "")
-        cited.append(f"{learning} [Source: {citation}]" if citation else learning)
+    unique_learnings = list(dict.fromkeys(learnings))
+    for learning in unique_learnings[-40:]:
+        urls = citations.get(learning, [])
+        cited.append(f"{learning} [Sources: {', '.join(urls)}]" if urls else learning)
     evidence = "\n".join(cited) or "(No learnings yet.)"
     messages = [
         {
@@ -425,10 +468,26 @@ def synthesize_deep_report(
     *,
     sources: list[str] | None = None,
 ) -> str:
-    context_with_citations = list(learnings)
-    context_with_citations.extend(context_chunks)
-    trimmed = trim_context_to_word_limit(context_with_citations)
-    evidence = "\n\n".join(trimmed)
+    trimmed_chunks = trim_context_to_word_limit(learnings, context_chunks)
+
+    # Also trim learnings themselves if they exceed max_words
+    trimmed_learnings: list[str] = []
+    total_words = 0
+    for item in learnings:
+        words = count_words(item)
+        if total_words + words <= MAX_CONTEXT_WORDS:
+            trimmed_learnings.append(item)
+            total_words += words
+        else:
+            if total_words < MAX_CONTEXT_WORDS:
+                text = " ".join(str(part) for part in item) if isinstance(item, list) else str(item)
+                rem = MAX_CONTEXT_WORDS - total_words
+                trimmed_learnings.append(" ".join(text.split()[:rem]))
+            break
+
+    evidence_parts = list(trimmed_learnings)
+    evidence_parts.extend(trimmed_chunks)
+    evidence = "\n\n".join(evidence_parts)
     source_block = ""
     if sources:
         unique_sources = list(dict.fromkeys(s for s in sources if s))
@@ -475,6 +534,8 @@ def _partial_report_from_evidence(
 
 
 def _coerce_agent_result(result: str | dict[str, Any]) -> str:
+    if result is None:
+        return ""
     if isinstance(result, dict):
         if result.get("status") == "error":
             raise ToolExecutionError(
@@ -482,9 +543,11 @@ def _coerce_agent_result(result: str | dict[str, Any]) -> str:
                 code=str(result.get("code") or "TOOL_EXECUTION_ERROR"),
             )
         if result.get("status") == "ok":
-            return str(result.get("result") or "")
+            val = result.get("result")
+            return str(val) if val is not None else ""
         if "result" in result:
-            return str(result.get("result") or "")
+            val = result.get("result")
+            return str(val) if val is not None else ""
         raise ToolExecutionError(str(result.get("message") or "Sub-query research failed."))
     return str(result)
 
@@ -495,7 +558,8 @@ def _extract_urls_from_text(text: str) -> list[str]:
 
 def _merge_branch_results(acc: _ResearchAccumulator, branch: dict[str, Any]) -> None:
     acc.learnings.extend(branch.get("learnings") or [])
-    acc.citations.update(branch.get("citations") or {})
+    for learning, urls in (branch.get("citations") or {}).items():
+        acc.citations.setdefault(learning, []).extend(urls)
     ctx = branch.get("context")
     if ctx:
         acc.context_chunks.append(str(ctx))
@@ -520,15 +584,16 @@ def _process_one_sub_query(
     if stopped is not None:
         return {"error": stopped}
 
-    with acc.budget_lock:
-        if acc.completed_queries >= max_sub_queries:
-            return None
-        acc.completed_queries += 1
-        progress.completed_queries = acc.completed_queries
-
     sub_query = serp_query["query"]
     research_goal = serp_query.get("researchGoal") or ""
-    progress.current_query = sub_query
+
+    with acc.budget_lock:
+        if acc.started_queries >= max_sub_queries:
+            return None
+        acc.started_queries += 1
+        progress.started_queries = acc.started_queries
+        progress.current_query = sub_query
+
     _emit_progress(progress, status_callback, on_progress)
 
     try:
@@ -542,9 +607,31 @@ def _process_one_sub_query(
         acc.last_branch_error = payload
         return None
 
-    results = process_research_results(llm_chat, sub_query, sub_context)
+    # The agent returned. Stop during that call must not start extraction,
+    # or the pool join waits on another HTTP request.
+    stopped = _check_stopped(stop_checker)
+    if stopped is not None:
+        return {"error": stopped}
+
+    try:
+        results = process_research_results(llm_chat, sub_query, sub_context)
+    except Exception as exc:
+        if getattr(exc, "code", None) == "USER_STOPPED":
+            raise
+        log.warning("deep_research: extraction failed for %s: %s", sub_query, exc)
+        results = {}
+
     sources = _extract_urls_from_text(sub_context)
-    for url in results.get("citations") or {}:
+    # parse_research_results_response stores {learning sentence: list[source url]}.
+    citation_map = results.get("citations") or {}
+    citation_urls = []
+    if isinstance(citation_map, dict):
+        for urls in citation_map.values():
+            citation_urls.extend(urls)
+    else:
+        citation_urls = citation_map
+
+    for url in citation_urls:
         if url and url not in sources:
             sources.append(url)
 
@@ -570,6 +657,7 @@ def _run_sub_queries_parallel(
     progress: ResearchProgress,
     status_callback: StatusCallback,
     on_progress: ProgressCallback,
+    worker_factory: WorkerFactory | None = None,
 ) -> dict[str, Any] | None:
     if not serp_queries:
         return None
@@ -578,39 +666,107 @@ def _run_sub_queries_parallel(
     error_payload: dict[str, Any] | None = None
 
     def _task(sq: dict[str, str]) -> dict[str, Any] | None:
-        return _process_one_sub_query(
-            sq,
-            run_web_agent=run_web_agent,
-            llm_chat=llm_chat,
-            stop_checker=stop_checker,
-            acc=acc,
-            max_sub_queries=max_sub_queries,
-            progress=progress,
-            status_callback=status_callback,
-            on_progress=on_progress,
-        )
+        # Stop can land after submit and before this body. Return without
+        # building a client so the pool join is not stuck in HTTP.
+        stopped = _check_stopped(stop_checker)
+        if stopped is not None:
+            return {"error": stopped}
+        # worker_factory builds a fresh LlmClient + extraction chat on this
+        # thread. Falling back to the shared callables is for unit tests that
+        # do not open HTTP; production always passes a factory.
+        worker_cleanup = None
+        if worker_factory is not None:
+            task_run_web_agent, task_llm_chat, worker_cleanup = worker_factory()
+        else:
+            task_run_web_agent, task_llm_chat = run_web_agent, llm_chat
 
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="deep-research") as pool:
+        try:
+            return _process_one_sub_query(
+                sq,
+                run_web_agent=task_run_web_agent,
+                llm_chat=task_llm_chat,
+                stop_checker=stop_checker,
+                acc=acc,
+                max_sub_queries=max_sub_queries,
+                progress=progress,
+                status_callback=status_callback,
+                on_progress=on_progress,
+            )
+        finally:
+            if worker_cleanup is not None:
+                worker_cleanup()
+
+    # The `with ThreadPoolExecutor` form always shutdown(wait=True) with
+    # cancel_futures left false, so Stop could not cancel unstarted work
+    # before the join. Own the pool and shut it down in finally.
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="deep-research")
+    user_stopped = False
+    try:
         futures = {pool.submit(_task, sq): sq for sq in serp_queries}
-        for future in as_completed(futures):
+        pending = set(futures.keys())
+        while pending:
             stopped = _check_stopped(stop_checker)
             if stopped is not None:
                 error_payload = stopped
-                break
-            try:
-                branch = future.result()
-            except Exception as exc:
-                sq = futures[future]
-                log.warning("deep_research: parallel sub-query error (%s): %s", sq.get("query"), exc)
-                acc.last_branch_error = format_error_payload(exc)
-                continue
-            if isinstance(branch, dict) and branch.get("error"):
-                error_payload = branch["error"]
-                break
-            if branch:
-                _merge_branch_results(acc, branch)
+                user_stopped = True
+                return error_payload
+            done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    branch = future.result()
+                except Exception as exc:
+                    if getattr(exc, "code", None) == "USER_STOPPED":
+                        # process_research_results raises USER_STOPPED. Do not
+                        # store it on the accumulator and continue sibling queries.
+                        user_stopped = True
+                        raise
+                    sq = futures[future]
+                    log.warning("deep_research: parallel sub-query error (%s): %s", sq.get("query"), exc)
+                    acc.last_branch_error = format_error_payload(exc)
+                    continue
+                if isinstance(branch, dict) and branch.get("error"):
+                    error_payload = branch["error"]
+                    if isinstance(error_payload, dict) and error_payload.get("code") == "USER_STOPPED":
+                        user_stopped = True
+                        return error_payload
+                    # Emulate the `break` from original `as_completed` when an error branch is found
+                    pending.clear()
+                    break
+                if branch:
+                    _merge_branch_results(acc, branch)
+        return error_payload
+    finally:
+        _shutdown_research_pool(pool, user_stopped=user_stopped)
 
-    return error_payload
+
+def _shutdown_research_pool(pool: ThreadPoolExecutor, *, user_stopped: bool) -> None:
+    """Cancel unstarted work on Stop, then join the pool.
+
+    Cancel the queue first, then join. ``shutdown(wait=False,
+    cancel_futures=True)`` returns while non-daemon pool threads keep
+    running, and ``cancel_futures`` does not stop a future that already
+    started. Tasks check the stop checker captured with the send and
+    return, so the join finishes. A worker stuck in HTTP is joined only
+    up to ``_STOP_POOL_JOIN_SEC``. Do not use ``with ThreadPoolExecutor``:
+    that joins before this path can cancel.
+    """
+    if not user_stopped:
+        pool.shutdown(wait=True)
+        return
+    pool.shutdown(wait=False, cancel_futures=True)
+    # No public join timeout. The worker set is what shutdown(wait=True) joins.
+    threads = list(getattr(pool, "_threads", ()))
+    deadline = time.monotonic() + _STOP_POOL_JOIN_SEC
+    for thread in threads:
+        remaining = deadline - time.monotonic()
+        thread.join(timeout=0 if remaining <= 0 else remaining)
+    stuck = [thread for thread in threads if thread.is_alive()]
+    if stuck:
+        log.warning(
+            "deep_research: %d pool worker(s) still in HTTP after %.0fs Stop join",
+            len(stuck),
+            _STOP_POOL_JOIN_SEC,
+        )
 
 
 def _serp_from_suggested_queries(queries: list[str]) -> list[dict[str, str]]:
@@ -636,6 +792,7 @@ def _run_adaptive_research_loop(
     concurrency: int,
     max_sub_queries: int,
     quality_threshold: int,
+    worker_factory: WorkerFactory | None = None,
 ) -> dict[str, Any]:
     acc = _ResearchAccumulator()
     progress = ResearchProgress(max_rounds=max_rounds, max_sub_queries=max_sub_queries)
@@ -653,17 +810,14 @@ def _run_adaptive_research_loop(
             if status_callback:
                 status_callback(f"Planning {breadth} research queries...")
             serp_queries = generate_search_queries(llm_chat, combined_query, num_queries=breadth)
-        elif next_gap_queries:
-            serp_queries = _serp_from_suggested_queries(next_gap_queries[:breadth])
         else:
-            gap_text = combined_query + "\n\nPrior learnings:\n" + "\n".join(acc.learnings[-20:])
-            serp_queries = generate_search_queries(llm_chat, gap_text, num_queries=breadth)
+            serp_queries = _serp_from_suggested_queries(next_gap_queries[:breadth])
 
         if not serp_queries:
             log.warning("deep_research: no search queries for round %s", round_num)
             break
 
-        remaining = max_sub_queries - acc.completed_queries
+        remaining = max_sub_queries - acc.started_queries
         if remaining <= 0:
             break
         serp_queries = serp_queries[: min(len(serp_queries), breadth, remaining)]
@@ -679,11 +833,12 @@ def _run_adaptive_research_loop(
             progress=progress,
             status_callback=status_callback,
             on_progress=on_progress,
+            worker_factory=worker_factory,
         )
         if loop_error is not None:
             return {"error": loop_error}
 
-        if acc.completed_queries >= max_sub_queries:
+        if acc.started_queries >= max_sub_queries:
             break
 
         if status_callback:
@@ -704,7 +859,7 @@ def _run_adaptive_research_loop(
             break
 
     unique_learnings = list(dict.fromkeys(acc.learnings))
-    trimmed_context = trim_context_to_word_limit(acc.context_chunks)
+    trimmed_context = trim_context_to_word_limit(unique_learnings, acc.context_chunks)
     return {
         "learnings": unique_learnings,
         "citations": acc.citations,
@@ -730,17 +885,58 @@ def run_deep_research(
     max_sub_queries: int = 14,
     quality_threshold: int = 7,
     on_progress: ProgressCallback = None,
-    depth: int | None = None,
+    worker_factory: WorkerFactory | None = None,
 ) -> str | dict[str, Any]:
     """Run adaptive multi-round deep research; returns report string or error payload dict."""
-    # depth kept for backward compatibility; max_rounds is primary.
-    if depth is not None and max_rounds == 3:
-        max_rounds = depth
-
     stopped = _check_stopped(stop_checker)
     if stopped is not None:
         return stopped
 
+    try:
+        return _run_deep_research_body(
+            query,
+            history_text,
+            llm_chat=llm_chat,
+            run_web_agent=run_web_agent,
+            stop_checker=stop_checker,
+            status_callback=status_callback,
+            breadth=breadth,
+            plain_text_format=plain_text_format,
+            initial_search_snippet=initial_search_snippet,
+            max_rounds=max_rounds,
+            concurrency=concurrency,
+            max_sub_queries=max_sub_queries,
+            quality_threshold=quality_threshold,
+            on_progress=on_progress,
+            worker_factory=worker_factory,
+        )
+    except ToolExecutionError as exc:
+        # Planning, a sub-query, or synthesis can raise USER_STOPPED.
+        # execute() only caches status "ok", so the stopped payload must be
+        # returned here. Letting it become a partial report string cached it.
+        if getattr(exc, "code", None) == "USER_STOPPED":
+            return _user_stopped_payload()
+        raise
+
+
+def _run_deep_research_body(
+    query: str,
+    history_text: str | None,
+    *,
+    llm_chat: LlmChatFn,
+    run_web_agent: WebAgentRunner,
+    stop_checker: StopChecker,
+    status_callback: StatusCallback,
+    breadth: int,
+    plain_text_format: str,
+    initial_search_snippet: str = "",
+    max_rounds: int = 3,
+    concurrency: int = 2,
+    max_sub_queries: int = 14,
+    quality_threshold: int = 7,
+    on_progress: ProgressCallback = None,
+    worker_factory: WorkerFactory | None = None,
+) -> str | dict[str, Any]:
     if status_callback:
         status_callback("Deep research: planning strategy...")
 
@@ -771,6 +967,7 @@ def run_deep_research(
         concurrency=concurrency,
         max_sub_queries=max_sub_queries,
         quality_threshold=quality_threshold,
+        worker_factory=worker_factory,
     )
     if loop_result.get("error"):
         return loop_result["error"]
@@ -793,9 +990,9 @@ def run_deep_research(
 
     cited_learnings: list[str] = []
     for learning in learnings:
-        citation = citations.get(learning, "")
-        if citation:
-            cited_learnings.append(f"{learning} [Source: {citation}]")
+        urls = citations.get(learning, [])
+        if urls:
+            cited_learnings.append(f"{learning} [Sources: {', '.join(urls)}]")
         else:
             cited_learnings.append(learning)
 
@@ -815,8 +1012,17 @@ def run_deep_research(
             plain_text_format,
             sources=sources,
         )
-    except Exception:
-        # Synthesis is the last LLM call after evidence is already collected.
+    except Exception as exc:
         # A timeout here used to discard the whole run; return the raw notes.
+        # USER_STOPPED must not take that path. The notes are a plain string,
+        # and execute() cached every non-error string as a finished deep
+        # report, so the next identical query never retried synthesis.
+        if getattr(exc, "code", None) == "USER_STOPPED":
+            raise
         log.exception("deep_research: synthesis failed; returning collected evidence")
-        return _partial_report_from_evidence(query, cited_learnings, sources)
+        return {
+            "status": "ok",
+            "message": _("Web research completed."),
+            "result": _partial_report_from_evidence(query, cited_learnings, sources),
+            "cacheable": False,
+        }

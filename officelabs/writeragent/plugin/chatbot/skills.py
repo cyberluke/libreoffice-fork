@@ -11,8 +11,9 @@ Users can turn the skill on/off via Settings and edit the rules by editing the S
 
 from __future__ import annotations
 
-import os
 import logging
+import os
+import tempfile
 from typing import Any
 
 from plugin.framework.config import user_config_dir
@@ -89,7 +90,11 @@ class SkillStore:
                         parts = content.split("---", 2)
                         if len(parts) >= 3:
                             content = parts[2].strip()
-                    return content
+                    # A front-matter-only file splits to an empty body.
+                    # That is the same as a missing file: use HUMANIZER_GUIDANCE
+                    # so the prompt still gets the humanizer rules.
+                    if content:
+                        return content
             except Exception as e:
                 log.debug("Failed to read user humanizer skill: %s", e)
         else:
@@ -103,10 +108,23 @@ class SkillStore:
 
     def write_humanizer_guidance(self, content: str) -> bool:
         """Persist a user-edited version of the humanizer rules."""
-        path = self._humanizer_path()
+        # Write a temp file in the same directory and os.replace it, with
+        # path setup inside the try. open(path, "w") truncates SKILL.md in
+        # place, and an OSError from makedirs must return False.
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content.strip() + "\n")
+            path = self._humanizer_path()
+            directory = os.path.dirname(path) or "."
+            fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".skill-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content.strip() + "\n")
+                os.replace(tmp_path, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
             return True
         except OSError as e:
             log.exception("Failed to write humanizer skill: %s", e)

@@ -77,16 +77,16 @@ def _candidate_windows(ctx: Any = None) -> list[Any]:
     except Exception:
         pass
     try:
-        from plugin.framework.uno_context import desktop_create_is_unsafe, get_ctx, get_service_manager
+        from plugin.framework.uno_context import desktop_create_is_unsafe, get_ctx, get_desktop
 
         if desktop_create_is_unsafe():
             return wins
         if ctx is None:
             ctx = get_ctx()
-        sm = get_service_manager(ctx)
-        if sm is None:
+        # get_desktop refuses to create Desktop when there is no VCL (#768).
+        desktop = get_desktop(ctx)
+        if desktop is None:
             return wins
-        desktop = sm.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
         frames_to_try: list[Any] = []
         try:
             active = desktop.getActiveFrame()
@@ -135,11 +135,14 @@ def probe_vcl_dpi_scale(ctx: Any = None) -> float | None:
     often has no usable style window at menu-icon time.
     """
     try:
-        for win in _candidate_windows(ctx):
+        # The debug line used to call _candidate_windows again, so a total
+        # miss built the desktop/frame list twice.
+        windows = _candidate_windows(ctx)
+        for win in windows:
             scale = _ppm_scale(win)
             if scale is not None:
                 return scale
-        log.debug("menu_icon_dpi probe_vcl_dpi: no PixelPerMeterX on %s windows", len(_candidate_windows(ctx)))
+        log.debug("menu_icon_dpi probe_vcl_dpi: no PixelPerMeterX on %s windows", len(windows))
         return None
     except Exception:
         log.debug("probe_vcl_dpi_scale failed", exc_info=True)
@@ -267,7 +270,10 @@ def resolve_menu_icon_pixel_size(ctx: Any = None) -> int:
     px = interpolate_menu_icon_px(float(scale))
     _cached_scale = float(scale)
     _cached_px = px
-    _cached_weak = False
+    # Only vcl_dpi (PixelPerMeterX) is a strong reading. Font, toolbar config,
+    # and env used to set _cached_weak False, so a startup call before a real
+    # window existed never upgraded when a later window reported ~2x.
+    _cached_weak = source != "vcl_dpi"
     if not _logged_strong:
         log.info("menu_icon_dpi source=%s scale=%.3f px=%s", source, scale, px)
         _logged_strong = True

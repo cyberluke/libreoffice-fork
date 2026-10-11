@@ -12,15 +12,18 @@ from __future__ import annotations
 from typing import Any
 
 from plugin.doc.doc_type import is_calc, is_writer
-from plugin.scripting._lazy_venv import make_getattr
-from plugin.scripting.client import run_symbolic as client_run_symbolic
-from plugin.scripting.helper_domain import (
-    header_prefix,
-)
 from plugin.framework.errors import ToolExecutionError
 from plugin.framework.i18n import _
-
+from plugin.scripting._lazy_venv import install_lazy_dir, make_getattr
 from plugin.scripting.calc_functions_common import SYMBOLIC_HELPER_NAMES as HELPER_NAMES
+from plugin.scripting.client import run_symbolic as client_run_symbolic
+from plugin.scripting.helper_domain import (
+    DomainFacadeConfig,
+    header_prefix,
+    is_status_helper_result,
+    make_template_api,
+    supports_calc_or_writer_manual,
+)
 
 MATH_HEADER_PREFIX = header_prefix("math")
 
@@ -41,6 +44,7 @@ _HELPER_DESCRIPTIONS: dict[str, str] = {
 _SYMBOLIC_VENV_EXPORTS = frozenset(
     {
         "differentiate",
+        "integrate",
         "integrate_helper",
         "latex_to_math_object",
         "run_symbolic",
@@ -50,12 +54,10 @@ _SYMBOLIC_VENV_EXPORTS = frozenset(
 )
 
 __getattr__ = make_getattr("symbolic", _SYMBOLIC_VENV_EXPORTS)
+install_lazy_dir(globals(), _SYMBOLIC_VENV_EXPORTS)
 
 
 # --- Templates ---
-
-from plugin.scripting.helper_domain import DomainFacadeConfig, make_template_api
-
 
 _API = make_template_api(
     DomainFacadeConfig(
@@ -70,21 +72,13 @@ _API = make_template_api(
     )
 )
 
-_template_body = _API.template_body
 get_math_script_templates = _API.get_templates
 parse_math_script_header = _API.parse_header
 
 
 # --- Runner ---
 
-def supports_symbolic_manual(doc: Any) -> bool:
-    """True when Run Python Script should expose Math Helpers for *doc*."""
-    if doc is None:
-        return False
-    try:
-        return is_writer(doc) or is_calc(doc)
-    except Exception:
-        return False
+supports_symbolic_manual = supports_calc_or_writer_manual
 
 
 def run_trusted_symbolic(
@@ -94,6 +88,7 @@ def run_trusted_symbolic(
     helper: str,
     params: dict[str, Any] | None = None,
     task_hint: str | None = None,
+    doc_type: str | None = None,
 ) -> dict[str, Any]:
     """Run a trusted symbolic helper in the user venv."""
     name = str(helper or "").strip()
@@ -101,7 +96,18 @@ def run_trusted_symbolic(
         raise ToolExecutionError("helper is required", code="SYMBOLIC_ERROR")
     if name not in HELPER_NAMES:
         raise ToolExecutionError(f"Unknown helper {name!r}", code="SYMBOLIC_ERROR")
-    if not is_calc(doc) and not is_writer(doc):
+    if doc_type:
+        is_valid = doc_type in ("calc", "writer")
+    else:
+        from plugin.framework.thread_guard import on_main_thread
+        from plugin.framework.queue_executor import execute_on_main_thread
+
+        def _check_doc() -> bool:
+            return is_calc(doc) or is_writer(doc)
+
+        is_valid = _check_doc() if on_main_thread() else execute_on_main_thread(_check_doc)
+
+    if not is_valid:
         raise ToolExecutionError("Symbolic helpers require a Writer or Calc document.", code="SYMBOLIC_ERROR")
 
     spec: dict[str, Any] = {"helper": name}
@@ -117,16 +123,12 @@ def run_trusted_symbolic(
 
 # --- Egress ---
 
+# A truthy 'latex' key is not enough: ordinary dicts are not symbolic
+# helper results. Match HELPER_NAMES and SYMBOLIC_ERROR through
+# is_status_helper_result.
 def is_symbolic_result(value: Any) -> bool:
     """True when *value* matches the compact symbolic helper result contract."""
-    if not isinstance(value, dict):
-        return False
-    if "status" not in value:
-        return False
-    helper = value.get("helper")
-    if isinstance(helper, str) and helper in HELPER_NAMES:
-        return True
-    return bool(value.get("latex"))
+    return is_status_helper_result(value, HELPER_NAMES, frozenset({"SYMBOLIC_ERROR"}))
 
 
 def format_symbolic_for_calc(result: dict[str, Any]) -> list[list[Any]]:
@@ -187,18 +189,9 @@ def insert_symbolic_result_into_writer(ctx: Any, doc: Any, result: dict[str, Any
 
 def insert_symbolic_result_into_calc(doc: Any, ctx: Any, result: dict[str, Any]) -> int:
     """Write symbolic result rows on the active Calc sheet."""
-    from plugin.calc.analysis_egress import calc_anchor_from_selection
-    from plugin.calc.address_utils import index_to_column
-    from plugin.calc.bridge import CalcBridge
-    from plugin.calc.manipulator import CellManipulator
+    from plugin.calc.tabular_egress import insert_tabular_result_into_calc
 
-    grid = format_symbolic_for_calc(result)
-    col, row = calc_anchor_from_selection(doc)
-    bridge = CalcBridge(doc)
-    manipulator = CellManipulator(bridge)
-    addr = f"{index_to_column(col)}{row + 1}"
-    manipulator.write_formula_range(addr, grid)
-    return len(grid)
+    return insert_tabular_result_into_calc(doc, ctx, format_symbolic_for_calc(result))
 
 
 def insert_symbolic_result_into_doc(ctx: Any, doc: Any, result: dict[str, Any], *, display_block: bool = False) -> int:
@@ -209,12 +202,4 @@ def insert_symbolic_result_into_doc(ctx: Any, doc: Any, result: dict[str, Any], 
     if is_calc(doc):
         return insert_symbolic_result_into_calc(doc, ctx, result)
     raise ToolExecutionError(_("Unsupported document type for symbolic insertion."), code="SYMBOLIC_ERROR")
-
-
-def try_insert_symbolic_result(ctx: Any, doc: Any, result_data: Any, *, display_block: bool = False) -> bool:
-    """Insert symbolic results when present. Returns True if insertion ran."""
-    if not is_symbolic_result(result_data):
-        return False
-    insert_symbolic_result_into_doc(ctx, doc, result_data, display_block=display_block)
-    return True
 

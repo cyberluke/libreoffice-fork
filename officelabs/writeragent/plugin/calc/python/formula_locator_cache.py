@@ -376,9 +376,10 @@ def locate_formula_cell(ctx: Any, sheet: Any, code_str: str, *, cache: FormulaLo
 
         if not on_main_thread() or not (hasattr(ctx, "ServiceManager") or hasattr(ctx, "getServiceManager")):
             return None
-        from plugin.calc.python.function import _get_calc_doc
+        # The sheet's own spreadsheet, not the front window.
+        from plugin.calc.python.sheet_modify import _owning_calc_doc
 
-        doc = _get_calc_doc(ctx)
+        doc = _owning_calc_doc(sheet)
         if doc is not None:
             located = locate_formula_cell_in_doc(ctx, doc, code_str, cache=cache)
             if located is not None:

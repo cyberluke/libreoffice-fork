@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import TYPE_CHECKING, Any
 
 from com.sun.star.awt import XItemListener, XTextListener
@@ -21,22 +22,36 @@ from plugin.framework.uno_listeners import BaseActionListener, BaseListener
 from plugin.chatbot.dialogs import copy_to_clipboard, get_checkbox_state, get_control_text, get_optional, set_checkbox_state, set_control_text
 
 _active_settings_dialog_ref: Any = None
+# Tunnel workers and the UI thread both touch the dialog ref. The lock
+# covers the pointer only; the posted refresh re-reads it on the UI thread.
+_active_settings_dialog_lock = threading.Lock()
 _tested_provider_tunnel_urls: dict[str, str] = {}
+# Providers whose cached public URL must not be shown. Set when the tunnel
+# stops, fails, or drops the URL; cleared by a fresh Test or a new connect.
+_retired_provider_tunnel_urls: set[str] = set()
+_mcp_snippet_refresh_scheduled = False
 
-_PROVIDER_DEFAULT_URLS = {"cloudflare": "https://<subdomain>.trycloudflare.com/mcp", "bore": "http://bore.pub:<remote-port>/mcp", "ngrok": "https://<domain>.ngrok-free.app/mcp", "tailscale": "https://<machine-name>.tailscale.net/mcp"}
+_PROVIDER_DEFAULT_URLS = {"cloudflare": "https://<subdomain>.trycloudflare.com/mcp", "bore": "http://bore.pub:<remote-port>/mcp", "ngrok": "https://<domain>.ngrok-free.app/mcp", "tailscale": "https://<machine>.<tailnet>.ts.net/mcp"}
 
 
 def set_active_settings_dialog(dlg: Any) -> None:
     """Track active settings dialog reference for tunnel updates."""
     global _active_settings_dialog_ref
-    _active_settings_dialog_ref = dlg
+    with _active_settings_dialog_lock:
+        _active_settings_dialog_ref = dlg
 
 
 def clear_active_settings_dialog(dlg: Any) -> None:
     """Clear active settings dialog reference if it matches dlg."""
     global _active_settings_dialog_ref
-    if _active_settings_dialog_ref is dlg:
-        _active_settings_dialog_ref = None
+    with _active_settings_dialog_lock:
+        if _active_settings_dialog_ref is dlg:
+            _active_settings_dialog_ref = None
+
+
+def _current_settings_dialog() -> Any:
+    with _active_settings_dialog_lock:
+        return _active_settings_dialog_ref
 
 
 def build_mcp_config_snippet(port: int | None = None, url: str | None = None) -> str:
@@ -83,18 +98,110 @@ class CopyMcpConfigListener(BaseActionListener):
                     pass
 
 
+def _refresh_active_snippet() -> None:
+    """Push the current snippet into the open Settings dialog, if any."""
+    from plugin.framework.queue_executor import post_to_main_thread
+
+    def _apply() -> None:
+        # The tunnel worker must not close over the dialog. The UI thread can
+        # clear it before this lambda runs; QueueExecutor then swallows the
+        # disposed-dialog error and the update is dropped. Re-read under the
+        # same lock on the UI thread. If clear won, there is nothing to update.
+        dlg = _current_settings_dialog()
+        if dlg is None:
+            return
+        sync_mcp_config_snippet(dlg)
+
+    post_to_main_thread(_apply)
+
+
+def remember_tested_tunnel_url(provider: str, url: str) -> None:
+    """Store a public URL from a successful Test or a live connect."""
+    p = provider.strip().lower()
+    if not p or not url:
+        return
+    _retired_provider_tunnel_urls.discard(p)
+    _tested_provider_tunnel_urls[p] = url
+
+
+def clear_tested_provider_tunnel_url(provider: str | None = None) -> None:
+    """Drop cached public URLs that are no longer a live tunnel.
+
+    ``sync_mcp_config_snippet`` kept copying
+    ``_tested_provider_tunnel_urls`` after the tunnel stopped, failed, or
+    lost its public URL. Settings copy and the client snippet still showed
+    that dead URL. Retiring the provider makes the next sync use the local
+    URL or the provider template. ``remember_tested_tunnel_url`` (Test or a
+    new connect) is what puts a URL back.
+    """
+    if provider is None:
+        for name in list(_tested_provider_tunnel_urls):
+            _retired_provider_tunnel_urls.add(name)
+        _tested_provider_tunnel_urls.clear()
+    else:
+        p = provider.strip().lower()
+        if not p:
+            return
+        _tested_provider_tunnel_urls.pop(p, None)
+        _retired_provider_tunnel_urls.add(p)
+    _refresh_active_snippet()
+
+
 def notify_tunnel_url_acquired(provider: str, url: str) -> None:
     """Record acquired tunnel URL and update active Settings dialog if open."""
-    p = provider.strip().lower()
-    _tested_provider_tunnel_urls[p] = url
-    dlg = _active_settings_dialog_ref
-    if dlg is not None:
+    remember_tested_tunnel_url(provider, url)
+    _refresh_active_snippet()
+
+
+def _schedule_mcp_snippet_refresh(dlg: Any) -> None:
+    """Wait off the UI thread, then refresh the snippet once.
+
+    A running tunnel with no public URL yet used to make
+    ``sync_mcp_config_snippet`` sleep up to 1.2 seconds on the UI thread.
+    Settings open and the tunnel checkbox, provider, and port listeners all
+    call it there, so the dialog could not paint. The snippet is already
+    written; this posts one later refresh and does not schedule another.
+    """
+    global _mcp_snippet_refresh_scheduled
+    if _mcp_snippet_refresh_scheduled:
+        return
+    _mcp_snippet_refresh_scheduled = True
+
+    def _wait() -> None:
+        import time
+
+        from plugin.mcp import _shared_tunnel
+
+        deadline = time.time() + 1.2
+        while time.time() < deadline:
+            tunnel = _shared_tunnel
+            if tunnel is None or not getattr(tunnel, "is_running", False) or getattr(tunnel, "_public_url", None):
+                break
+            time.sleep(0.1)
+
+        def _apply() -> None:
+            global _mcp_snippet_refresh_scheduled
+            _mcp_snippet_refresh_scheduled = False
+            sync_mcp_config_snippet(dlg, schedule_refresh=False)
+
         from plugin.framework.queue_executor import post_to_main_thread
 
-        post_to_main_thread(lambda: sync_mcp_config_snippet(dlg))
+        post_to_main_thread(_apply)
+
+    from plugin.framework.worker_pool import run_in_background
+
+    # This wait is up to 1.2s. The shared background pool would pin every
+    # worker if several Settings saves queued the poll. The job is short but
+    # must not take a pool slot.
+    run_in_background(_wait, name="mcp-snippet-refresh", dedicated=True)
 
 
-def sync_mcp_config_snippet(dlg: Any, custom_tunnel_url: str | None = None, custom_provider: str | None = None) -> None:
+def sync_mcp_config_snippet(
+    dlg: Any,
+    custom_tunnel_url: str | None = None,
+    custom_provider: str | None = None,
+    schedule_refresh: bool = True,
+) -> None:
     """Synchronize MCP client config snippet according to port, tunnel_enabled, and provider."""
     if not dlg:
         return
@@ -130,27 +237,27 @@ def sync_mcp_config_snippet(dlg: Any, custom_tunnel_url: str | None = None, cust
         selected_provider = "cloudflare"
 
     if custom_tunnel_url and custom_provider:
-        _tested_provider_tunnel_urls[custom_provider.strip().lower()] = custom_tunnel_url
+        remember_tested_tunnel_url(custom_provider, custom_tunnel_url)
     elif custom_tunnel_url:
-        _tested_provider_tunnel_urls[selected_provider] = custom_tunnel_url
+        remember_tested_tunnel_url(selected_provider, custom_tunnel_url)
 
-    # Check if we have a tested URL for this specific selected provider
+    # A retired entry is a URL from a tunnel that has since stopped, failed,
+    # or dropped its public address. Do not copy it into the snippet.
+    if selected_provider in _retired_provider_tunnel_urls:
+        _tested_provider_tunnel_urls.pop(selected_provider, None)
+
+    # Check if we have a tested URL for this specific selected provider.
+    # A tunnel that is up but has no public URL yet used to sleep here.
     active_url = _tested_provider_tunnel_urls.get(selected_provider)
     if not active_url:
         from plugin.mcp import _shared_tunnel
 
         if _shared_tunnel and _shared_tunnel.is_running and getattr(_shared_tunnel, "_provider", None) == selected_provider:
             active_url = _shared_tunnel.mcp_public_url()
-            if not active_url:
-                import time
-
-                deadline = time.time() + 1.2
-                while time.time() < deadline and not _shared_tunnel._public_url and _shared_tunnel.is_running:
-                    time.sleep(0.1)
-                active_url = _shared_tunnel.mcp_public_url()
-
             if active_url:
-                _tested_provider_tunnel_urls[selected_provider] = active_url
+                remember_tested_tunnel_url(selected_provider, active_url)
+            elif schedule_refresh:
+                _schedule_mcp_snippet_refresh(dlg)
 
     if not active_url:
         # Fall back to provider default template

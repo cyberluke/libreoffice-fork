@@ -21,29 +21,29 @@ Only the four identity keys differ per helper type:
 Filename -> helper type -> required .app bundle name mapping
 ------------------------------------------------------------
 
-helper.plist            -> (main)     -> OfficeLabs Helper.app
-helper-gpu.plist        -> (GPU)      -> OfficeLabs Helper (GPU).app
-helper-renderer.plist   -> (Renderer) -> OfficeLabs Helper (Renderer).app
-helper-plugin.plist     -> (Plugin)   -> OfficeLabs Helper (Plugin).app
-helper-alerts.plist     -> (Alerts)   -> OfficeLabs Helper (Alerts).app
+helper.plist            -> (main)     -> NAI Office Helper.app
+helper-gpu.plist        -> (GPU)      -> NAI Office Helper (GPU).app
+helper-renderer.plist   -> (Renderer) -> NAI Office Helper (Renderer).app
+helper-plugin.plist     -> (Plugin)   -> NAI Office Helper (Plugin).app
+helper-alerts.plist     -> (Alerts)   -> NAI Office Helper (Alerts).app
 
 Bundle identifiers
 ------------------
 
-OfficeLabs Helper.app              -> ai.officelabs.helper
-OfficeLabs Helper (GPU).app        -> ai.officelabs.helper.gpu
-OfficeLabs Helper (Renderer).app   -> ai.officelabs.helper.renderer
-OfficeLabs Helper (Plugin).app     -> ai.officelabs.helper.plugin
-OfficeLabs Helper (Alerts).app     -> ai.officelabs.helper.alerts
+NAI Office Helper.app              -> ai.officelabs.helper
+NAI Office Helper (GPU).app        -> ai.officelabs.helper.gpu
+NAI Office Helper (Renderer).app   -> ai.officelabs.helper.renderer
+NAI Office Helper (Plugin).app     -> ai.officelabs.helper.plugin
+NAI Office Helper (Alerts).app     -> ai.officelabs.helper.alerts
 
 Executable names (CFBundleExecutable, must match the Mach-O inside Contents/MacOS)
 ----------------------------------------------------------------------------------
 
-OfficeLabs Helper
-OfficeLabs Helper (GPU)
-OfficeLabs Helper (Renderer)
-OfficeLabs Helper (Plugin)
-OfficeLabs Helper (Alerts)
+NAI Office Helper
+NAI Office Helper (GPU)
+NAI Office Helper (Renderer)
+NAI Office Helper (Plugin)
+NAI Office Helper (Alerts)
 
 Note: CFBundleVersion and CFBundleShortVersionString are left empty, matching
 cefsimple; the build/packaging step should populate them from the OfficeLabs

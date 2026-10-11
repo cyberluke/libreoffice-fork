@@ -89,9 +89,9 @@ def bootstrap(ctx: Any | None = None) -> None:
 
         init_config(ctx)
         try:
-            from plugin.scripting.native_binaries import ensure_downloaded_audio_on_path
+            from plugin.scripting.native_binaries import ensure_native_binaries_on_path
 
-            ensure_downloaded_audio_on_path()
+            ensure_native_binaries_on_path()
         except Exception:
             log.debug("Native binary path setup failed", exc_info=True)
         from plugin.framework.i18n import init_i18n
@@ -134,16 +134,8 @@ def _schedule_update_check(ctx: Any) -> None:
         log.warning("extension update check schedule failed: %s", e)
 
 
-_NOTEBOOK_RUN_CELL_PREFIX = "notebook.run_cell."
-
-
 def _dispatch_command(command: str, ctx: Any | None = None) -> None:
     bootstrap(ctx)
-    if command.startswith(_NOTEBOOK_RUN_CELL_PREFIX):
-        from plugin.notebook.notebook_runner import run_cell_by_hex
-
-        run_cell_by_hex(get_ctx() if ctx is None else ctx, command[len(_NOTEBOOK_RUN_CELL_PREFIX) :])
-        return
     handler = get_action_handler(command)
     if handler:
         try:
@@ -228,7 +220,7 @@ class DispatchHandler(unohelper.Base, XDispatch, XDispatchProvider, XInitializat
             from plugin.chatbot.dialogs import msgbox
             from plugin.framework.i18n import _
 
-            msgbox(self.ctx, _("Dispatch Error"), _(str(e)), box_type=3)
+            msgbox(self.ctx, _("Dispatch Error"), str(e), box_type=3)
 
     def addStatusListener(self, Control: Any, URL: UnoURL) -> None:
         pass

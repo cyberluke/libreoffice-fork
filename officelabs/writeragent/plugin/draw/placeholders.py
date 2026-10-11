@@ -12,12 +12,9 @@ to placeholders by role rather than shape index.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from plugin.framework.tool import ToolBase, ToolContext
-
-log = logging.getLogger("nelson.draw")
 
 # Presentation object types (from com.sun.star.presentation.PresentationObjectType)
 # Shapes on Impress slides have a "PresObj" property or can be identified
@@ -56,6 +53,26 @@ def _shape_class_name(shape: Any) -> str:
             return str(cn)
     except Exception:
         pass
+    # A text layout's title is
+    # com.sun.star.presentation.TitleTextShape and the body is
+    # OutlinerShape. ClassName and PresObj raise
+    # UnknownPropertyException and Name is empty, so role lookup
+    # misses both and set_placeholder_text reports index 0 and 1
+    # with no role. ShapeType / getShapeType() is the service name
+    # on this build.
+    try:
+        if hasattr(shape, "getShapeType"):
+            shape_type = shape.getShapeType()
+            if shape_type:
+                return str(shape_type)
+    except Exception:
+        pass
+    try:
+        shape_type = getattr(shape, "ShapeType", "")
+        if shape_type:
+            return str(shape_type)
+    except Exception:
+        pass
     return ""
 
 
@@ -65,7 +82,9 @@ def _find_placeholder(page: Any, role: str) -> tuple[Any | None, int | None]:
     Tries multiple identification strategies:
     1. ClassName via the priority class→role map (TitleText→title, …)
     2. Shape Name via the same map
-    3. Positional heuristic (first text shape = title, second = body)
+
+    Untagged text boxes are not guessed by position. That used to write the
+    first text shape as title while list_placeholders left role unset.
     """
     role_lower = role.lower()
 
@@ -88,18 +107,6 @@ def _find_placeholder(page: Any, role: str) -> tuple[Any | None, int | None]:
         except Exception:
             pass
 
-    # Strategy 3: positional heuristic for common roles
-    text_shapes = []
-    for i in range(page.getCount()):
-        shape = page.getByIndex(i)
-        if hasattr(shape, "getString"):
-            text_shapes.append((shape, i))
-
-    if role_lower == "title" and len(text_shapes) >= 1:
-        return text_shapes[0]
-    if role_lower in ("subtitle", "body") and len(text_shapes) >= 2:
-        return text_shapes[1]
-
     return None, None
 
 
@@ -119,7 +126,7 @@ def _list_placeholders(page: Any) -> list[dict[str, Any]]:
         class_name = _shape_class_name(shape)
         if class_name:
             entry["class"] = class_name
-        role = _role_from_label(class_name)
+        role = _role_from_label(class_name) or _role_from_label(entry.get("name"))
         if role:
             entry["role"] = role
         result.append(entry)
@@ -127,9 +134,9 @@ def _list_placeholders(page: Any) -> list[dict[str, Any]]:
 
 
 # C1: available=[] is truthful (no presentation placeholders yet) but mercury
-# retried the same role call. Hint + suggest_layout points at set_slide_layout
-# / delegate slide_layouts — the recovery the headed run eventually stumbled on.
-_EMPTY_PLACEHOLDER_HINT = "Slide may lack a text layout. Call set_slide_layout (or delegate domain=slide_layouts) with layout='text', then list_placeholders."
+# retried the same role call. Hint + suggest_layout points at delegate
+# slide_layouts — set_slide_layout is specialized and not on the main tool list.
+_EMPTY_PLACEHOLDER_HINT = "Slide may lack a text layout. Delegate domain=slide_layouts with layout='text', then list_placeholders."
 
 
 def _shape_text_count(page: Any) -> int:
@@ -190,7 +197,7 @@ class ListPlaceholders(ToolBase):
 
     name: str | None = "list_placeholders"
     intent: str | None = "navigate"
-    description: str = "List all text placeholders on a slide with their role (title, subtitle, body), text content, and index. Call this before set_placeholder_text. If count=0, set layout 'text' (set_slide_layout or delegate domain=slide_layouts) then retry."
+    description: str = "List all text placeholders on a slide with their role (title, subtitle, body), text content, and index. Call this before set_placeholder_text. If count=0, delegate domain=slide_layouts with layout='text', then retry."
     parameters: dict[str, Any] | None = {"type": "object", "properties": {"page": {"type": "integer", "description": "0-based slide index (active slide if omitted)."}}, "required": []}
     uno_services: list[str] | None = ["com.sun.star.presentation.PresentationDocument"]
 
@@ -225,7 +232,7 @@ class GetPlaceholderText(ToolBase):
                 return self._tool_error("Shape index out of range.")
             shape = page.getByIndex(shape_index)
         elif role:
-            shape, _unused = _find_placeholder(page, role)
+            shape, shape_index = _find_placeholder(page, role)
             if shape is None:
                 return self._tool_error("Placeholder '%s' not found." % role, available=_list_placeholders(page))
         else:

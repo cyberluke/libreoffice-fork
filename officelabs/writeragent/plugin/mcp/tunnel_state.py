@@ -88,7 +88,16 @@ class StartProcessEffect:
 
 @dataclasses.dataclass(frozen=True)
 class TerminateProcessEffect:
-    pass
+    """Stop the subprocess that belonged to ``provider``.
+
+    ``provider`` and ``port`` are captured from the pre-transition state.
+    ``START_REQUESTED`` replaces ``TunnelState.provider`` and ``TunnelState.port``
+    before effects run; post_stop must still see the provider and port being
+    left (Tailscale Funnel off) rather than the new ones.
+    """
+
+    provider: str = ""
+    port: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -175,9 +184,12 @@ def next_state(state: TunnelState, event: TunnelEvent) -> FsmTransition[TunnelSt
         provider_token = str(event.data.get("provider_token", ""))
         max_retries = _event_int(event.data, "max_retries", state.max_retries)
 
-        # Cancel any previous timer / process if re-starting
+        # Cancel any previous timer / process if re-starting.
+        # START_REQUESTED overwrites state.port before effects run. The effect
+        # must carry the pre-transition port, or post_stop reads the new port
+        # and runs `funnel <newport> off`.
         effects.append(CancelRetryTimerEffect())
-        effects.append(TerminateProcessEffect())
+        effects.append(TerminateProcessEffect(provider=state.provider, port=state.port))
 
         effects.append(StartProcessEffect(port=port, provider=provider, provider_token=provider_token))
         new_state = dataclasses.replace(state, status=TunnelStatus.STARTING, port=port, provider=provider, provider_token=provider_token, public_url=None, retry_count=0, max_retries=max_retries, last_error=None, desired_running=True)
@@ -203,8 +215,11 @@ def next_state(state: TunnelState, event: TunnelEvent) -> FsmTransition[TunnelSt
             new_state = dataclasses.replace(state, status=TunnelStatus.STOPPED, public_url=None)
             return FsmTransition(new_state, effects)
 
-        # Fatal errors: auth error or binary missing — do not retry
+        # Fatal errors: auth error or binary missing — do not retry.
+        # Same reset as retry exhaustion: the CLI may already have installed
+        # a Funnel/serve rule before the line we treat as auth failure.
         if auth_error:
+            effects.append(TerminateProcessEffect(provider=state.provider, port=state.port))
             new_state = dataclasses.replace(state, status=TunnelStatus.FAILED, public_url=None, last_error=auth_error, desired_running=False)
             return FsmTransition(new_state, effects)
 
@@ -218,8 +233,15 @@ def next_state(state: TunnelState, event: TunnelEvent) -> FsmTransition[TunnelSt
             new_state = dataclasses.replace(state, status=TunnelStatus.RECONNECTING, public_url=None, retry_count=attempt, last_error=err_msg)
             return FsmTransition(new_state, effects)
         else:
-            # Max retries exhausted
+            # Retry exhaustion is FAILED, but Tailscale funnel/serve config
+            # lives on tailscaled. Without TerminateProcessEffect (START and
+            # STOP already emit it) that config keeps forwarding the local
+            # MCP port after desired_running is false. The process is already
+            # dead — _on_exit cleared it before this event. Name the provider
+            # that owned the session, same as stop. The effect handler resets
+            # even when the subprocess is gone.
             err_msg = "tunnel disconnected; failed to reconnect after %s attempts (code %s)" % (state.max_retries, rc)
+            effects.append(TerminateProcessEffect(provider=state.provider, port=state.port))
             new_state = dataclasses.replace(state, status=TunnelStatus.FAILED, public_url=None, last_error=err_msg, desired_running=False)
             return FsmTransition(new_state, effects)
 
@@ -233,7 +255,7 @@ def next_state(state: TunnelState, event: TunnelEvent) -> FsmTransition[TunnelSt
 
     elif event.kind == TunnelEventKind.STOP_REQUESTED:
         effects.append(CancelRetryTimerEffect())
-        effects.append(TerminateProcessEffect())
+        effects.append(TerminateProcessEffect(provider=state.provider, port=state.port))
         new_state = dataclasses.replace(state, status=TunnelStatus.STOPPED, public_url=None, retry_count=0, last_error=None, desired_running=False)
         return FsmTransition(new_state, effects)
 

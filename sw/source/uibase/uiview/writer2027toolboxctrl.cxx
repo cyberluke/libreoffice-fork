@@ -389,6 +389,7 @@ public:
 
     using svt::PopupWindowController::initialize;
 
+    virtual void SAL_CALL initialize(const css::uno::Sequence<css::uno::Any>& rArguments) override;
     virtual void SAL_CALL statusChanged(const css::frame::FeatureStateEvent& /*rEvent*/) override
     {
         if (m_pToolbar)
@@ -402,8 +403,14 @@ public:
         }
     }
 
+    // Mirrors Writer2027TypeSystemToolBoxControl::initialize(): the notebookbar
+    // may host the button on a weld toolbar (m_pToolbar set) OR a classic VCL
+    // SidebarToolBox (m_pToolbar null). On a weld toolbar the inherited
+    // PopupWindowController::createPopupWindow() routes through
+    // mxPopoverContainer, so it must exist before the first click.
     virtual void SAL_CALL execute(sal_Int16 /*nKeyModifier*/) override
     {
+        svx::writer2027::Writer2027LogMessage("insertblock.controller.execute", u"fire"_ustr);
         try
         {
             createPopupWindow();
@@ -427,6 +434,7 @@ public:
 
     virtual std::unique_ptr<WeldToolbarPopup> weldPopupWindow() override
     {
+        svx::writer2027::Writer2027LogMessage("insertblock.popup.weld", u"fire"_ustr);
         try
         {
             auto xPopup = std::make_unique<svx::writer2027::Writer2027BlockGalleryPopup>(
@@ -455,6 +463,7 @@ public:
 
     virtual VclPtr<vcl::Window> createVclPopupWindow(vcl::Window* pParent) override
     {
+        svx::writer2027::Writer2027LogMessage("insertblock.popup.vcl", u"fire"_ustr);
         try
         {
             if (mxInterimPopover)
@@ -491,6 +500,22 @@ private:
 
     OUString maActiveKitId;
 };
+
+void SAL_CALL Writer2027InsertBlockToolBoxControl::initialize(
+    const css::uno::Sequence<css::uno::Any>& rArguments)
+{
+    PopupWindowController::initialize(rArguments);
+
+    // On a weld toolbar the inherited PopupWindowController::createPopupWindow()
+    // routes through mxPopoverContainer, so have one ready before first click.
+    // On the classic VCL SidebarToolBox (m_pToolbar null, the notebookbar case)
+    // createVclPopupWindow() is used instead and this is a harmless no-op.
+    if (m_pToolbar)
+    {
+        mxPopoverContainer.reset(new ToolbarPopupContainer(m_pToolbar));
+        m_pToolbar->set_item_popover(m_aCommandURL, mxPopoverContainer->getTopLevel());
+    }
+}
 
 IMPL_LINK(Writer2027InsertBlockToolBoxControl, OnSelect, const OUString&, rBlockId, void)
 {
@@ -555,6 +580,7 @@ public:
 
     using svt::PopupWindowController::initialize;
 
+    virtual void SAL_CALL initialize(const css::uno::Sequence<css::uno::Any>& rArguments) override;
     virtual void SAL_CALL statusChanged(const css::frame::FeatureStateEvent& /*rEvent*/) override
     {
         if (m_pToolbar)
@@ -570,6 +596,7 @@ public:
 
     virtual void SAL_CALL execute(sal_Int16 /*nKeyModifier*/) override
     {
+        svx::writer2027::Writer2027LogMessage("documentkit.controller.execute", u"fire"_ustr);
         try
         {
             createPopupWindow();
@@ -593,6 +620,7 @@ public:
 
     virtual std::unique_ptr<WeldToolbarPopup> weldPopupWindow() override
     {
+        svx::writer2027::Writer2027LogMessage("documentkit.popup.weld", u"fire"_ustr);
         try
         {
             auto xPopup = std::make_unique<svx::writer2027::Writer2027DocumentKitPopup>(
@@ -620,6 +648,7 @@ public:
 
     virtual VclPtr<vcl::Window> createVclPopupWindow(vcl::Window* pParent) override
     {
+        svx::writer2027::Writer2027LogMessage("documentkit.popup.vcl", u"fire"_ustr);
         try
         {
             if (mxInterimPopover)
@@ -653,6 +682,22 @@ public:
 private:
     DECL_LINK(OnSelect, const OUString&, void);
 };
+
+void SAL_CALL Writer2027DocumentKitToolBoxControl::initialize(
+    const css::uno::Sequence<css::uno::Any>& rArguments)
+{
+    PopupWindowController::initialize(rArguments);
+
+    // On a weld toolbar the inherited PopupWindowController::createPopupWindow()
+    // routes through mxPopoverContainer, so have one ready before first click.
+    // On the classic VCL SidebarToolBox (m_pToolbar null, the notebookbar case)
+    // createVclPopupWindow() is used instead and this is a harmless no-op.
+    if (m_pToolbar)
+    {
+        mxPopoverContainer.reset(new ToolbarPopupContainer(m_pToolbar));
+        m_pToolbar->set_item_popover(m_aCommandURL, mxPopoverContainer->getTopLevel());
+    }
+}
 
 IMPL_LINK(Writer2027DocumentKitToolBoxControl, OnSelect, const OUString&, rKitId, void)
 {

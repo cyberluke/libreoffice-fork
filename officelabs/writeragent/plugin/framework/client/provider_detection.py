@@ -18,7 +18,7 @@ Before consolidation the same (or very similar) string matching logic was
 scattered across at least these locations:
 
 - plugin/framework/client/model_fetcher.py          (imports get_provider_from_endpoint)
-- plugin/framework/client/auth.py                    (_resolve_provider_id + host_matches)
+- plugin/framework/client/auth.py                    (_resolve_provider_id)
 - plugin/framework/client/llm_client.py              (is_openrouter_endpoint)
 - plugin/framework/client/requests.py / request_controls.py (is_local_host)
 - plugin/framework/client/errors.py (historical)     (connection refused / DNS strings in the mapper)
@@ -32,8 +32,8 @@ drift between the SSL fallback path and the friendly error messages.
 ### Design principles for this module (first pass)
 
 - Pure functions only — no I/O, no config side effects.
-- Keep the nice data-driven table in auth.py (PROVIDERS + host_matches) as the
-  authority for *authentication behavior*. Detection feeds it, it does not replace it.
+- Detection in this module is the host matcher. auth.PROVIDERS is authentication
+  behavior (header style, model id style), not a second host table.
 - First-pass scope: the highest-ROI, lowest-risk functions only
   (get_provider_from_endpoint, is_local_host, is_openrouter_endpoint).
 - Audio capability heuristics, full preset lists, and shim selection stay in
@@ -51,6 +51,7 @@ import ipaddress
 import urllib.parse
 from typing import Optional
 
+from plugin.framework.errors import ConfigError
 from plugin.framework.url_utils import get_url_hostname, normalize_endpoint_url
 
 
@@ -68,7 +69,16 @@ def get_provider_from_endpoint(endpoint: str) -> Optional[str]:
 
     url = normalize_endpoint_url(endpoint).lower()
     host = get_url_hostname(url).lower()
-    port = urllib.parse.urlparse(url).port
+    # ``ParseResult.port`` raises ValueError for ``:1a34`` and for ports
+    # outside 0–65535; urllib checks the port only when ``.port`` is read.
+    # ``urlparse`` itself also raises ValueError for an unmatched bracket
+    # (``http://[::1``, ``http://[]/v1``) before ``.port``. Settings and
+    # catalog code call this on the configured endpoint, so a bad port or
+    # bracket URL is ConfigError, the same contract as other invalid settings.
+    try:
+        port = urllib.parse.urlparse(url).port
+    except ValueError as exc:
+        raise ConfigError("Invalid URL port", code="CONFIG_INVALID_URL", details={"endpoint": url.split("?", 1)[0]}) from exc
 
     def _host_is(*names: str) -> bool:
         # Hostname equality, not a substring of the whole URL. "ollama" inside
@@ -78,9 +88,11 @@ def get_provider_from_endpoint(endpoint: str) -> Optional[str]:
     # Order matters for some overlaps (e.g. openrouter before generic openai-compatible)
     if _host_is("openrouter.ai"):
         return "openrouter"
-    if _host_is("together.xyz"):
+    if _host_is("together.ai", "together.xyz"):
         return "together"
-    if _host_is("ollama") or (host in ("localhost", "127.0.0.1") and port == 11434):
+    # LAN addresses (``::1``, RFC1918) on the Ollama port are the app.
+    # A public host on 11434 stays custom. Hostname equality, not a substring.
+    if _host_is("ollama") or (is_local_host(host) and port == 11434):
         return "ollama"
     if _host_is("api.mistral.ai"):
         return "mistral"
@@ -100,7 +112,7 @@ def get_provider_from_endpoint(endpoint: str) -> Optional[str]:
         return "anthropic"
     if _host_is("generativelanguage.googleapis.com"):
         return "google"
-    if host in ("localhost", "127.0.0.1") and port == 1234:
+    if is_local_host(host) and port == 1234:
         return "lmstudio"
     if _host_is("z.ai"):
         return "zai"
@@ -133,9 +145,7 @@ def is_local_host(host: str) -> bool:
         ip = ipaddress.ip_address(host)
         return ip.is_loopback or ip.is_private or ip.is_link_local
     except ValueError:
-        pass
-    # Single-label hostnames are usually local network names (e.g. "ollama-box").
-    return "." not in host
+        return False
 
 
 def is_openrouter_endpoint(endpoint: str, explicit_is_openrouter: bool | None = False) -> bool:
@@ -155,3 +165,20 @@ def is_openrouter_endpoint(endpoint: str, explicit_is_openrouter: bool | None = 
     # query that merely contains "openrouter.ai" is not this provider.
     # Custom proxies set the explicit flag.
     return get_provider_from_endpoint(endpoint) == "openrouter"
+
+
+def is_openwebui_endpoint(endpoint: str, explicit_is_openwebui: bool | None = False) -> bool:
+    """True for an Open WebUI host, or when the config flag is set.
+
+    Hostname only. A path or query that merely contains "openwebui" is not
+    this product. Custom proxies set the explicit flag.
+    """
+    if explicit_is_openwebui:
+        return True
+    if not endpoint:
+        return False
+    host = get_url_hostname(normalize_endpoint_url(endpoint)).lower()
+    # A label, not a substring. ``notopenwebui.example`` is not this product.
+    # ``chat.openwebui.example`` still is.
+    labels = [part for part in host.split(".") if part]
+    return "openwebui" in labels or "open-webui" in labels

@@ -10,10 +10,10 @@ Compute is lazy-loaded from ``plugin.scripting.venv.viz`` via ``__getattr__``.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from plugin.calc.analysis_runner import calc_tool_context
-from plugin.scripting._lazy_venv import make_getattr
+from plugin.scripting._lazy_venv import install_lazy_dir, make_getattr
 from plugin.calc.calc_addin_data import _resolve_python_data
 from plugin.doc.doc_type import is_calc, is_draw, is_writer
 from plugin.scripting.client import run_viz as client_run_viz
@@ -55,6 +55,7 @@ _VIZ_VENV_EXPORTS = frozenset(
 )
 
 __getattr__ = make_getattr("viz", _VIZ_VENV_EXPORTS)
+install_lazy_dir(globals(), _VIZ_VENV_EXPORTS)
 
 
 # --- Templates ---
@@ -72,11 +73,11 @@ _API = make_template_api(
         run_name="run_viz",
         shipped_templates=_SHIPPED_TEMPLATES,
         data_expr="data",
+        leading_data=True,
         extra_comment_lines=("# Set the data range in the toolbar (or select cells), then Run.",),
     )
 )
 
-_template_body = _API.template_body
 get_viz_script_templates = _API.get_templates
 parse_viz_script_header = _API.parse_header
 
@@ -111,36 +112,50 @@ def run_trusted_viz(
     if name not in HELPER_NAMES:
         raise ToolExecutionError(f"Unknown helper {name!r}", code="VIZ_ERROR")
 
-    if not is_calc(doc) and not is_writer(doc):
-        raise ToolExecutionError("Viz helpers require a Writer or Calc document.", code="VIZ_ERROR")
-
     dr = str(data_range).strip() if data_range else None
-    if not dr and data is None:
-        raise ToolExecutionError("Provide data_range or data", code="VIZ_ERROR")
 
-    tool_ctx = calc_tool_context(uno_ctx, doc)
-    py_data, err = _resolve_python_data(tool_ctx, data_range=dr, data=data)
-    if err:
-        raise ToolExecutionError(err, code="VIZ_ERROR")
-    if py_data is None:
-        raise ToolExecutionError("No data to plot", code="VIZ_ERROR")
+    def _read_sheet() -> tuple[Any, dict[str, Any]]:
+        # UNO only. forecast auto-plot calls this off the UI thread.
+        if not is_calc(doc) and not is_writer(doc):
+            raise ToolExecutionError("Viz helpers require a Writer or Calc document.", code="VIZ_ERROR")
+        if not dr and data is None:
+            raise ToolExecutionError("Provide data_range or data", code="VIZ_ERROR")
+        tool_ctx = calc_tool_context(uno_ctx, doc)
+        py_data, err = _resolve_python_data(tool_ctx, data_range=dr, data=data)
+        if err:
+            raise ToolExecutionError(err, code="VIZ_ERROR")
+        if py_data is None:
+            raise ToolExecutionError("No data to plot", code="VIZ_ERROR")
+        context: dict[str, Any] = {}
+        if is_calc(doc):
+            try:
+                from plugin.calc.bridge import CalcBridge
+
+                context["sheet_name"] = CalcBridge(doc).get_active_sheet().getName()
+            except Exception:
+                pass
+        if task_hint:
+            context["task_hint"] = str(task_hint)
+        if dr:
+            context["range_a1"] = dr
+        return py_data, context
+
+    # Forecast auto-plot used to run this whole helper on the UI thread, so
+    # matplotlib IPC froze Calc. ForecastDataTool wrapped
+    # run_auto_plot_after_forecast in execute_on_main_thread, and this
+    # function did the sheet read and client_run_viz together. Hop only the
+    # UNO read; client_run_viz stays on the caller (the worker).
+    from plugin.framework.queue_executor import execute_on_main_thread
+    from plugin.framework.thread_guard import on_main_thread
+
+    if on_main_thread():
+        py_data, context = _read_sheet()
+    else:
+        py_data, context = execute_on_main_thread(_read_sheet)
 
     spec: dict[str, Any] = {"helper": name, "headers": bool(headers)}
     if isinstance(params, dict) and params:
         spec["params"] = params
-
-    context: dict[str, Any] = {}
-    if is_calc(doc):
-        try:
-            from plugin.calc.bridge import CalcBridge
-
-            context["sheet_name"] = CalcBridge(doc).get_active_sheet().getName()
-        except Exception:
-            pass
-    if task_hint:
-        context["task_hint"] = str(task_hint)
-    if dr:
-        context["range_a1"] = dr
 
     return client_run_viz(uno_ctx, spec, py_data, context=context or None)
 
@@ -159,8 +174,8 @@ def is_viz_result(value: Any) -> bool:
     image = value.get("image")
     if is_image_payload(image):
         return True
-    if image is not None and bool(find_image_payloads(image)):
-        return True
+    # A nested image inside some other helper used to claim the whole result
+    # as a plot, so later domains never ran.
     return False
 
 
@@ -188,7 +203,10 @@ def insert_image_payload_for_doc(
     if is_calc(doc):
         from plugin.calc.python.image_egress import insert_image_result_on_sheet
 
-        insert_image_result_on_sheet(ctx, payload)
+        # Pass the same document =PY() already read. Omitting doc= wrote the
+        # chart to desktop.getCurrentComponent(), so image egress fell back to
+        # the front window (MCP document_url, or a second open workbook).
+        insert_image_result_on_sheet(ctx, payload, doc=doc)
         return
     if is_writer(doc):
         from plugin.writer.images.image_tools import insert_image_at_locator
@@ -227,9 +245,31 @@ def insert_viz_result_into_doc(ctx: Any, doc: Any, result: dict[str, Any]) -> in
     return len(images)
 
 
+def _images_claimed_as_plot(result_data: Any) -> list[dict[str, Any]]:
+    """Images this turn should insert as a plot, not every nested picture."""
+    if is_image_payload(result_data):
+        return [result_data]
+    if isinstance(result_data, dict) and result_data.get("__wa_payload__") == "multi_data":
+        items = result_data.get("items") or []
+        claimed: list[dict[str, Any]] = []
+        for item in items:
+            if not is_image_payload(item):
+                return []
+            claimed.append(cast("dict[str, Any]", item))
+        return claimed
+    if isinstance(result_data, dict):
+        helper = result_data.get("helper")
+        if isinstance(helper, str) and helper in HELPER_NAMES:
+            return find_image_payloads(result_data)
+        image = result_data.get("image")
+        if isinstance(image, dict) and is_image_payload(image):
+            return [cast("dict[str, Any]", image)]
+    return []
+
+
 def try_insert_plot_result(ctx: Any, doc: Any, result_data: Any) -> bool:
     """Insert plot/image results when present. Returns True if insertion ran."""
-    images = find_image_payloads(result_data)
+    images = _images_claimed_as_plot(result_data)
     if not images:
         return False
     title = "Plot"

@@ -195,7 +195,7 @@ bool CefInit::initialize()
         const char* localAppData = std::getenv("LOCALAPPDATA");
         if (localAppData)
         {
-            std::string rootCache = std::string(localAppData) + "\\OfficeLabs\\cef_data";
+            std::string rootCache = std::string(localAppData) + "\\NAI_OFFICE\\cef_data";
             std::string profileCache = rootCache + "\\Default";
             CefString(&settings.root_cache_path).FromASCII(rootCache.c_str());
             CefString(&settings.cache_path).FromASCII(profileCache.c_str());
@@ -205,7 +205,7 @@ bool CefInit::initialize()
 #elif defined(MACOSX)
     {
         // macOS stores per-user app data under
-        // ~/Library/Application Support/OfficeLabs/ (Apple convention, NOT the
+        // ~/Library/Application Support/NAI_OFFICE/ (Apple convention, NOT the
         // app bundle's own Contents/). CEF will not create missing parent
         // directories, and a missing cache_path forces incognito mode and loses
         // localStorage on the first run, so create the dirs up front.
@@ -213,7 +213,7 @@ bool CefInit::initialize()
         if (home)
         {
             std::string rootCache =
-                std::string(home) + "/Library/Application Support/OfficeLabs/cef_data";
+                std::string(home) + "/Library/Application Support/NAI_OFFICE/cef_data";
             std::string profileCache = rootCache + "/Default";
 
             auto mkdirp = [](const std::string& path) {
@@ -402,7 +402,7 @@ OUString CefInit::getSubprocessPath() const
     // path by suffix. This name MUST match the bundle produced by
     // CustomTarget_cef_mac_bundle.mk (see officelabs/mac/helper-plists).
     return sSystemPath
-         + "/Frameworks/OfficeLabs Helper.app/Contents/MacOS/OfficeLabs Helper";
+         + "/Frameworks/NAI Office Helper.app/Contents/MacOS/NAI Office Helper";
 #else
     return sSystemPath + "/program/officelabs_cef_subprocess";
 #endif

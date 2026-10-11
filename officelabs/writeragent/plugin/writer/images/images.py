@@ -34,14 +34,21 @@ from typing import Any
 from ..specialized_base import ToolWriterImageBase
 import urllib.request
 import ssl
-from plugin.framework.queue_executor import execute_on_main_thread
+from plugin.framework.queue_executor import execute_on_main_thread, _SCOPE_UNSET
 from plugin.framework.thread_guard import on_main_thread
 
-def _run_on_main(fn: typing.Any, *args: typing.Any, timeout: float = 60.0, **kwargs: typing.Any) -> Any:
+def _run_on_main(
+    fn: typing.Any,
+    *args: typing.Any,
+    timeout: float = 60.0,
+    bound_scope: typing.Any = _SCOPE_UNSET,
+    **kwargs: typing.Any,
+) -> Any:
     if on_main_thread():
         return fn(*args, **kwargs)
-    return execute_on_main_thread(fn, *args, timeout=timeout, **kwargs)
+    return execute_on_main_thread(fn, *args, timeout=timeout, bound_scope=bound_scope, **kwargs)
 from .image_utils import ImageService
+from . import image_mark
 from plugin.framework.config import get_config_int, get_config_bool, get_config_str
 from plugin.framework.config_schema import DEFAULT_IMAGE_BASE_SIZE
 from plugin.framework.client.model_fetcher import get_image_model
@@ -58,6 +65,7 @@ from .image_tools import (
     replace_image_in_place,
     get_selected_image_base64,
     get_selected_image_dimensions_px,
+    get_selected_image_pixel_size,
 )
 
 log = logging.getLogger("writeragent.writer")
@@ -124,6 +132,7 @@ class ImageGenerate(ToolWriterImageBase):
         prompt = args.get("prompt", "")
 
         status_callback = getattr(ctx, "status_callback", None)
+        stop_checker = getattr(ctx, "stop_checker", None)
         mt_timeout = float(get_config_int("request_timeout"))
         provider = args.get("provider") or "endpoint"
         if provider == "aihorde":
@@ -138,20 +147,31 @@ class ImageGenerate(ToolWriterImageBase):
         explicit_edit = bool(source_image and source_image.lower() == "selection")
         source_b64 = None
         edit_width, edit_height = DEFAULT_IMAGE_BASE_SIZE, DEFAULT_IMAGE_BASE_SIZE
+        display_width, display_height = DEFAULT_IMAGE_BASE_SIZE, DEFAULT_IMAGE_BASE_SIZE
         is_edit = False
 
         # Peek selection when the caller asked to edit, or omitted source_image
         # (omitted + selected graphic → img2img; omitted + no selection → create).
         if explicit_edit or source_image is None:
 
-            def _read_selection_for_edit() -> tuple[str, tuple[str, int, int | None] | None]:
+            def _read_selection_for_edit() -> tuple[str, tuple[str, int, int | None, int | None, int | None] | None]:
                 b64 = get_selected_image_base64(ctx.doc, ctx.ctx)
                 if not b64:
                     return ("no_selection", None)
-                ew, eh = get_selected_image_dimensions_px(ctx.doc)
-                if ew is None:
-                    ew, eh = DEFAULT_IMAGE_BASE_SIZE, DEFAULT_IMAGE_BASE_SIZE
-                return ("ok", (b64, ew, eh))
+
+                # Use native pixel size for generating (so quality isn't lost if resized on page),
+                # but keep the on-page display size for replacing.
+                nw, nh = get_selected_image_pixel_size(ctx.doc)
+                dw, dh = get_selected_image_dimensions_px(ctx.doc)
+
+                if nw is None:
+                    nw, nh = dw, dh
+                if nw is None:
+                    nw, nh = DEFAULT_IMAGE_BASE_SIZE, DEFAULT_IMAGE_BASE_SIZE
+                if dw is None:
+                    dw, dh = DEFAULT_IMAGE_BASE_SIZE, DEFAULT_IMAGE_BASE_SIZE
+
+                return ("ok", (b64, nw, nh, dw, dh))
 
             tag, payload = _run_on_main(_read_selection_for_edit, timeout=mt_timeout)
             selection_available = tag == "ok"
@@ -159,9 +179,10 @@ class ImageGenerate(ToolWriterImageBase):
             if explicit_edit and not selection_available:
                 return self._tool_error("No image selected. Please select an image in the document first.", code="NO_SELECTION", action="edit_image")
             if is_edit:
-                if not isinstance(payload, tuple) or len(payload) != 3 or payload[1] is None or payload[2] is None:
+                if not isinstance(payload, tuple) or len(payload) != 5 or payload[1] is None or payload[2] is None:
                     return self._tool_error("Could not read selected image.", code="SELECTION_READ_ERROR")
                 source_b64, edit_width, edit_height = (str(payload[0]), int(payload[1]), int(payload[2]))
+                display_width, display_height = int(payload[3] or edit_width), int(payload[4] or edit_height)
 
         base_size = args.get("base_size", get_config_int("image_base_size"))
         try:
@@ -200,6 +221,7 @@ class ImageGenerate(ToolWriterImageBase):
             height=height,
             aspect_ratio=aspect,
             status_callback=status_callback,
+            stop_checker=stop_checker,
             **args_copy,
         )
 
@@ -209,15 +231,25 @@ class ImageGenerate(ToolWriterImageBase):
         img_path = paths[0]
 
         def _insert_or_replace() -> str:
+            # Bytes are already in hand. Stop may abort the network wait above;
+            # it does not skip this document insert.
             if is_edit:
-                replaced = replace_image_in_place(ctx.ctx, ctx.doc, img_path, width, height, title=prompt, description="Edited by %s" % provider, add_to_gallery=add_to_gallery, add_frame=add_frame)
+                replaced = replace_image_in_place(ctx.ctx, ctx.doc, img_path, display_width, display_height, title=prompt, description="Edited by %s" % provider, add_to_gallery=add_to_gallery, add_frame=add_frame)
                 if not replaced:
-                    insert_image(ctx.ctx, ctx.doc, img_path, width, height, title=prompt, description="Edited by %s" % provider, add_to_gallery=add_to_gallery, add_frame=add_frame)
+                    insert_image(ctx.ctx, ctx.doc, img_path, display_width, display_height, title=prompt, description="Edited by %s" % provider, add_to_gallery=add_to_gallery, add_frame=add_frame)
                 return "Image edited and inserted from %s." % provider
             insert_image(ctx.ctx, ctx.doc, img_path, width, height, title=prompt, description="Generated by %s" % provider, add_to_gallery=add_to_gallery, add_frame=add_frame)
             return "Image generated and inserted from %s." % provider
 
-        msg = _run_on_main(_insert_or_replace, timeout=mt_timeout)
+        # _run_on_main defaults bound_scope to the current send scope, so
+        # Stop cancels the queued insert even though the image bytes are
+        # already downloaded. Once bytes are in hand, marshal the insert
+        # unscoped (bound_scope=None).
+        msg = _run_on_main(_insert_or_replace, timeout=mt_timeout, bound_scope=None)
+
+        # Stop after the download must not turn a finished insert into an error.
+        # generate_image still receives stop_checker, so a network wait can abort.
+        # The insert itself is a document mutation and already ran.
 
         if provider in ("endpoint", "openrouter"):
             image_model_used = str(args.get("image_model") or get_image_model() or "").strip()
@@ -302,7 +334,7 @@ class ImageList(ToolWriterImageBase):
         images = []
         for name, graphic in graphics_names:
             try:
-                size = graphic.getPropertyValue("Size")
+                size = _object_size(graphic)
                 title = ""
                 description = ""
                 try:
@@ -364,12 +396,20 @@ def _get_graphic_object(ctx: typing.Any, doc: typing.Any, image_name: str) -> An
     return visual_helpers.get_graphic_object_by_name(doc, image_name)
 
 
+def _object_size(obj: typing.Any) -> Any:
+    """Frame size in 1/100 mm. Writer graphics have a ``Size`` property; Draw/Impress shapes
+    do not (UnknownPropertyException) and only answer ``getSize()``. Reading the property alone
+    made image_list skip every Draw picture and image_get_info fail on them."""
+    size = visual_helpers.safe_get_property(obj, "Size")
+    return size if size is not None else obj.getSize()
+
+
 class ImageGetInfo(ToolWriterImageBase):
     """Get detailed info about a specific image."""
 
     name: str | None = "image_get_info"
     intent: str | None = "media"
-    description: str = "Get detailed info about a specific image: URL, dimensions, anchor type, orientation, crop (crop_mm, mm trimmed per edge), and paragraph index."
+    description: str = "Get detailed info about a specific image: URL, dimensions (mm, and width_px/height_px of the picture itself), anchor type, orientation, crop (crop_mm, mm trimmed per edge), hyperlink_url (the image link, including an internal target), and paragraph index."
     parameters: dict[str, Any] | None = {"type": "object", "properties": {"name": {"type": "string", "description": "Name of the image (from image_list)."}}, "required": ["name"]}
 
 
@@ -380,7 +420,7 @@ class ImageGetInfo(ToolWriterImageBase):
         if not graphic:
             return self._tool_error("Image '%s' not found or document does not support graphic objects." % image_name, code="IMAGE_NOT_FOUND", image_name=image_name)
 
-        size = graphic.getPropertyValue("Size")
+        size = _object_size(graphic)
 
         # Graphic URL — try the modern property first, then legacy.
         graphic_url = ""
@@ -428,6 +468,15 @@ class ImageGetInfo(ToolWriterImageBase):
         except Exception:
             pass
 
+        # Pixel frame that image_crop_and_highlight boxes refer to.
+        width_px = height_px = None
+        source = visual_helpers.graphic_from_object(graphic)
+        if source is not None:
+            try:
+                width_px, height_px = image_mark.pixel_size(source)
+            except Exception:
+                pass
+
         # Crop (mm trimmed from each edge), so a reader/agent can see and adjust it.
         crop_mm = None
         try:
@@ -436,6 +485,13 @@ class ImageGetInfo(ToolWriterImageBase):
                 crop_mm = {"top": cc.Top / 100.0, "bottom": cc.Bottom / 100.0, "left": cc.Left / 100.0, "right": cc.Right / 100.0}
         except Exception:
             pass
+
+        # What was wrong: image_get_info never reported an image hyperlink, so a
+        # footer button whose ODT link lives on the enclosing draw:a looked unlinked.
+        # LibreOffice maps that href onto HyperLinkURL (BaseFrameProperties).
+        # Shapes without the property (some Calc/Draw pictures) stay "".
+        raw_link = visual_helpers.safe_get_property(graphic, "HyperLinkURL", "")
+        hyperlink_url = raw_link if isinstance(raw_link, str) else ""
 
         # Paragraph index via anchor
         paragraph_index = -1
@@ -458,12 +514,15 @@ class ImageGetInfo(ToolWriterImageBase):
             "height_mm": size.Height / 100.0,
             "width_100mm": size.Width,
             "height_100mm": size.Height,
+            "width_px": width_px,
+            "height_px": height_px,
             "anchor_type": anchor_type,
             "hori_orient": hori_orient,
             "vert_orient": vert_orient,
             "title": title,
             "description": description,
             "crop_mm": crop_mm,
+            "hyperlink_url": hyperlink_url,
             "paragraph_index": paragraph_index,
         }
 
@@ -646,6 +705,118 @@ class ImageSetProperties(ToolWriterImageBase):
 
 
 # ------------------------------------------------------------------
+# ImageCropAndHighlight
+# ------------------------------------------------------------------
+
+
+_BOX_SCHEMA: dict[str, Any] = {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4}
+
+
+class ImageCropAndHighlight(ToolWriterImageBase):
+    """Cut an image down to a region and mark passages on it, in the picture's own pixels.
+
+    The why and the how live in :mod:`image_mark`."""
+
+    name: str | None = "image_crop_and_highlight"
+    intent: str | None = "media"
+    description: str = (
+        "Cut an image down to a region and/or mark passages on it (highlighter, red box, underline) "
+        "with boxes in the picture's OWN pixels: [x, y, width, height] from its top-left corner, "
+        "inside width_px x height_px from image_get_info. If you only see a scaled copy, pass "
+        "units='percent' (0-100 of the picture's width/height). crop_box and every highlight box use "
+        "the same frame: the picture as it is now. The result is baked into the picture: the cut-away "
+        "part is removed from the file and marks cannot drift. Afterwards the picture IS the region "
+        "(new width_px/height_px). The frame keeps its width (or width_mm) and its height follows the "
+        "new shape. Check the result with get_image."
+    )
+    parameters: dict[str, Any] | None = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Name of the image (from image_list)."},
+            "crop_box": {**_BOX_SCHEMA, "description": "Region to keep, [x, y, width, height]. Omit to keep the picture as shown (an existing crop stays)."},
+            "highlights": {
+                "type": "array",
+                "description": "Marks to draw.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "box": {**_BOX_SCHEMA, "description": "Area to mark, [x, y, width, height], same frame as crop_box."},
+                        "style": {
+                            "type": "string",
+                            "enum": list(image_mark.STYLES),
+                            "description": "highlight = translucent yellow over the text (default); box = red outline around it; underline = red line under it.",
+                        },
+                        "color": {"type": "string", "description": "Optional '#RRGGBB' or color name instead of the style's color."},
+                    },
+                    "required": ["box"],
+                },
+            },
+            "units": {"type": "string", "enum": ["px", "percent"], "description": "Units of every box (default px)."},
+            "width_mm": {"type": "number", "description": "Display width in millimetres (default: keep the current width)."},
+        },
+        "required": ["name"],
+    }
+
+    is_mutation: bool | None = True
+
+    def execute(self, ctx: typing.Any, **kwargs: typing.Any) -> dict[str, Any]:
+        image_name = kwargs.get("name", "")
+        obj = _get_graphic_object(ctx, ctx.doc, image_name)
+        if not obj:
+            return self._tool_error("Image '%s' not found or document does not support graphic objects." % image_name, code="IMAGE_NOT_FOUND", image_name=image_name)
+        crop_box = kwargs.get("crop_box")
+        highlights = kwargs.get("highlights") or []
+        if crop_box is None and not highlights:
+            return self._tool_error("Pass crop_box and/or highlights.", code="MISSING_PARAMETER", parameter="crop_box")
+        source = visual_helpers.graphic_from_object(obj)
+        if source is None:
+            return self._tool_error("Image '%s' has no picture data to mark." % image_name, code="IMAGE_NOT_FOUND", image_name=image_name)
+
+        units = kwargs.get("units") or "px"
+        width_px, height_px = image_mark.pixel_size(source)
+        try:
+            if crop_box is not None:
+                region = image_mark.to_pixel_box(crop_box, units, width_px, height_px)
+            else:
+                region = image_mark.visible_region(visual_helpers.safe_get_property(obj, "GraphicCrop"), visual_helpers.safe_get_property(obj, "ActualSize"), source)
+            marks = image_mark.parse_marks(highlights, units, width_px, height_px, region)
+        except ValueError as e:
+            return self._tool_error(str(e), code="INVALID_PARAMETER", width_px=width_px, height_px=height_px)
+
+        from com.sun.star.awt import Size
+        from com.sun.star.text import GraphicCrop
+        from plugin.writer.edit_review import WriterCompoundUndo
+
+        size = _object_size(obj)
+        width_mm = kwargs.get("width_mm")
+        width_100mm = int(round(width_mm * 100)) if width_mm else int(size.Width)
+        region_w, region_h = region[2], region[3]
+        height_100mm = max(1, int(round(width_100mm * region_h / region_w)))
+        try:
+            baked = image_mark.bake(ctx.ctx, source, region, marks, image_mark.stroke_px(region_w, width_100mm / 100.0))
+        except Exception as e:
+            log.exception("image_crop_and_highlight: baking failed")
+            return self._tool_error("Could not mark the picture: %s" % e, code="IMAGE_MARK_FAILED", image_name=image_name)
+
+        with WriterCompoundUndo(ctx.doc, "WriterAgent: Crop and highlight image"):
+            obj.setPropertyValue("Graphic", baked)
+            # The old crop referred to the old picture; the region is already cut out of the new one.
+            visual_helpers.safe_set_property(obj, "GraphicCrop", GraphicCrop())
+            new_size = Size(width_100mm, height_100mm)
+            if not visual_helpers.safe_set_property(obj, "Size", new_size):
+                visual_helpers.safe_try_method(obj, "setSize", new_size)
+        return {
+            "status": "ok",
+            "image_name": image_name,
+            "width_px": region_w,
+            "height_px": region_h,
+            "width_mm": width_100mm / 100.0,
+            "height_mm": height_100mm / 100.0,
+            "highlights": len(marks),
+        }
+
+
+# ------------------------------------------------------------------
 # ImageDownload
 # ------------------------------------------------------------------
 
@@ -658,7 +829,7 @@ class ImageDownload(ToolWriterImageBase):
     description: str = "Download an image from URL to local cache. Returns local path for image_insert/image_replace."
     parameters: dict[str, Any] | None = {
         "type": "object",
-        "properties": {"url": {"type": "string", "description": "URL of the image to download."}, "verify_ssl": {"type": "boolean", "description": "Verify SSL certificates (default: false)."}, "force": {"type": "boolean", "description": "Force re-download even if cached (default: false)."}},
+        "properties": {"url": {"type": "string", "description": "URL of the image to download."}, "verify_ssl": {"type": "boolean", "description": "Verify SSL certificates (default: true)."}, "force": {"type": "boolean", "description": "Force re-download even if cached (default: false)."}},
         "required": ["url"],
     }
 
@@ -666,7 +837,10 @@ class ImageDownload(ToolWriterImageBase):
     def execute(self, ctx: typing.Any, **kwargs: typing.Any) -> dict[str, Any]:
         url = kwargs.get("url", "")
 
-        verify_ssl = kwargs.get("verify_ssl", False)
+        verify_ssl = kwargs.get("verify_ssl", True)
+        # A missing or null flag must not turn verification off.
+        if verify_ssl is None:
+            verify_ssl = True
         force = kwargs.get("force", False)
 
         local_path = _download_image_to_cache(url, verify_ssl=verify_ssl, force=force)
@@ -903,10 +1077,14 @@ class ImageReplace(ToolWriterImageBase):
 # ------------------------------------------------------------------
 
 
-def _download_image_to_cache(url: str, verify_ssl: bool = False, force: bool = False) -> str:
+def _download_image_to_cache(url: str, verify_ssl: bool = True, force: bool = False) -> str:
     """Download an image URL to the local cache directory.
 
     Returns the local file path. Uses a URL-based hash for caching.
+
+    TLS certificates are verified unless the caller passes ``verify_ssl=False``.
+    Image replace and image insert use this default, so an https URL is not
+    fetched with hostname checks disabled.
     """
 
     os.makedirs(_IMAGE_CACHE_DIR, exist_ok=True)
@@ -933,6 +1111,9 @@ def _download_image_to_cache(url: str, verify_ssl: bool = False, force: bool = F
 
     log.info("image_download: downloading %s -> %s", url, local_path)
 
+    # ImageReplace, ImageInsert, and ImageDownload verify https
+    # certificates. verify_ssl=False downloads with CERT_NONE.
+    # Verification stays on unless the caller opts out.
     if verify_ssl:
         context = None
     else:

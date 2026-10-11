@@ -1,0 +1,36 @@
+cd D:/_SATIN_AI/LibreOffice/officecfg && make -j 24 -rs
+[build XCU] officecfg/registry/data/org/openoffice/Office/UI/Sidebar.xcu
+[build XCX] officecfg/registry/data/org/openoffice/Office/UI/Sidebar.xcu
+[build LOC] top level modules: officecfg
+[build XCR] registry/en-US/org/openoffice/Office/UI/Sidebar.xcu
+[build XCR] registry/cs/org/openoffice/Office/UI/Sidebar.xcu
+[build XCR] registry/qtz/org/openoffice/Office/UI/Sidebar.xcu
+[build XCR] registry/sk/org/openoffice/Office/UI/Sidebar.xcu
+[build XCR] registry/vi/org/openoffice/Office/UI/Sidebar.xcu
+[build CFG] registry
+[build BIN] officecfg
+[build MOD] officecfg
+[build BIN] top level modules: officecfg
+[build ALL] top level modules: build-non-l10n-only build-l10n-only
+cd D:/_SATIN_AI/LibreOffice/postprocess && make -j 24 -rs
+[build ECH] CustomTarget/postprocess/registry/main.list
+[build XCD] main
+[build AWK] CustomTarget/postprocess/registry/registry_en-US.list
+[build AWK] CustomTarget/postprocess/registry/registry_cs.list
+[build AWK] CustomTarget/postprocess/registry/registry_qtz.list
+[build AWK] CustomTarget/postprocess/registry/registry_sk.list
+[build AWK] CustomTarget/postprocess/registry/registry_vi.list
+[build XCD] registry_en-US
+[build XCD] registry_cs
+[build XCD] registry_qtz
+[build XCD] registry_sk
+[build XCD] registry_vi
+[build CUS] postprocess/registry
+[build BIN] postprocess
+[build PKG] postprocess_registry
+[build LOC] postprocess
+[build MOD] postprocess
+[build LOC] top level modules: postprocess
+[build BIN] top level modules: postprocess
+[build ALL] top level modules: build-non-l10n-only build-l10n-only
+CFG_BUILD_EXIT=0

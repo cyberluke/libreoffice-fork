@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-26 14:02-0400\n"
+"POT-Creation-Date: 2026-10-07 23:17-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: Czech <LL@li.org>\n"
@@ -193,16 +193,16 @@ msgstr "Obnovení selhalo: "
 msgid "TLS/SSL Error: {0}"
 msgstr "Chyba TLS/SSL: {0}"
 
-#: plugin/framework/errors.py
+#: plugin/framework/errors.py plugin/framework/client/errors.py
 msgid "Invalid API Key. Please check your settings."
 msgstr "Neplatný klíč API. Zkontrolujte prosím své nastavení."
 
-#: plugin/framework/errors.py
+#: plugin/framework/errors.py plugin/framework/client/errors.py
 msgid "API access Forbidden. Your key may lack permissions for this model."
 msgstr ""
 "Přístup k API byl zamítnut. Váš klíč možná nemá oprávnění pro tento model."
 
-#: plugin/framework/errors.py
+#: plugin/framework/errors.py plugin/framework/client/errors.py
 msgid "Endpoint not found (404). Check your URL and Model name."
 msgstr ""
 "Koncový bod nebyl nalezen (404). Zkontrolujte adresu URL a název modelu."
@@ -286,17 +286,9 @@ msgstr "Poskytovatel AI nahlásil chybu. Zkuste to znovu."
 msgid "{resource_type} not found: {identifier}"
 msgstr "{resource_type} nebyl nalezen: {identifier}"
 
-#: plugin/framework/config_schema.py
-msgid "Chat max tokens must be >= 0"
-msgstr "Maximální počet tokenů chatu musí být >= 0"
-
-#: plugin/framework/config_schema.py
-msgid "Request timeout must be > 0"
-msgstr "Časový limit požadavku musí být > 0"
-
-#: plugin/framework/config_schema.py
-msgid "Temperature must be <= 1.0"
-msgstr "Teplota musí být <= 1.0"
+#: plugin/framework/queue_executor.py
+msgid "Waiting for another document's reply..."
+msgstr "Čeká se na odpověď jiného dokumentu..."
 
 #: plugin/framework/thread_guard.py
 msgid "UNO Thread Violation"
@@ -369,6 +361,7 @@ msgid "Error: {0}"
 msgstr "Chyba: {0}"
 
 #: plugin/framework/client/llm_client.py
+#: plugin/framework/client/base_provider_shim.py
 msgid "Stream ended with finish_reason=error"
 msgstr "Proud dat byl ukončen s finish_reason=error"
 
@@ -406,55 +399,131 @@ msgstr "Nastavte prosím model v Nastavení."
 msgid "Please select a valid model in Settings (not a placeholder)."
 msgstr "Vyberte prosím platný model v Nastavení (nikoliv zástupný symbol)."
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_voices.py
 msgid "Hello, I'm your LibreOffice WriterAgent."
 msgstr "Dobrý den, jsem váš LibreOffice WriterAgent."
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
 #, python-brace-format
-msgid "Speech request failed ({0}): {1}"
-msgstr "Požadavek na řeč selhal ({0}): {1}"
+msgid "Transcribing with local Whisper ({0})…"
+msgstr "Přepisuji pomocí místního modelu Whisper ({0})…"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
 #, python-brace-format
-msgid "Speech request failed: {0}"
-msgstr "Požadavek na řeč selhal: {0}"
+msgid ""
+"Transcribing with local Whisper ({0})… The first run downloads the model."
+msgstr ""
+"Přepisuji pomocí místního modelu Whisper ({0})… Při prvním spuštění se "
+"stahuje model."
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
+msgid "Transcribing audio..."
+msgstr "Přepisuji zvuk..."
+
+#: plugin/audio/stt_service.py
 #, python-brace-format
-msgid "Speech request failed ({0})."
-msgstr "Požadavek na řeč selhal ({0})."
+msgid "Local Whisper failed: {0}"
+msgstr "Místní Whisper selhal: {0}"
 
-#: plugin/audio/tts_service.py
-msgid "Speech request failed."
-msgstr "Požadavek na řeč selhal."
+#: plugin/audio/stt_service.py
+msgid "Local Whisper did not return a transcript."
+msgstr "Místní Whisper nevrátil žádný přepis."
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/stt_service.py
+#, python-brace-format
+msgid ""
+"Local Whisper runs in the Settings → Python venv, not LibreOffice's Python. "
+"Set the venv, then install with: {0}"
+msgstr ""
+"Místní Whisper běží v prostředí Python venv nastaveném v Nastavení, nikoliv "
+"v Pythonu LibreOffice. Nastavte venv a poté nainstalujte pomocí: {0}"
+
+#: plugin/audio/stt_service.py
+#, python-brace-format
+msgid ""
+"faster-whisper is not installed in the Settings → Python venv. Install with:"
+" {0}. Settings → Python Test lists it under Audio optional packages."
+msgstr ""
+"Knihovna faster-whisper není nainstalována v prostředí Python venv v "
+"Nastavení. Nainstalujte ji pomocí: {0}. V Nastavení → Test Pythonu je "
+"uvedena pod volitelnými balíčky pro zvuk."
+
+#: plugin/audio/stt_service.py
+msgid "Local Whisper script is missing from the extension."
+msgstr "Skript pro místní Whisper v rozšíření chybí."
+
+#: plugin/audio/stt_service.py
+msgid ""
+"Local Whisper timed out or could not start. Try again, or pick a smaller "
+"Local Model in Settings → Speech."
+msgstr ""
+"Místní Whisper vypršel nebo jej nebylo možné spustit. Zkuste to znovu nebo "
+"vyberte menší místní model v Nastavení → Řeč."
+
+#: plugin/audio/stt_service.py
+msgid ""
+"Local Whisper timed out or could not start. The first run downloads model "
+"weights; try again, or pick a smaller Local Model in Settings → Speech."
+msgstr ""
+"Místní Whisper vypršel nebo jej nebylo možné spustit. Při prvním spuštění se"
+" stahují váhy modelu; zkuste to znovu nebo vyberte menší místní model v "
+"Nastavení → Řeč."
+
+#: plugin/audio/stt_service.py
+msgid "No language-model client is available for endpoint speech-to-text."
+msgstr ""
+"Pro koncový bod převodu řeči na text není k dispozici žádný klient "
+"jazykového modelu."
+
+#: plugin/audio/tts_models.py
 msgid "Downloading Kokoro voice model…"
 msgstr "Stahuji hlasový model Kokoro…"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 msgid "Couldn't download Kokoro; using OS speech"
 msgstr "Nelze stáhnout Kokoro; používám systémovou řeč"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 #, python-brace-format
 msgid "Downloading Piper voice {0}…"
 msgstr "Stahuji hlas Piper {0}…"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 #, python-brace-format
 msgid "Couldn't download {0}; using Lessac"
 msgstr "Nelze stáhnout {0}; používám Lessac"
 
-#: plugin/audio/tts_service.py
+#: plugin/audio/tts_models.py
 #, python-brace-format
 msgid "Couldn't download {0}; using OS speech"
 msgstr "Nelze stáhnout {0}; používám systémovou řeč"
 
+#: plugin/audio/tts_endpoint.py
+#, python-brace-format
+msgid "Speech request failed ({0}): {1}"
+msgstr "Požadavek na řeč selhal ({0}): {1}"
+
+#: plugin/audio/tts_endpoint.py
+#, python-brace-format
+msgid "Speech request failed: {0}"
+msgstr "Požadavek na řeč selhal: {0}"
+
+#: plugin/audio/tts_endpoint.py
+#, python-brace-format
+msgid "Speech request failed ({0})."
+msgstr "Požadavek na řeč selhal ({0})."
+
+#: plugin/audio/tts_endpoint.py
+msgid "Speech request failed."
+msgstr "Požadavek na řeč selhal."
+
 #: plugin/audio/tts_service.py
-msgid "Kokoro phonemizer failed; this language may be misread."
-msgstr "Fonemizér Kokoro selhal; tento jazyk může být přečten chybně."
+msgid "Misaki not found; Kokoro used English phonemes"
+msgstr "Misaki nebyla nalezena; použity anglické fonémy Kokoro"
+
+#: plugin/audio/tts_service.py
+msgid "Kokoro used English phonemes for non-English voice"
+msgstr "Pro neanglický hlas byly použity anglické fonémy Kokoro"
 
 #: plugin/audio/kokoro_g2p.py
 msgid "Installing Kokoro phonemizer…"
@@ -506,6 +575,7 @@ msgstr ""
 "(pywebview)."
 
 #: plugin/calc/python/init_script_editor.py
+#: plugin/scripting/editor_ui_strings.py
 msgid "Initialization script saved."
 msgstr "Inicializační skript byl uložen."
 
@@ -518,8 +588,7 @@ msgid "Status:"
 msgstr "Stav:"
 
 #: plugin/calc/python/cell_editor_ui.py plugin/chatbot/panel_wiring.py
-#: plugin/chatbot/panel.py plugin/scripting/editor_ui_strings.py
-#: plugin/xdl_strings.py
+#: plugin/scripting/editor_ui_strings.py plugin/xdl_strings.py
 msgid "Ready"
 msgstr "Připraveno"
 
@@ -658,7 +727,7 @@ msgstr "Obrázek vložen"
 msgid "Images inserted"
 msgstr "Vložené obrázky"
 
-#: plugin/calc/python/geometric_recalc.py
+#: plugin/calc/python/geometric_recalc_core.py
 #, python-format
 msgid ""
 "Geometric Recalc Order skipped sheet '%(sheet)s': found %(cap)s or more "
@@ -693,6 +762,15 @@ msgstr "WriterAgent: Upravit výběr (Calc)"
 #: plugin/calc/editselection.py
 msgid "WriterAgent: Extend Selection (Calc)"
 msgstr "WriterAgent: Rozšířit výběr (Calc)"
+
+#: plugin/calc/vision_egress.py plugin/vision/vision_runner.py
+#, python-brace-format
+msgid ""
+"Image '{name}' not found. Use image_list or leave image_name empty and "
+"select the graphic."
+msgstr ""
+"Obrázek '{name}' nebyl nalezen. Použijte image_list nebo ponechte image_name"
+" prázdné a vyberte grafiku."
 
 #: plugin/calc/vision_egress.py
 msgid "Select an embedded image, then Run again."
@@ -849,6 +927,44 @@ msgstr "Přijmout tuto změnu"
 msgid "Reject this change"
 msgstr "Odmítnout tuto změnu"
 
+#: plugin/writer/edit_review.py
+#, python-brace-format
+msgid "Failed to write streamed text to the document: {0}"
+msgstr "Zápis streamovaného textu do dokumentu selhal: {0}"
+
+#: plugin/writer/edit_review.py
+#, python-brace-format
+msgid ""
+"Failed to finalize the tracked edit and preserve the generated text: {0}"
+msgstr ""
+"Nepodařilo se dokončit sledovanou úpravu a zachovat vygenerovaný text: {0}"
+
+#: plugin/writer/edit_review.py
+msgid ""
+"Failed to collapse the streamed edit into a single tracked change. The "
+"generated text was kept, but it may still appear as multiple tracked "
+"changes."
+msgstr ""
+"Nepodařilo se sloučit streamovanou úpravu do jedné sledované změny. "
+"Vygenerovaný text byl zachován, ale může se stále zobrazovat jako několik "
+"sledovaných změn."
+
+#: plugin/writer/edit_review.py
+msgid ""
+"Failed to collapse the streamed continuation into a single tracked change. "
+"The text was kept, but may not be reviewable."
+msgstr ""
+"Nepodařilo se sloučit streamované pokračování do jedné sledované změny. Text"
+" byl zachován, ale nemusí být možné jej revidovat."
+
+#: plugin/writer/editselection.py
+msgid ""
+"This selection contains tracked insertions or deletions. Accept or reject "
+"those changes first. The selection was not modified."
+msgstr ""
+"Tento výběr obsahuje sledované vložení nebo odstranění. Nejprve tyto změny "
+"přijměte nebo odmítněte. Výběr nebyl změněn."
+
 #: plugin/writer/editselection.py
 msgid "WriterAgent: Extend Selection"
 msgstr "WriterAgent: Rozšířit výběr"
@@ -969,10 +1085,6 @@ msgid "any"
 msgstr "jakýkoliv"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "awards"
-msgstr "ocenění"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "best"
 msgstr "nejlepší"
 
@@ -997,10 +1109,6 @@ msgid "concise"
 msgstr "stručně"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "depth"
-msgstr "hloubka"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "description"
 msgstr "popis"
 
@@ -1019,10 +1127,6 @@ msgstr "zobrazit"
 #: plugin/chatbot/research_cache_fluff.py
 msgid "each"
 msgstr "každý"
-
-#: plugin/chatbot/research_cache_fluff.py
-msgid "features"
-msgstr "funkce"
 
 #: plugin/chatbot/research_cache_fluff.py
 msgid "find"
@@ -1077,10 +1181,6 @@ msgid "me"
 msgstr "já"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "notable"
-msgstr "pozoruhodný"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "overall"
 msgstr "celkový"
 
@@ -1113,10 +1213,6 @@ msgid "question"
 msgstr "otázka"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "ratings"
-msgstr "hodnocení"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "recommendation"
 msgstr "doporučení"
 
@@ -1129,10 +1225,6 @@ msgid "research"
 msgstr "výzkum"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "reviews"
-msgstr "recenze"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "search"
 msgstr "hledat"
 
@@ -1143,10 +1235,6 @@ msgstr "krátký"
 #: plugin/chatbot/research_cache_fluff.py
 msgid "show"
 msgstr "zobrazit"
-
-#: plugin/chatbot/research_cache_fluff.py
-msgid "signature"
-msgstr "podpis"
 
 #: plugin/chatbot/research_cache_fluff.py
 msgid "source"
@@ -1185,10 +1273,6 @@ msgid "top"
 msgstr "horní"
 
 #: plugin/chatbot/research_cache_fluff.py
-msgid "trends"
-msgstr "trendy"
-
-#: plugin/chatbot/research_cache_fluff.py
 msgid "types"
 msgstr "typy"
 
@@ -1215,6 +1299,10 @@ msgstr "proč"
 #: plugin/chatbot/research_cache_fluff.py
 msgid "you"
 msgstr "vy"
+
+#: plugin/chatbot/module_config_dialog.py plugin/chatbot/dialog_views.py
+msgid "Invalid Setting"
+msgstr "Neplatné nastavení"
 
 #: plugin/chatbot/dialogs.py
 msgid "Agent requests approval"
@@ -1291,8 +1379,8 @@ msgid "Debug"
 msgstr "Ladění"
 
 #: plugin/chatbot/tool_loop.py plugin/chatbot/panel.py
-msgid "[No speech detected.]"
-msgstr "[Nebyla detekována žádná řeč.]"
+msgid "[Voice message]"
+msgstr "[Hlasová zpráva]"
 
 #: plugin/chatbot/tool_loop.py
 msgid "Error: Toolkit unavailable"
@@ -1302,7 +1390,7 @@ msgstr "Chyba: Sada nástrojů není k dispozici"
 msgid "Chat"
 msgstr "Chat"
 
-#: plugin/chatbot/chat_sidebar_mode.py
+#: plugin/chatbot/chat_sidebar_mode.py plugin/xdl_strings.py
 msgid "Image"
 msgstr "Obrázek"
 
@@ -1362,6 +1450,10 @@ msgstr "Přepnout model (mock)"
 msgid "Slash commands:"
 msgstr "Příkazy lomítka:"
 
+#: plugin/chatbot/panel.py plugin/xdl_strings.py
+msgid "Send"
+msgstr "Odeslat"
+
 #: plugin/chatbot/panel.py
 msgid "Accept"
 msgstr "Přijmout"
@@ -1379,6 +1471,10 @@ msgid "Waiting for approval…"
 msgstr "Čeká se na schválení…"
 
 #: plugin/chatbot/panel.py
+msgid "Hands-free off"
+msgstr "Hands-free vypnuto"
+
+#: plugin/chatbot/panel.py
 #, python-format
 msgid "Recording audio… (%d ms silence)"
 msgstr "Nahrávání zvuku… (%d ms ticha)"
@@ -1387,13 +1483,9 @@ msgstr "Nahrávání zvuku… (%d ms ticha)"
 msgid "Record"
 msgstr "Nahrát"
 
-#: plugin/chatbot/panel.py
+#: plugin/chatbot/panel.py plugin/chatbot/sidebar_test_hooks.py
 msgid "Stop Rec"
 msgstr "Zastavit nahrávání"
-
-#: plugin/chatbot/panel.py plugin/xdl_strings.py
-msgid "Send"
-msgstr "Odeslat"
 
 #: plugin/chatbot/panel.py
 msgid "Starting..."
@@ -1421,6 +1513,18 @@ msgstr ""
 "to!]"
 
 #: plugin/chatbot/panel.py
+msgid "[Audio error: recording stopped without a sound file.]"
+msgstr "[Chyba zvuku: nahrávání bylo zastaveno bez zvukového souboru.]"
+
+#: plugin/chatbot/panel.py plugin/scripting/audio_recorder_service.py
+msgid "[No speech detected.]"
+msgstr "[Nebyla detekována žádná řeč.]"
+
+#: plugin/chatbot/panel.py
+msgid "[Hands-free off: no speech heard.]"
+msgstr "[Hands-free vypnuto: nebyla zaznamenána žádná řeč.]"
+
+#: plugin/chatbot/panel.py
 #, python-brace-format
 msgid ""
 "[Model {0} does not support native audio. Please select an STT Model in "
@@ -1429,8 +1533,22 @@ msgstr ""
 "[Model {0} nepodporuje nativní zvuk. Prosím, vyberte model STT v Nastavení.]"
 
 #: plugin/chatbot/panel.py
+#, python-brace-format
+msgid "[Agent backend error: {0}]"
+msgstr "[Chyba backendu agenta: {0}]"
+
+#: plugin/chatbot/panel.py
 msgid "[Peer send requires Chat mode on this sidebar.]"
 msgstr "[Odesílání partnerovi vyžaduje v tomto postranním panelu režim Chat.]"
+
+#: plugin/chatbot/record_gesture.py
+msgid "Hands-free recording..."
+msgstr "Nahrávání hands-free..."
+
+#: plugin/chatbot/record_gesture.py
+#, python-format
+msgid "Hands-free… (%d ms silence)"
+msgstr "Hands-free… (%d ms ticha)"
 
 #: plugin/chatbot/settings_dialog.py plugin/xdl_strings.py
 msgid "Square"
@@ -1490,7 +1608,7 @@ msgstr "Uloženo do vyrovnávací paměti výzkumu (klíč: %s)"
 msgid "Opening '%s' for read-only access."
 msgstr "Otevírám „%s“ pro přístup pouze pro čtení."
 
-#: plugin/chatbot/web_research.py
+#: plugin/chatbot/web_research.py plugin/chatbot/web_research_deep.py
 msgid "Web research completed."
 msgstr "Webový průzkum dokončen."
 
@@ -1523,10 +1641,6 @@ msgid "Could not start editor: {0}"
 msgstr "Editor se nepodařilo spustit: {0}"
 
 #: plugin/chatbot/send_handlers.py
-msgid "Transcribing audio..."
-msgstr "Přepisuji zvuk..."
-
-#: plugin/chatbot/send_handlers.py
 #, python-brace-format
 msgid "[Transcription error: {0}]"
 msgstr "[Chyba přepisu: {0}]"
@@ -1548,6 +1662,10 @@ msgid ""
 msgstr ""
 "[Backend agenta „{0}“ není dostupný. Zkontrolujte nastavení (cesta, "
 "instalace).]"
+
+#: plugin/chatbot/send_handlers.py
+msgid "Thinking..."
+msgstr "Přemýšlím..."
 
 #: plugin/chatbot/send_handlers.py
 msgid "Perfect! I'm switching you to the main assistant now."
@@ -1633,7 +1751,6 @@ msgid "Web research collected no usable evidence."
 msgstr "Webový průzkum neshromáždil žádné použitelné důkazy."
 
 #: plugin/chatbot/rich_text_paste.py plugin/chatbot/rich_text.py
-#: plugin/chatbot/panel_factory.py
 msgid "Assistant:"
 msgstr "Asistent:"
 
@@ -1675,10 +1792,6 @@ msgstr ""
 "Je k dispozici novější verze %(name)s (%(version)s). Pro kontrolu "
 "aktualizací a instalaci nejnovější verze použijte Nástroje → Správce "
 "rozšíření."
-
-#: plugin/chatbot/dialog_views.py
-msgid "Invalid Setting"
-msgstr "Neplatné nastavení"
 
 #: plugin/chatbot/dialog_views.py
 #, python-brace-format
@@ -1792,6 +1905,23 @@ msgid "Width:"
 msgstr "Šířka:"
 
 #: plugin/chatbot/panel_factory.py
+msgid ""
+"Send. Record: click to record one message, hold 2 seconds for hands-free. "
+"Stop Rec: send the recording (hands-free keeps listening)."
+msgstr ""
+"Odeslat. Záznam: kliknutím nahrajete jednu zprávu, podržením 2 sekundy "
+"aktivujete hands-free. Zastavit záznam: odešle nahrávku (hands-free "
+"pokračuje v poslechu)."
+
+#: plugin/chatbot/panel_factory.py
+msgid ""
+"Stop the reply or speech (also ends hands-free). While recording: the first "
+"click leaves hands-free, the next click cancels the recording."
+msgstr ""
+"Zastavit odpověď nebo řeč (ukončí i hands-free). Během nahrávání: první "
+"kliknutí ukončí hands-free, další kliknutí zruší nahrávání."
+
+#: plugin/chatbot/panel_factory.py
 msgid "Speak responses aloud (TTS)"
 msgstr "Předčítat odpovědi nahlas (TTS)"
 
@@ -1804,6 +1934,10 @@ msgstr "Nový skript Python"
 #: plugin/xdl_strings.py
 msgid "Script name:"
 msgstr "Název skriptu:"
+
+#: plugin/scripting/script_dialogs.py
+msgid "Script name cannot start with a reserved prefix."
+msgstr "Název skriptu nesmí začínat vyhrazenou předponou."
 
 #: plugin/scripting/script_dialogs.py plugin/scripting/editor_ui_strings.py
 #: plugin/xdl_strings.py
@@ -1881,13 +2015,14 @@ msgstr "Skripty"
 msgid "My Scripts"
 msgstr "Moje skripty"
 
-#: plugin/scripting/editor_ui_strings.py
+#: plugin/scripting/editor_ui_strings.py plugin/scripting/document_scripts.py
+#: plugin/scripting/python_runner_ui.py
 msgid "Built-in helpers are read-only. Use Copy to My Scripts to customize."
 msgstr ""
 "Vestavěné pomocné skripty jsou pouze pro čtení. Pro úpravy použijte "
 "Kopírovat do mých skriptů."
 
-#: plugin/scripting/editor_ui_strings.py
+#: plugin/scripting/editor_ui_strings.py plugin/scripting/document_scripts.py
 msgid ""
 "Document changed — close and reopen Run Python Script to edit document "
 "scripts."
@@ -1972,12 +2107,26 @@ msgid "No document is open to save scripts."
 msgstr "Pro uložení skriptů není otevřen žádný dokument."
 
 #: plugin/scripting/document_scripts.py
+msgid "Document is read-only or properties cannot be written."
+msgstr "Dokument je pouze pro čtení nebo nelze zapsat jeho vlastnosti."
+
+#: plugin/scripting/document_scripts.py
 msgid ""
-"Document is read-only or properties cannot be written. Script saved to your "
-"personal library instead."
+"Document properties cannot be written (missing or unwriteable "
+"UserDefinedProperties)."
 msgstr ""
-"Dokument je pouze pro čtení nebo nelze zapsat vlastnosti. Skript byl místo "
-"toho uložen do vaší osobní knihovny."
+"Vlastnosti dokumentu nelze zapsat (chybějící nebo neupravitelné uživatelsky "
+"definované vlastnosti)."
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "'{0}' starts with a reserved prefix."
+msgstr "'{0}' začíná vyhrazenou předponou."
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "'{0}' is reserved for the workbook init script."
+msgstr "'{0}' je vyhrazeno pro inicializační skript sešitu."
 
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
@@ -1985,13 +2134,39 @@ msgid "A script named '{0}' already exists in this document."
 msgstr "Skript s názvem '{0}' již v tomto dokumentu existuje."
 
 #: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "Script '{0}' does not exist in this document."
+msgstr "Skript '{0}' v tomto dokumentu neexistuje."
+
+#: plugin/scripting/document_scripts.py
 msgid "This Document"
 msgstr "Tento dokument"
 
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
-msgid "Saved script '{0}' to My Scripts."
-msgstr "Skript '{0}' byl uložen do složky Moje skripty."
+msgid "Script '{0}' does not exist in My Scripts."
+msgstr "Skript '{0}' v sekci Moje skripty neexistuje."
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid ""
+"Script '{0}' is not in My Scripts or this document, so it was not saved."
+msgstr ""
+"Skript „{0}“ není v Moje skripty ani v tomto dokumentu, proto nebyl uložen."
+
+#: plugin/scripting/document_scripts.py plugin/scripting/python_runner_ui.py
+msgid "No document is open."
+msgstr "Není otevřen žádný dokument."
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "A script named '{0}' already exists in My Scripts. {1}"
+msgstr "Skript s názvem '{0}' již v Mých skriptech existuje. {1}"
+
+#: plugin/scripting/document_scripts.py
+#, python-brace-format
+msgid "Saved script '{0}' to My Scripts. {1}"
+msgstr "Skript „{0}“ byl uložen do Mých skriptů. {1}"
 
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
@@ -2018,10 +2193,6 @@ msgstr "Skript s názvem „{0}“ již v Mých skriptech existuje."
 msgid "Copied script '{0}' to My Scripts."
 msgstr "Skript „{0}“ byl zkopírován do Mých skriptů."
 
-#: plugin/scripting/document_scripts.py plugin/scripting/python_runner_ui.py
-msgid "No document is open."
-msgstr "Není otevřen žádný dokument."
-
 #: plugin/scripting/document_scripts.py
 #, python-brace-format
 msgid "Deleted document script '{0}'."
@@ -2032,9 +2203,22 @@ msgstr "Skript dokumentu „{0}“ byl odstraněn."
 msgid "Deleted script '{0}'."
 msgstr "Skript „{0}“ byl odstraněn."
 
+#: plugin/scripting/document_scripts.py
+msgid "The document was closed."
+msgstr "Dokument byl zavřen."
+
+#: plugin/scripting/python_runner_ui.py
+msgid "The document is no longer open."
+msgstr "Dokument již není otevřen."
+
 #: plugin/scripting/python_runner_ui.py
 msgid "PythonScriptDialog could not be loaded from the extension."
 msgstr "Dialogové okno PythonScriptDialog se nepodařilo z rozšíření načíst."
+
+#: plugin/scripting/python_runner_ui.py
+#, python-format
+msgid "Cannot save to My Scripts: a script named '%s' already exists."
+msgstr "Nelze uložit do Mých skriptů: skript s názvem „%s“ již existuje."
 
 #: plugin/scripting/python_runner_ui.py
 #, python-format
@@ -2050,6 +2234,14 @@ msgstr "Skript „%s“ byl uložen do tohoto dokumentu."
 #, python-format
 msgid "Script '%s' saved successfully."
 msgstr "Skript „%s“ byl úspěšně uložen."
+
+#: plugin/scripting/python_runner_ui.py
+msgid "Running..."
+msgstr "Spouští se..."
+
+#: plugin/scripting/python_runner_ui.py
+msgid "Execution Error"
+msgstr "Chyba při provádění"
 
 #: plugin/scripting/python_runner_ui.py
 #, python-format
@@ -2084,20 +2276,9 @@ msgstr "Skript „%s“ byl vytvořen v tomto dokumentu."
 msgid "Script '%s' created in My Scripts."
 msgstr "Skript „%s“ byl vytvořen v Mých skriptech."
 
-#: plugin/scripting/python_runner_ui.py
-msgid "Execution Error"
-msgstr "Chyba při provádění"
-
 #: plugin/scripting/python_runner_ui.py plugin/scripting/python_runner.py
 msgid "Script executed successfully."
 msgstr "Skript byl úspěšně spuštěn."
-
-#: plugin/scripting/python_runner_ui.py
-msgid ""
-"Script executed successfully, but returned no result and produced no output."
-msgstr ""
-"Skript byl úspěšně spuštěn, ale nevrátil žádný výsledek ani nevygeneroval "
-"žádný výstup."
 
 #: plugin/scripting/python_runner_ui.py
 msgid "Success"
@@ -2141,6 +2322,41 @@ msgid ""
 msgstr ""
 "V nakonfigurovaném venv nebyl nalezen žádný spustitelný soubor Pythonu: {0} "
 "(očekáváno bin/python, Scripts/python.exe nebo env-root python.exe)."
+
+#: plugin/scripting/editor_host.py
+msgid "The script list update timed out."
+msgstr "Časový limit pro aktualizaci seznamu skriptů vypršel."
+
+#: plugin/scripting/editor_host.py
+msgid "Script execution failed."
+msgstr "Spuštění skriptu selhalo."
+
+#: plugin/scripting/editor_host.py
+msgid "Saving the script timed out."
+msgstr "Časový limit pro uložení skriptu vypršel."
+
+#: plugin/scripting/editor_host.py
+msgid "the initialization script"
+msgstr "inicializační skript"
+
+#: plugin/scripting/editor_host.py
+msgid "the LaTeX formula"
+msgstr "vzorec LaTeX"
+
+#: plugin/scripting/editor_host.py
+msgid "this editor"
+msgstr "tento editor"
+
+#: plugin/scripting/editor_host.py
+#, python-brace-format
+msgid ""
+"Save changes to {0}?\n"
+"\n"
+"Yes saves them before switching. No discards them. Cancel keeps the current editor."
+msgstr ""
+"Uložit změny do {0}?\n"
+"\n"
+"Ano je uloží před přepnutím. Ne je zahodí. Zrušit ponechá aktuální editor."
 
 #: plugin/scripting/editor_host.py
 msgid "Could not start the Python editor."
@@ -2209,6 +2425,22 @@ msgid "Vector Search probe failed (see writeragent_debug.log)."
 msgstr "Sonda vektorového vyhledávání selhala (viz writeragent_debug.log)."
 
 #: plugin/scripting/venv_diagnostics.py
+msgid "UI / Monaco probe failed (see writeragent_debug.log)."
+msgstr "UI / Monaco: test selhal (viz writeragent_debug.log)."
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "UI / Monaco probe timed out."
+msgstr "UI / Monaco: test vypršel."
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "DuckDB probe failed (see writeragent_debug.log)."
+msgstr "DuckDB: test selhal (viz writeragent_debug.log)."
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "DuckDB probe timed out."
+msgstr "DuckDB: test vypršel."
+
+#: plugin/scripting/venv_diagnostics.py
 msgid "Audio Recording & Speech"
 msgstr "Záznam zvuku a řeč"
 
@@ -2269,6 +2501,10 @@ msgid "Local TTS engines (optional):"
 msgstr "Místní moduly TTS (volitelné):"
 
 #: plugin/scripting/venv_diagnostics.py
+msgid "Local Whisper (optional):"
+msgstr "Místní Whisper (volitelné):"
+
+#: plugin/scripting/venv_diagnostics.py
 msgid "Starting Python worker..."
 msgstr "Spouští se pracovní proces Pythonu..."
 
@@ -2277,8 +2513,12 @@ msgid "Reading Python version..."
 msgstr "Čte se verze Pythonu..."
 
 #: plugin/scripting/venv_diagnostics.py
-msgid "Audio & Speech: checking sounddevice and TTS engines..."
-msgstr "Zvuk a řeč: kontroluje se sounddevice a moduly TTS..."
+msgid "Audio & Speech: checking sounddevice, TTS, and local Whisper..."
+msgstr "Zvuk a řeč: kontroluji sounddevice, TTS a místní Whisper..."
+
+#: plugin/scripting/venv_diagnostics.py
+msgid "UI / Monaco Libraries: checking outside the script worker..."
+msgstr "UI / Knihovny Monaco: kontroluji mimo skript worker..."
 
 #: plugin/scripting/venv_diagnostics.py
 msgid "Text / NLP Libraries: loading (first run may take a while)..."
@@ -2449,6 +2689,42 @@ msgstr "{domain} „{helper}“ dokončeno. Zapsáno {rows} řádků. (trvalo {t
 msgid "{domain} '{helper}' completed. (took {time})"
 msgstr "{domain} „{helper}“ dokončeno. (trvalo {time})"
 
+#: plugin/scripting/domain_registry.py
+msgid "Vision Helpers"
+msgstr "Pomocníci pro vidění"
+
+#: plugin/scripting/domain_registry.py
+msgid "Math Helpers"
+msgstr "Pomocníci pro matematiku"
+
+#: plugin/scripting/domain_registry.py
+msgid "Units Helpers"
+msgstr "Pomocníci pro jednotky"
+
+#: plugin/scripting/domain_registry.py
+msgid "Analysis Helpers"
+msgstr "Pomocníci pro analýzu"
+
+#: plugin/scripting/domain_registry.py
+msgid "SQL Helpers"
+msgstr "Pomocníci pro SQL"
+
+#: plugin/scripting/domain_registry.py
+msgid "Viz Helpers"
+msgstr "Pomocníci pro vizualizaci"
+
+#: plugin/scripting/domain_registry.py
+msgid "Quant Helpers"
+msgstr "Pomocníci pro kvantifikaci"
+
+#: plugin/scripting/domain_registry.py
+msgid "Optimize Helpers"
+msgstr "Pomocníci pro optimalizaci"
+
+#: plugin/scripting/domain_registry.py
+msgid "Forecast Helpers"
+msgstr "Pomocníci pro předpovědi"
+
 #: plugin/scripting/session_manager.py
 msgid ""
 "Reset Python Session for notebooks applies to LibreOffice Writer. Open a "
@@ -2487,6 +2763,10 @@ msgstr ""
 "zkuste to znovu."
 
 #: plugin/scripting/session_manager.py
+msgid "Could not restore the initialization script."
+msgstr "Inicializační skript se nepodařilo obnovit."
+
+#: plugin/scripting/session_manager.py
 msgid "Python session reset for this workbook."
 msgstr "Relace Pythonu byla pro tento sešit resetována."
 
@@ -2513,6 +2793,11 @@ msgstr ""
 msgid "Python session reset for this document."
 msgstr "Relace Pythonu pro tento dokument byla resetována."
 
+#: plugin/scripting/session_manager.py
+msgid "Reset Python Session applies to Writer, Calc, and Draw documents."
+msgstr ""
+"Resetování relace Pythonu se vztahuje na dokumenty Writer, Calc a Draw."
+
 #: plugin/scripting/units.py
 msgid "Units helper failed."
 msgstr "Pomocník pro jednotky selhal."
@@ -2532,6 +2817,11 @@ msgstr "Vložení výsledku selhalo: {error} (trvalo {time})"
 
 #: plugin/scripting/helper_domain.py
 #, python-brace-format
+msgid "{domain} '{helper}' completed. Inserted: {preview} (took {time})"
+msgstr "{domain} „{helper}“ dokončeno. Vloženo: {preview} (trvalo {time})"
+
+#: plugin/scripting/helper_domain.py
+#, python-brace-format
 msgid "Plot inserted ({title}). (took {time})"
 msgstr "Graf vložen ({title}). (trvalo {time})"
 
@@ -2539,22 +2829,6 @@ msgstr "Graf vložen ({title}). (trvalo {time})"
 #, python-brace-format
 msgid "Viz '{helper}' completed. {msg}"
 msgstr "Viz '{helper}' dokončeno. {msg}"
-
-#: plugin/scripting/helper_domain.py
-#, python-brace-format
-msgid "Math '{helper}' completed. Inserted: {preview} (took {time})"
-msgstr "Math '{helper}' dokončeno. Vloženo: {preview} (trvalo {time})"
-
-#: plugin/scripting/helper_domain.py
-#, python-brace-format
-msgid "Units '{helper}' completed. Inserted: {preview} (took {time})"
-msgstr ""
-"Pomocník jednotek '{helper}' dokončen. Vloženo: {preview} (trvalo {time})"
-
-#: plugin/scripting/python_runner.py
-#, python-format
-msgid "Failed to insert result into Calc: %s"
-msgstr "Vložení výsledku do aplikace Calc selhalo: %s"
 
 #: plugin/scripting/python_runner.py
 msgid "Info"
@@ -2606,6 +2880,10 @@ msgstr "Skript byl úspěšně proveden. (trvalo {time})"
 msgid "Script saved."
 msgstr "Skript byl uložen."
 
+#: plugin/scripting/python_runner.py
+msgid "A script is already running."
+msgstr "Skript je již spuštěn."
+
 #: plugin/scripting/python_runner.py plugin/xdl_strings.py
 msgid "Run Python Script"
 msgstr "Spustit skript v Pythonu"
@@ -2635,17 +2913,26 @@ msgstr ""
 
 #: plugin/vision/vision_runner.py
 #, python-brace-format
-msgid ""
-"Image '{name}' not found. Use image_list or leave image_name empty and "
-"select the graphic."
-msgstr ""
-"Obrázek '{name}' nebyl nalezen. Použijte image_list nebo ponechte image_name"
-" prázdné a vyberte grafiku."
+msgid "Image '{name}' could not be exported."
+msgstr "Obrázek '{name}' se nepodařilo exportovat."
 
 #: plugin/vision/vision_runner.py
 #, python-brace-format
-msgid "Image '{name}' could not be exported."
-msgstr "Obrázek '{name}' se nepodařilo exportovat."
+msgid ""
+"Image is too large to send to the vision worker ({size} bytes; limit "
+"{limit})."
+msgstr ""
+"Obrázek je příliš velký pro odeslání zpracovateli vize ({size} bajtů; limit "
+"{limit})."
+
+#: plugin/vision/vision_runner.py
+msgid "Cancelled by user."
+msgstr "Zrušeno uživatelem."
+
+#: plugin/vision/vision_runner.py
+#, python-brace-format
+msgid "Stopped after {count} of {total} images."
+msgstr "Zastaveno po {count} z {total} obrázků."
 
 #: plugin/vision/vision_runner.py
 #, python-brace-format
@@ -3097,10 +3384,6 @@ msgid "Image Model:"
 msgstr "Model obrázku:"
 
 #: plugin/xdl_strings.py
-msgid "Image Settings"
-msgstr "Nastavení obrázku"
-
-#: plugin/xdl_strings.py
 msgid "In-place replacement"
 msgstr "Nahrazení na místě"
 
@@ -3352,13 +3635,67 @@ msgstr "Grok Build (ACP)"
 msgid "OpenCode (ACP)"
 msgstr "OpenCode (ACP)"
 
+msgid "Prompt for Agent Permissions"
+msgstr "Dotaz na oprávnění agenta"
+
+msgid ""
+"Ask for confirmation before allowing the agent to use tools (read files, "
+"execute commands, etc.)"
+msgstr ""
+"Před povolením agentovi používat nástroje (čtení souborů, spouštění příkazů "
+"atd.) vyžadovat potvrzení"
+
+msgid "STT Provider"
+msgstr "Poskytovatel převodu řeči na text (STT)"
+
+msgid ""
+"LLM Endpoint uses Audio Model and POST /v1/audio/transcriptions. Local "
+"Whisper runs faster-whisper in the Settings → Python venv (not LibreOffice's"
+" Python)."
+msgstr ""
+"Koncový bod LLM používá zvukový model a POST /v1/audio/transcriptions. "
+"Místní Whisper spouští faster-whisper v Nastavení → Python venv (nikoliv "
+"Python LibreOffice)."
+
+msgid "LLM Endpoint"
+msgstr "Koncový bod LLM"
+
+msgid "Local Whisper (faster-whisper)"
+msgstr "Místní Whisper (faster-whisper)"
+
 msgid "Audio Model:"
 msgstr "Zvukový model:"
 
-msgid "Speech-to-text model when the chat model cannot take audio input."
+msgid ""
+"Speech-to-text model when STT Provider is LLM Endpoint and the chat model "
+"cannot take audio input."
 msgstr ""
-"Model převodu řeči na text, pokud chatovací model neumí zpracovat zvukový "
-"vstup."
+"Model pro převod řeči na text, pokud je poskytovatelem STT koncový bod LLM a"
+" chatovací model nepodporuje zvukový vstup."
+
+msgid "Local Model"
+msgstr "Místní model"
+
+msgid ""
+"faster-whisper size. The first transcription downloads weights into the "
+"Hugging Face cache (base, the default, is about 150 MB; tiny ~75 MB, small "
+"~500 MB, medium ~1.5 GB)."
+msgstr ""
+"Velikost faster-whisper. První přepis stáhne váhy do mezipaměti Hugging Face"
+" (base, výchozí, má přibližně 150 MB; tiny ~75 MB, small ~500 MB, medium "
+"~1,5 GB)."
+
+msgid "tiny (~75 MB)"
+msgstr "tiny (~75 MB)"
+
+msgid "base (~150 MB)"
+msgstr "base (~150 MB)"
+
+msgid "small (~500 MB)"
+msgstr "small (~500 MB)"
+
+msgid "medium (~1.5 GB)"
+msgstr "medium (~1,5 GB)"
 
 msgid "Enable Speech Output (TTS)"
 msgstr "Povolit hlasový výstup (TTS)"
@@ -3406,9 +3743,6 @@ msgstr "Kokoro (místní neuronový, ONNX CPU)"
 
 msgid "Piper (Local Fast Neural, CPU)"
 msgstr "Piper (místní rychlý neuronový, CPU)"
-
-msgid "LLM Endpoint"
-msgstr "Koncový bod LLM"
 
 msgid "TTS Model"
 msgstr "Model TTS"
@@ -4015,9 +4349,12 @@ msgstr ""
 msgid "OCR confidence threshold"
 msgstr "Práh spolehlivosti OCR"
 
-msgid "RapidOCR minimum text score. Raise to reduce garbage text."
+msgid ""
+"RapidOCR minimum text score. 0.0 is a real threshold (not the default). "
+"Raise to reduce garbage text."
 msgstr ""
-"Minimální skóre textu pro RapidOCR. Zvyšte pro omezení nekvalitního textu."
+"Minimální skóre textu pro RapidOCR. 0.0 je skutečná prahová hodnota (nikoliv"
+" výchozí). Zvyšte pro omezení nesmyslného textu."
 
 msgid "OCR entire image"
 msgstr "OCR celého obrázku"
@@ -4068,8 +4405,8 @@ msgstr "Model rozvržení"
 msgid "Heron (default)"
 msgstr "Heron (výchozí)"
 
-msgid "Egret large (slower"
-msgstr "Egret large (pomalejší"
+msgid "Egret large (slower, complex docs)"
+msgstr "Egret large (pomalejší, složité dokumenty)"
 
 msgid "Extract formulas (LaTeX)"
 msgstr "Extrahovat vzorce (LaTeX)"

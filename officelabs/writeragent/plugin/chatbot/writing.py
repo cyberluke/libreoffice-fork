@@ -11,13 +11,9 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, ClassVar
-
-if TYPE_CHECKING:
-    from plugin.contrib.smolagents.memory import ToolCall
+from typing import Any, ClassVar
 
 from plugin.doc.document_research import DOC_RESEARCH_DISCOVERY_TOOL_NAMES, filter_document_research_discovery_tools
-from plugin.doc.specialized_base import _field_from_tool_arguments
 from plugin.chatbot.smol_examples import normalize_html_content_array
 from plugin.framework.prompts import WRITER_APPLY_DOCUMENT_HTML_RULES, get_chat_response_format_instructions
 from plugin.framework.tool import ToolBase, ToolContext
@@ -36,7 +32,7 @@ WORKFLOW (in order):
    - Generate high-quality content for a single section as HTML (including its heading).
    - Insert it into the document using `write_document_section`.
    - Ask the user for approval or feedback on the written section before moving to the next section.
-5. Once all sections are written, call reply_to_user with a handoff answer and writing_plan_finished=true (plan_completed=true if all sections were written).
+5. Once all sections are written, call reply_to_user with a handoff answer and writing_plan_finished=true.
 
 HTML RULES (CRITICAL):
 - All reply_to_user answer text must be HTML.
@@ -117,6 +113,7 @@ class WriteDocumentSection(ToolWriterSpecialBase):
     description: str = "Insert or replace a section of document content with formatted HTML."
     is_mutation: bool | None = True
     long_running: bool = True
+    timeout: float = 300.0
     parameters: dict[str, Any] | None = {
         "type": "object",
         "properties": {
@@ -134,6 +131,9 @@ class WriteDocumentSection(ToolWriterSpecialBase):
         "required": ["content"],
     }
 
+    def is_async(self) -> bool:
+        return True
+
     def execute(self, ctx: ToolContext, **kwargs: Any) -> dict[str, Any]:
         content = normalize_html_content_array(kwargs.get("content"))
         if not content:
@@ -150,66 +150,25 @@ class WriteDocumentSection(ToolWriterSpecialBase):
 
 def _run_writing_agent(ctx: ToolContext, *, query: str = "", history_text: str | None = None, topic: str | None = None, **kwargs: Any) -> dict[str, Any]:
     """Run one turn of the writing plan smol sub-agent."""
-    from plugin.chatbot.smol_agent import SmolAgentExecutor, SmolToolAdapter, build_toolcalling_agent
-    from plugin.chatbot.smol_examples import get_examples_block
-
-    status_callback = getattr(ctx, "status_callback", None)
-    append_thinking_callback = getattr(ctx, "append_thinking_callback", None)
-    chat_append_callback = getattr(ctx, "chat_append_callback", None)
-
-    if history_text and len(history_text) > 4000:
-        history_text = "..." + history_text[-4000:]
-
-    if status_callback:
-        status_callback("Writing...")
-
-    from plugin.chatbot.sticky_reply import WRITING_PLAN_REPLY_SPEC, StickyReplyToUserTool, interpret_sticky_final_answer
-
-    domain_tools = collect_writing_tools(ctx)
-    smol_tools = [SmolToolAdapter(t, ctx, safe=True, inputs_style="specialized") for t in domain_tools]
-    smol_tools.append(SmolToolAdapter(StickyReplyToUserTool(WRITING_PLAN_REPLY_SPEC), ctx, safe=False, inputs_style="librarian"))
+    from plugin.chatbot.smol_agent import run_smol_side_turn
+    from plugin.chatbot.sticky_reply import WRITING_PLAN_REPLY_SPEC
 
     instructions = get_writing_sub_agent_instructions(ctx.ctx)
     if topic and topic.strip():
         instructions += f"\n\n[WRITING TASK / CONTEXT]\n{topic.strip()}\n"
-
-    agent = build_toolcalling_agent(
+    return run_smol_side_turn(
         ctx,
-        smol_tools,
+        query=query,
+        history_text=history_text,
+        collector=collect_writing_tools,
         instructions=instructions,
-        final_answer_tool_name="reply_to_user",
-        examples_block=get_examples_block("writing_plan"),
-        status_callback=status_callback,
-    )
-
-    task = f"### CONVERSATION HISTORY:\n{history_text or 'None'}\n\n### CURRENT QUERY:\n{query}"
-    document_open_step_index = 0
-
-    def tool_call_handler(step: ToolCall) -> Any:
-        nonlocal document_open_step_index
-        if step.name == "delegate_read_document" and chat_append_callback:
-            from plugin.chatbot.web_research_chat import document_open_step_chat_text
-
-            path_or_name = _field_from_tool_arguments(step.arguments, "path_or_name")
-            chat_append_callback(document_open_step_chat_text(path_or_name, document_open_step_index))
-            document_open_step_index += 1
-        if append_thinking_callback:
-            append_thinking_callback(f"Running tool: {step.name} with {step.arguments}\n")
-        if status_callback:
-            status_callback(f"{step.name}...")
-        return None
-
-    executor = SmolAgentExecutor(ctx)
-    res = executor.execute_safe(
-        agent,
-        task,
-        tool_call_handler=tool_call_handler,
+        examples_key="writing_plan",
+        reply_spec=WRITING_PLAN_REPLY_SPEC,
+        report_document_opens=True,
+        status_message="Writing...",
         stop_message="Writing stopped by user.",
         error_prefix="Writing failed",
     )
-    if isinstance(res, dict) and res.get("status") == "error":
-        return res
-    return interpret_sticky_final_answer(res, leave_status=WRITING_PLAN_REPLY_SPEC.leave_status)
 
 
 class WritingPlanSessionTool(ToolBase):
@@ -237,4 +196,3 @@ class WritingPlanSessionTool(ToolBase):
         from plugin.chatbot.smol_agent import run_subagent_tool
 
         return run_subagent_tool("Writing plan", _run_writing_agent, ctx, **kwargs)
-

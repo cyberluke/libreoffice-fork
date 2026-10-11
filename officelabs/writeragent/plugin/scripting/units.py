@@ -14,7 +14,7 @@ from typing import Any
 from plugin.doc.doc_type import is_calc, is_writer
 from plugin.framework.errors import ToolExecutionError
 from plugin.framework.i18n import _
-from plugin.scripting._lazy_venv import make_getattr
+from plugin.scripting._lazy_venv import install_lazy_dir, make_getattr
 from plugin.scripting.client import run_units as client_run_units
 from plugin.scripting.helper_domain import (
     header_prefix,
@@ -50,6 +50,7 @@ _UNITS_VENV_EXPORTS = frozenset(
 )
 
 __getattr__ = make_getattr("units", _UNITS_VENV_EXPORTS)
+install_lazy_dir(globals(), _UNITS_VENV_EXPORTS)
 
 OUTPUT_STYLES = frozenset({"formatted", "detailed"})
 _FORMATTED_DEFAULT_HELPERS = frozenset({"convert_quantity", "parse_quantity"})
@@ -71,15 +72,14 @@ _API = make_template_api(
         run_name="run_units",
         shipped_templates=_SHIPPED_TEMPLATES,
         data_expr="data",
+        # convert_quantity takes value, from_unit, to_unit positionally (``from``
+        # is not a keyword argument). parse/check are keyword-only.
         positional_args={
             "convert_quantity": ("value", "from", "to"),
-            "parse_quantity": ("quantity",),
-            "check_dimensionality": ("quantity_a", "quantity_b"),
         },
     )
 )
 
-_template_body = _API.template_body
 get_units_script_templates = _API.get_templates
 parse_units_script_header = _API.parse_header
 
@@ -146,6 +146,18 @@ def split_helper_params(params: dict[str, Any] | None) -> tuple[dict[str, Any], 
     if output_style == "":
         output_style = None
     return clean, output_style
+
+
+def extract_units_insert_kwargs(ctx: Any, code: str) -> dict[str, Any]:
+    """Extract units insertion kwargs (e.g. output_style) from script code."""
+    from plugin.scripting.helper_domain import parse_run_import_call_params
+
+    body_params = parse_run_import_call_params(code, run_name="run_units")
+    if body_params is not None:
+        _unused, output_style = split_helper_params(body_params)
+        if output_style is not None:
+            return {"output_style": output_style}
+    return {}
 
 
 def is_units_result(value: Any) -> bool:
@@ -229,19 +241,11 @@ def insert_units_result_into_calc(
     output_style: str | None = None,
 ) -> int:
     """Write units result rows on the active Calc sheet."""
-    from plugin.calc.analysis_egress import calc_anchor_from_selection
-    from plugin.calc.address_utils import index_to_column
-    from plugin.calc.bridge import CalcBridge
-    from plugin.calc.manipulator import CellManipulator
+    from plugin.calc.tabular_egress import insert_tabular_result_into_calc
 
     helper = str(result.get("helper") or "")
     grid = format_units_for_calc(result, output_style=resolve_output_style(helper, output_style))
-    col, row = calc_anchor_from_selection(doc)
-    bridge = CalcBridge(doc)
-    manipulator = CellManipulator(bridge)
-    addr = f"{index_to_column(col)}{row + 1}"
-    manipulator.write_formula_range(addr, grid)
-    return len(grid)
+    return insert_tabular_result_into_calc(doc, ctx, grid)
 
 
 def insert_units_result_into_doc(
@@ -258,17 +262,3 @@ def insert_units_result_into_doc(
     if is_calc(doc):
         return insert_units_result_into_calc(doc, ctx, result, output_style=output_style)
     raise ToolExecutionError(_("Unsupported document type for units insertion."), code="UNITS_ERROR")
-
-
-def try_insert_units_result(
-    ctx: Any,
-    doc: Any,
-    result_data: Any,
-    *,
-    output_style: str | None = None,
-) -> bool:
-    """Insert units results when present. Returns True if insertion ran."""
-    if not is_units_result(result_data):
-        return False
-    insert_units_result_into_doc(ctx, doc, result_data, output_style=output_style)
-    return True

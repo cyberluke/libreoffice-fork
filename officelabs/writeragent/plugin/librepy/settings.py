@@ -9,9 +9,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from plugin.chatbot.dialogs import TabListener, get_checkbox_state, get_control_text, get_optional, is_checkbox_control, load_writeragent_dialog_detail, msgbox, set_checkbox_state, set_control_text, set_control_visible, translate_dialog
+from plugin.chatbot.dialogs import TabListener, get_optional, load_writeragent_dialog_detail, msgbox, set_control_text, set_control_visible, translate_dialog
 from plugin.framework.uno_listeners import BaseActionListener
-from plugin.framework.config_schema import as_bool
 from plugin.framework.i18n import _
 from plugin.framework.logging import init_logging
 from plugin.scripting.venv_probe_ui import ScriptingVenvTestListener, VenvProbeProgressDialog
@@ -33,10 +32,29 @@ class _DownloadVecPackListener(BaseActionListener):
         self._dlg = dlg
 
     def on_action_performed(self, rEvent: Any) -> None:
-        from plugin.scripting.native_binaries import run_vec_pack_download
+        from plugin.framework.queue_executor import execute_on_main_thread
+        from plugin.scripting.native_binaries import ensure_native_binaries_on_path, run_vec_pack_download
+        from plugin.scripting.payload_codec import invalidate_host_cython_accelerator
+
+        def bind_downloaded_vec_on_main() -> None:
+            # sys.path insert plus sys.modules and accelerator globals.
+            # ScriptingVenvTestListener does the same work on this thread
+            # before its probe; the download cannot, because the files are
+            # not on disk yet.
+            ensure_native_binaries_on_path()
+            invalidate_host_cython_accelerator()
 
         def probe(on_display: Callable[[str], None], on_status: Callable[[str], None]) -> tuple[bool, str]:
-            ok = run_vec_pack_download(on_display, on_status)
+            # The download stays on the probe worker. Appending audio_binaries
+            # to sys.path and clearing the Cython accelerator must run on the
+            # main thread via execute_on_main_thread. VenvProbeProgressDialog
+            # runs probe_fn with run_in_background while execute() pumps VCL;
+            # that nested loop already dispatches AsyncCallback for the
+            # progress lines, so the bind does not wait on a thread blocked
+            # outside the message loop.
+            ok = run_vec_pack_download(on_display, on_status, bind_host=False)
+            if ok:
+                execute_on_main_thread(bind_downloaded_vec_on_main)
             return ok, ""
 
         VenvProbeProgressDialog(self._ctx, parent_dlg=self._dlg).run_modal_probe(probe, title=_("Cython Accelerator Download"))
@@ -47,16 +65,6 @@ def _scripting_field_specs() -> list[dict[str, Any]]:
     from plugin.chatbot.settings_fields import build_module_field_specs
 
     return build_module_field_specs("scripting", control_ids="prefixed", skip_librepy_exclude=True)
-
-
-def _set_ctrl_options(ctrl: Any, field: dict[str, Any]) -> None:
-    opts = field.get("options")
-    if not isinstance(opts, list):
-        return
-    labels = tuple(_(str(o.get("label", o.get("value", "")))) for o in opts if isinstance(o, dict))
-    model = ctrl.getModel()
-    if hasattr(model, "StringItemList"):
-        model.StringItemList = labels
 
 
 def _hide_settings_controls(dlg: Any, control_ids: tuple[str, ...]) -> None:
@@ -89,35 +97,26 @@ def _configure_librepy_settings_chrome(dlg: Any) -> None:
 
 
 def _populate_field(ctrl: Any, field: dict[str, Any]) -> None:
-    field_type = str(field.get("type") or "")
-    if is_checkbox_control(ctrl):
-        set_checkbox_state(ctrl, 1 if as_bool(field["value"]) else 0)
-        return
-    if field_type in ("int", "float") and hasattr(ctrl, "setValue"):
-        try:
-            ctrl.setValue(float(field["value"]))
-            return
-        except Exception:
-            log.debug("setValue failed for %s", field.get("name"), exc_info=True)
-    if hasattr(ctrl, "setText"):
-        if "options" in field:
-            _set_ctrl_options(ctrl, field)
-        ctrl.setText(str(field.get("value", "")))
-        return
-    set_control_text(ctrl, field["value"])
+    from plugin.chatbot.settings_fields import populate_settings_control
+
+    populate_settings_control(ctrl, field)
 
 
-def _extract_field(ctrl: Any) -> str:
-    if is_checkbox_control(ctrl):
-        return "true" if get_checkbox_state(ctrl) else "false"
-    if hasattr(ctrl, "getValue"):
-        try:
-            return str(ctrl.getValue())
-        except Exception:
-            log.debug("getValue failed", exc_info=True)
-    if hasattr(ctrl, "getText"):
-        return ctrl.getText()
-    return get_control_text(ctrl)
+def _extract_field(ctrl: Any, field: dict[str, Any] | None = None) -> str:
+    """LibrePy checkboxes stay ``\"true\"`` / ``\"false\"`` strings.
+
+    The shared reader returns a bool. Numeric fields use ``getValue`` (the
+    live spin value). ``getText`` on those controls is the inherited edit
+    text and can be stale.
+    """
+    from plugin.chatbot.settings_fields import read_settings_control
+
+    value = read_settings_control(ctrl, field)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    return str(value)
 
 
 def open_librepy_settings(ctx: Any) -> None:
@@ -127,70 +126,82 @@ def open_librepy_settings(ctx: Any) -> None:
     init_logging(ctx)
     log.debug("LibrePy settings: opening dialog")
 
+    dlg: Any = None
+    test_btn: Any = None
+    test_listener: Any = None
+    download_btn: Any = None
+    download_listener: Any = None
     try:
-        dlg, load_detail = load_writeragent_dialog_detail("SettingsDialog", ctx)
-    except Exception:
-        log.exception("LibrePy settings: dialog load failed")
-        raise
-
-    if dlg is None:
-        log.error("LibrePy settings: SettingsDialog failed to load (null dialog)")
-        detail = f"\n\n{load_detail}" if load_detail else ""
-        msgbox(ctx, _("Python Settings"), _("Could not open Settings.") + detail, box_type=3)
-        return
-
-    # UNO multi-page dialogs use model.Step (not Page); setPropertyValue("Page") fails on Linux.
-    dlg.getModel().Step = _SCRIPTING_TAB_PAGE
-    _configure_librepy_settings_chrome(dlg)
-
-    field_specs = _scripting_field_specs()
-    for field in field_specs:
-        ctrl = get_optional(dlg, field["name"])
-        if ctrl is None:
-            log.warning("LibrePy settings: missing control %r", field["name"])
-            continue
         try:
-            _populate_field(ctrl, field)
+            dlg, load_detail = load_writeragent_dialog_detail("SettingsDialog", ctx)
         except Exception:
-            log.exception("LibrePy settings: populate failed for %r", field["name"])
+            log.exception("LibrePy settings: dialog load failed")
             raise
 
-    translate_dialog(dlg)
-    try:
-        dlg.getModel().Title = _("Python Settings")
-    except Exception:
-        pass
+        if dlg is None:
+            log.error("LibrePy settings: SettingsDialog failed to load (null dialog)")
+            detail = f"\n\n{load_detail}" if load_detail else ""
+            msgbox(ctx, _("Python Settings"), _("Could not open Settings.") + detail, box_type=3)
+            return
 
-    test_btn = get_optional(dlg, "scripting__test_venv")
-    test_listener = None
-    if test_btn is not None:
-        test_listener = ScriptingVenvTestListener(ctx, dlg, include_vector_search=False, include_audio=False)
-        test_btn.addActionListener(test_listener)
+        # SettingsDialog.show wraps create, populate, and execute in one
+        # try/finally that disposes. Running Step, chrome, populate, and the
+        # title before that try leaked the UNO dialog on a raise.
+        # UNO multi-page dialogs use model.Step (not Page); setPropertyValue("Page") fails on Linux.
+        dlg.getModel().Step = _SCRIPTING_TAB_PAGE
+        _configure_librepy_settings_chrome(dlg)
 
-    download_btn = get_optional(dlg, "scripting__download_audio_binaries")
-    download_listener = None
-    if download_btn is not None:
-        download_listener = _DownloadVecPackListener(ctx, dlg)
-        download_btn.addActionListener(download_listener)
+        field_specs = _scripting_field_specs()
+        for field in field_specs:
+            ctrl = get_optional(dlg, field["name"])
+            if ctrl is None:
+                log.warning("LibrePy settings: missing control %r", field["name"])
+                continue
+            try:
+                _populate_field(ctrl, field)
+            except Exception:
+                log.exception("LibrePy settings: populate failed for %r", field["name"])
+                raise
 
-    try:
+        translate_dialog(dlg)
+        try:
+            dlg.getModel().Title = _("Python Settings")
+        except Exception:
+            pass
+
+        test_btn = get_optional(dlg, "scripting__test_venv")
+        if test_btn is not None:
+            test_listener = ScriptingVenvTestListener(ctx, dlg, include_vector_search=False, include_audio=False)
+            test_btn.addActionListener(test_listener)
+
+        download_btn = get_optional(dlg, "scripting__download_audio_binaries")
+        if download_btn is not None:
+            download_listener = _DownloadVecPackListener(ctx, dlg)
+            download_btn.addActionListener(download_listener)
+
         if dlg.execute():
             result: dict[str, Any] = {}
             for field in field_specs:
                 ctrl = get_optional(dlg, field["name"])
                 if ctrl is None:
                     continue
-                result[field["name"]] = _extract_field(ctrl)
+                result[field["name"]] = _extract_field(ctrl, field)
             apply_field_specs_result(ctx, result, field_specs)
     finally:
-        if test_btn is not None and test_listener is not None:
+        # Do not return from finally: that would swallow a load or populate error.
+        if dlg is not None:
+            if test_btn is not None and test_listener is not None:
+                try:
+                    test_btn.removeActionListener(test_listener)
+                except Exception:
+                    pass
+            if download_btn is not None and download_listener is not None:
+                try:
+                    download_btn.removeActionListener(download_listener)
+                except Exception:
+                    pass
             try:
-                test_btn.removeActionListener(test_listener)
+                dlg.dispose()
             except Exception:
-                pass
-        if download_btn is not None and download_listener is not None:
-            try:
-                download_btn.removeActionListener(download_listener)
-            except Exception:
-                pass
-        dlg.dispose()
+                # A dispose failure must not replace the chrome or populate error.
+                log.debug("Failed to dispose LibrePy settings dialog", exc_info=True)

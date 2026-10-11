@@ -25,9 +25,19 @@ import logging
 import re
 from typing import Any
 
-from plugin.framework.deal_shim import DEAL_MAX_SOURCE, UNDER_CROSSHAIR, deal, str_bounded
+from plugin.framework.deal_shim import UNDER_CROSSHAIR, deal
 
 log = logging.getLogger(__name__)
+
+
+def _is_pre_contract_error(exc: BaseException) -> bool:
+    """True for ``deal.PreContractError``.
+
+    That class subclasses ``AssertionError``, not ``ValueError``, so a repair
+    ``except`` that lists only JSON errors does not catch it. Match by name so
+    this stays valid when deal is not installed.
+    """
+    return type(exc).__name__ == "PreContractError"
 
 _LATEX_CLASH_WORDS = [
     # \a (Bell)
@@ -135,7 +145,30 @@ _LATEX_CLASH_WORDS = [
     "Vert",
 ]
 
-_LATEX_CLASH_RE = re.compile(r"(?<!\\)\\(" + "|".join(_LATEX_CLASH_WORDS) + r")\b")
+# JSON strings allow \" \\ \/ \b \f \n \r \t \uXXXX. A single backslash before
+# a clash word is LaTeX the model forgot to escape (`\nabla`, `\times`,
+# `\frac`, `\beta`). Dropping every word that starts with b/f/n/r/t leaves
+# those commands as a valid escape plus leftover letters. json.loads then
+# turns `\n` into a newline and returns, so step 2 never sees a control
+# character (the source still has backslash + letter).
+# A two-letter escape word followed by "." + a letter is not the command:
+# `\ne.g.` / `\ni.e.` / `\nu.s.` are a newline plus an abbreviation.
+# `_` and digits are word characters, so a `\b` word boundary misses
+# `\alpha_1` and `\times2`. json.loads (or literal_eval for `\a`) then
+# keeps the control character and drops the backslash.
+# A letter lookahead still rejects `\alphax`.
+_JSON_ESCAPE_STARTS = frozenset("bfnrt")
+_LATEX_CLASH_RE = re.compile(r"(?<!\\)\\(" + "|".join(_LATEX_CLASH_WORDS) + r")(?![A-Za-z])")
+
+
+def _double_latex_clash(match: re.Match[str]) -> str:
+    """Double one backslash before a clash word, except dotted abbreviations."""
+    word = match.group(1)
+    tail = match.string[match.end() : match.end() + 2]
+    if len(word) == 2 and word[:1] in _JSON_ESCAPE_STARTS and tail[:1] == "." and tail[1:2].isalpha():
+        return match.group(0)
+    return "\\\\" + word
+
 
 _SILENT_CORRUPTIONS = {}
 _escape_map = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f"}
@@ -152,15 +185,16 @@ def _repair_latex_clashes(text: str) -> str:
     # CrossHair: regex + large clash tables explode the SMT heap; identity is enough for contracts.
     if UNDER_CROSSHAIR:
         return text
-    # 1. Handle properly escaped but single-slash clashes (e.g. \\nabla -> \\\\nabla)
-    text = _LATEX_CLASH_RE.sub(r"\\\\\1", text)
+    # 1. Double a single backslash on a LaTeX clash word (`\nabla` -> `\\nabla`)
+    # so json.loads keeps the command. `\ne.g.` stays a newline.
+    text = _LATEX_CLASH_RE.sub(_double_latex_clash, text)
 
     # 2. Handle cases where the LLM sent a single backslash in the network JSON,
     # which the outer json.loads already silently evaluated as a control character
     # (e.g. \nabla -> \n + abla).
-    # What was wrong: step 2 replaced the control-character prefix anywhere,
-    # so a real newline followed by "e" (pretty-printed "example", or a
-    # string that continues "end") became the LaTeX command \ne.
+    # Step 2 must not replace a control-character prefix anywhere. A real
+    # newline followed by "e" (pretty-printed "example", or a string that
+    # continues "end") would become the LaTeX command \ne.
     for corrupted, repaired in _SILENT_CORRUPTIONS.items():
         text = _replace_control_token(text, corrupted, repaired)
 
@@ -182,6 +216,13 @@ def _replace_control_token(text: str, corrupted: str, repaired: str) -> str:
             pieces.append(text[start:end])
             start = end
             continue
+        # A two-letter command plus "." + a letter is an abbreviation
+        # (newline + "e.g."), not LaTeX. A longer command (`\nabla.`) still
+        # matches: its corrupted form is longer than the control char + one letter.
+        if len(corrupted) == 2 and nxt == "." and text[end + 1 : end + 2].isalpha():
+            pieces.append(text[start:end])
+            start = end
+            continue
         pieces.append(text[start:found])
         pieces.append(repaired)
         start = end
@@ -192,7 +233,12 @@ _JSON_CHARS = frozenset("{}\n ") if UNDER_CROSSHAIR else frozenset('abcdefghijkl
 
 
 def _deal_json_text_ok_pytest(text: object) -> bool:
-    return not isinstance(text, str) or str_bounded(text, DEAL_MAX_SOURCE)
+    # LLM JSON and writeragent.json are external. DEAL_MAX_SOURCE (8192) raised
+    # PreContractError, an AssertionError, so repair was skipped and callers
+    # saw a silent default. Release OXTs strip deal and already repair. The
+    # body returns non-strings unchanged and runs json_repair on any str.
+    # CrossHair keeps the one-character domain. ``text`` is unused.
+    return True
 
 
 def _deal_json_text_ok_crosshair(text: object) -> bool:
@@ -200,6 +246,16 @@ def _deal_json_text_ok_crosshair(text: object) -> bool:
 
 
 _deal_json_text_ok = _deal_json_text_ok_crosshair if UNDER_CROSSHAIR else _deal_json_text_ok_pytest
+
+
+def _debug_json_stage(stage: str) -> None:
+    """Log which fallback accepted the text.
+
+    Step 1 can fail and a later step still return a value. The stage name
+    is enough to see which step won. Logging the source would dump secrets
+    and document text.
+    """
+    log.debug("safe_json_loads stage=%s", stage)
 
 
 @deal.pre(lambda text: _deal_json_text_ok(text))
@@ -238,8 +294,8 @@ def repair_json(text: str) -> str:
 
 
 @deal.pre(lambda text, *_unused, **__: _deal_json_text_ok(text))
-def repair_json_object(text: str) -> Any:
-    """Repair malformed JSON and return a parsed object (json-repair return_objects=True)."""
+def _repair_json_object_bounded(text: str) -> Any:
+    """Deal-bounded body of ``repair_json_object``. Callers catch ``PreContractError``."""
     # crosshair: off
     if not isinstance(text, str):
         return text
@@ -252,6 +308,26 @@ def repair_json_object(text: str) -> Any:
     import json_repair  # lazy: vendored in plugin/lib or vendor/
 
     return json_repair.repair_json(stripped, return_objects=True)
+
+
+def repair_json_object(text: str) -> Any:
+    """Repair malformed JSON and return a parsed object (json-repair return_objects=True).
+
+    The pytest pre is total, so a long body is repaired. ``PreContractError``
+    subclasses ``AssertionError``, not ``ValueError``. If a contract error
+    still escapes ``_repair_json_object_bounded``, return the original text
+    instead of letting it skip JSON ``except`` clauses.
+    """
+    # crosshair: off
+    try:
+        return _repair_json_object_bounded(text)
+    except Exception as exc:
+        # except Exception, not a deal class: mypy rejects a dynamically loaded
+        # PreContractError in an except clause. Only that contract error is
+        # swallowed; other repair failures still propagate.
+        if not _is_pre_contract_error(exc):
+            raise
+        return text
 
 
 @deal.ensure(lambda text, default=None, strict=False, result=None: isinstance(text, (str, bytes, bytearray)) or result is default)
@@ -286,9 +362,9 @@ def safe_json_loads(text: Any, default: Any = None, strict: bool = False) -> Any
         return default
 
     # In strict mode, only RFC 8259 standard JSON parsing is allowed.
-    # What was wrong: raw_text.strip() strips Unicode whitespace characters (e.g. \x1f)
-    # that are not valid JSON whitespace, allowing unescaped control characters ('0\x1f' -> 0)
-    # to parse instead of returning default. Passing raw_text directly to json.loads preserves strict JSON rules.
+    # Pass raw_text to json.loads. strip() drops Unicode whitespace such as
+    # \x1f, which is not valid JSON whitespace, so '0\x1f' would parse as 0
+    # instead of returning default.
     if strict:
         try:
             parsed = json.loads(raw_text)
@@ -317,29 +393,38 @@ def safe_json_loads(text: Any, default: Any = None, strict: bool = False) -> Any
     # 2. strict=False attempt (handles bare control characters in non-strict LLM mode)
     try:
         parsed = json.loads(stripped, strict=False)
+        _debug_json_stage("non-strict")
         return parsed
     except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         pass
 
     # 3. ast.literal_eval fallback (handles single quotes and Python-isms)
     # Inspired by hermes-agent/environments/tool_call_parsers/qwen3_coder_parser.py
+    # Do not swap this ahead of repair: literal_eval accepting a truncated
+    # fragment is accepted behavior, not a bug.
     try:
         # literal_eval handles 'True', 'False', 'None' out of the box.
         # It also handles single quotes and tuple-like syntax.
         parsed = ast.literal_eval(stripped)
         # literal_eval also returns tuples, sets, and bytes. Callers expect JSON.
         if parsed is None or type(parsed) in (bool, int, float, str, list, dict):
+            _debug_json_stage("literal_eval")
             return parsed
     except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
         pass
 
-    # 4. Repair attempt for truncated or malformed JSON
+    # 4. Repair attempt for truncated or malformed JSON.
     try:
         repaired = repair_json(stripped)
         if repaired != stripped:
             parsed = json.loads(repaired, strict=False)
+            _debug_json_stage("json_repair")
             return parsed
-    except (json.JSONDecodeError, TypeError, ValueError, RecursionError, ImportError):
+    except Exception:
+        # repair_json's pytest pre is total. This try is only the repair
+        # attempt: a contract error is an AssertionError, and mypy rejects
+        # that dynamically loaded class in an except clause. Any failure
+        # returns default.
         pass
 
     return default

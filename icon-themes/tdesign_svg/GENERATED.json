@@ -1,0 +1,16 @@
+{
+  "generator": "tools/writer2027-icons/build_themes.py",
+  "generator_version": 2,
+  "source": "tdesign",
+  "source_commit": "a8a01c7955e4d8b29b0e32cc090bb3421f58d5dd",
+  "source_license": "MIT",
+  "mapping_sha256": "28d05972035f01690387ea9376d69dbc1a89d31809ecf722cae248045fba2a28",
+  "icon_count": 463,
+  "counts": {
+    "sc": 463,
+    "lc": 463,
+    "32": 463,
+    "custom": 0,
+    "alias": 3
+  }
+}

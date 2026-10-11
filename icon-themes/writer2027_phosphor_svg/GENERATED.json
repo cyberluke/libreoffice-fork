@@ -1,0 +1,16 @@
+{
+  "generator": "tools/writer2027-icons/build_themes.py",
+  "generator_version": 1,
+  "source": "phosphor",
+  "source_commit": "2b75f3ad12b420c9504ef05df8d2564a28f8500e",
+  "source_license": "MIT",
+  "mapping_sha256": "8f321f681f442e2b8e60d4dafb47b24411e262874c268516111d87ee672fbd0c",
+  "icon_count": 433,
+  "counts": {
+    "sc": 433,
+    "lc": 433,
+    "32": 433,
+    "custom": 6,
+    "alias": 3
+  }
+}

@@ -25,29 +25,7 @@ def _table_model(shape: Any) -> Any | None:
         return None
 
 
-def fill_table_cells(table: Any, data: Any) -> int:
-    """Write a 2D string grid into ``table.getCellByPosition(col, row)``. Returns cells written."""
-    written = 0
-    for r_idx, row in enumerate(data):
-        if not isinstance(row, (list, tuple)):
-            continue
-        for c_idx, val in enumerate(row):
-            cell = table.getCellByPosition(c_idx, r_idx)
-            text = "" if val is None else str(val)
-            _set_cell_string(cell, text)
-            written += 1
-    return written
-
-
-def _set_cell_string(cell: Any, text: str) -> None:
-    if hasattr(cell, "getText"):
-        try:
-            cell.getText().setString(text)
-            return
-        except Exception:
-            pass
-    if hasattr(cell, "setString"):
-        cell.setString(text)
+from plugin.writer.table_helpers import _set_cell_string, fill_table_cells
 
 
 def _cell_string(cell: Any) -> str:
@@ -254,8 +232,14 @@ def insert_draw_table(ctx: Any, **kwargs: Any) -> dict[str, Any]:
     columns = kwargs.get("columns")
     if rows is None or columns is None:
         return {"status": "error", "message": "rows and columns are required.", "code": "TOOL_EXECUTION_ERROR"}
-    rows = int(rows)
-    columns = int(columns)
+    # Non-numeric rows or columns return a tool error. int() without
+    # a guard raises ValueError/TypeError past the tool boundary.
+    # Catch (TypeError, ValueError) around the conversion.
+    try:
+        rows = int(rows)
+        columns = int(columns)
+    except (TypeError, ValueError):
+        return {"status": "error", "message": "rows and columns must be integers.", "code": "TOOL_EXECUTION_ERROR"}
     if rows < 1 or columns < 1:
         return {"status": "error", "message": "rows and columns must be at least 1.", "code": "TOOL_EXECUTION_ERROR"}
 
@@ -266,7 +250,16 @@ def insert_draw_table(ctx: Any, **kwargs: Any) -> dict[str, Any]:
         actual_idx = bridge.get_active_page_index()
     try:
         page = bridge.get_pages().getByIndex(actual_idx)
-    except Exception:
+    except Exception as exc:
+        # DisposedException is not "Invalid page index".
+        # get_pages/getByIndex raise when the document is gone, and
+        # mapping every Exception to a bad index hides disposal.
+        # Re-raise disposal; a real bad index still returns the
+        # page-index error.
+        from plugin.framework.errors import is_disposed_exception
+
+        if is_disposed_exception(exc):
+            raise
         return {"status": "error", "message": "Invalid page index: %s" % actual_idx, "code": "TOOL_EXECUTION_ERROR"}
     if page is None:
         return {"status": "error", "message": "No draw page available.", "code": "TOOL_EXECUTION_ERROR"}

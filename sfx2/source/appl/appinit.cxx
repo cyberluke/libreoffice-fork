@@ -196,10 +196,17 @@ void SfxApplication::Initialize_Impl()
     {
         {
             auto olc = sfx2::sidebar::GetOLColors();
-            bool bDark = (sfx2::sidebar::GetOLTheme() != sfx2::sidebar::OLTheme::Light);
 
             SvtMiscOptions aMiscOpts;
-            aMiscOpts.SetIconTheme(bDark ? u"colibre_dark_svg"_ustr : u"colibre"_ustr);
+            // OfficeLabs dark (Writer 2027) is dark-only; the automatic icon
+            // theme selection (IconThemeSelector) resolves to the bundled
+            // writer2027_phosphor_svg on _WIN32, while a user's explicit
+            // Options->View -> Icon style choice is honored and persists
+            // (SetIconTheme("auto") commits "auto" and marks it automatic).
+            // Do not hard-force a concrete colibre theme here: that would both
+            // defeat the Writer 2027 Phosphor default and clobber a user pick
+            // on every start.
+            aMiscOpts.SetIconTheme(u"auto"_ustr);
 
             // Before the palette below: SetAppColorMode re-merges the system
             // colours, which would otherwise overwrite it.

@@ -13,7 +13,7 @@ import json
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 log = logging.getLogger(__name__)
 
@@ -78,12 +78,78 @@ def _import_sqlite_vec() -> Any:
         ) from exc
 
 
+# Resolved DB-API module. None until the first connect so import stays cheap
+# and tests can clear it. stdlib sqlite3 when that build can load extensions;
+# otherwise pysqlite3 if it is installed.
+_dbapi_mod: Any = None
+
+
+def _dbapi() -> Any:
+    """DB-API module for corpus connections.
+
+    pysqlite3 bundles SQLite with extension loading. python.org macOS CPython
+    links SQLite built with SQLITE_OMIT_LOAD_EXTENSION (Apple's libsqlite;
+    CPython's ``--enable-loadable-sqlite-extensions`` defaults off), so
+    ``conn.enable_load_extension`` is absent and vec0 schema setup never runs.
+    sqlite-vec documents that error:
+    https://alexgarcia.xyz/sqlite-vec/python.html
+
+    Use pysqlite3 only when stdlib sqlite3 cannot load extensions and the
+    package is installed. Linux, Windows, and Homebrew Python stay on stdlib
+    sqlite3. A host interpreter without pysqlite3 (LibreOffice) still opens
+    the corpus for metadata; vec loading reports the install line.
+    """
+    global _dbapi_mod
+    if _dbapi_mod is not None:
+        return _dbapi_mod
+    if hasattr(sqlite3.Connection, "enable_load_extension"):
+        _dbapi_mod = sqlite3
+        return _dbapi_mod
+    try:
+        from pysqlite3 import dbapi2 as pysqlite3
+    except ImportError:
+        _dbapi_mod = sqlite3
+        return _dbapi_mod
+    if hasattr(pysqlite3.Connection, "enable_load_extension"):
+        _dbapi_mod = pysqlite3
+        return _dbapi_mod
+    _dbapi_mod = sqlite3
+    return _dbapi_mod
+
+
+def _conn_operational_error(conn: Any) -> type[BaseException]:
+    """OperationalError class for the DB-API that created *conn*.
+
+    pysqlite3.OperationalError does not subclass sqlite3.OperationalError.
+    Catching only the stdlib class lets a missing vec_version() or a bad FTS
+    query escape and abort the caller.
+    """
+    module_name = type(conn).__module__
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError:
+        return sqlite3.OperationalError
+    err = getattr(module, "OperationalError", None)
+    if isinstance(err, type) and issubclass(err, Exception):
+        return err
+    return sqlite3.OperationalError
+
+
 def _load_vec_extension(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("SELECT vec_version()")
         return
-    except sqlite3.OperationalError:
+    except _conn_operational_error(conn):
         pass
+
+    if not hasattr(conn, "enable_load_extension"):
+        # Same macOS stdlib gap as _dbapi. This connection was not opened on
+        # an extension-capable library (pysqlite3 missing in this interpreter).
+        raise ImportError(
+            "sqlite3.Connection.enable_load_extension is missing, so sqlite-vec "
+            "cannot load. Install pysqlite3, which bundles SQLite with extension "
+            f"loading. Install with: {_pip_install_hint()}"
+        )
 
     sqlite_vec = _import_sqlite_vec()
     conn.enable_load_extension(True)
@@ -108,13 +174,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS {tbl_name} USING vec0(
 
 
 def connect_corpus_db(db_path: str | Path) -> sqlite3.Connection:
-    """Open corpus.db with row factory."""
+    """Open corpus.db with row factory.
+
+    The DB-API module comes from ``_dbapi`` so macOS CPython without loadable
+    SQLite extensions still gets a connection that can load sqlite-vec.
+    """
+    dbapi = _dbapi()
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
+    conn = dbapi.connect(str(path))
+    conn.row_factory = dbapi.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return cast(sqlite3.Connection, conn)
 
 
 def ensure_schema(
@@ -167,11 +238,18 @@ def _dim_from_meta_path(meta_path: str) -> int | None:  # pyright: ignore[report
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    # Non-object JSON (a list or string) has no dim. .get would raise AttributeError,
+    # which the old except clause did not catch.
+    if not isinstance(data, dict):
+        return None
+    try:
         raw = data.get("dim", "0")
         dim = int(raw)
-        return dim if dim > 0 else None
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return None
+    return dim if dim > 0 else None
 
 
 def rebuild_fts_corpus_index(conn: sqlite3.Connection) -> None:
@@ -441,8 +519,8 @@ def vec0_search(
 
     limit = min(max(int(k), 1), count)
     q = np.asarray(query_vec, dtype=np.float32)
-    rows = conn.execute(
-        f"""
+
+    sql = f"""
         SELECT
             v.chunk_id,
             v.distance,
@@ -453,15 +531,19 @@ def vec0_search(
         JOIN chunks c ON c.chunk_id = v.chunk_id
         WHERE v.embedding MATCH ?
           AND k = ?
-        ORDER BY v.distance
-        """,
-        (q, limit),
-    ).fetchall()
+    """
+    params: list[Any] = [q, limit]
+
+    if doc_url_filter:
+        sql += " AND v.chunk_id IN (SELECT chunk_id FROM chunks WHERE doc_url = ?)"
+        params.append(doc_url_filter)
+
+    sql += " ORDER BY v.distance"
+
+    rows = conn.execute(sql, tuple(params)).fetchall()
 
     candidates: list[dict[str, Any]] = []
     for row in rows:
-        if doc_url_filter and str(row["doc_url"] or "") != doc_url_filter:
-            continue
         dist = float(row["distance"] or 0.0)
         score = max(0.0, 1.0 - dist)
         candidates.append(
@@ -484,12 +566,14 @@ def fts_corpus_search(
     *,
     k: int = 10,
     near_slop: int = 10,
+    doc_url_filter: str | None = None,
 ) -> list[dict[str, Any]]:
     """BM25 + NEAR search on unified corpus.db passages (rowid = chunk_id)."""
     from plugin.embeddings.venv.folder_fts import build_match_query, strip_fts_snippet_markers
 
     limit = max(1, min(int(k or 10), 50))
     match_expr = build_match_query(str(query or ""), near_slop=near_slop)
+
     sql = """
         SELECT
             p.rowid AS chunk_id,
@@ -500,12 +584,19 @@ def fts_corpus_search(
         FROM passages p
         JOIN chunks c ON c.chunk_id = p.rowid
         WHERE passages MATCH ?
-        ORDER BY score
-        LIMIT ?
     """
+    params: list[Any] = [match_expr]
+
+    if doc_url_filter:
+        sql += " AND c.doc_url = ?"
+        params.append(doc_url_filter)
+
+    sql += " ORDER BY score LIMIT ?"
+    params.append(limit)
+
     try:
-        rows = conn.execute(sql, (match_expr, limit)).fetchall()
-    except sqlite3.OperationalError as exc:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    except _conn_operational_error(conn) as exc:
         log.debug("FTS corpus search failed for %r: %s", match_expr, exc)
         return []
 
@@ -599,11 +690,18 @@ def get_file_index_info(conn: sqlite3.Connection, doc_url: str) -> dict[str, flo
 
 
 def file_is_stale_in_db(conn: sqlite3.Connection, doc_url: str, file_mtime: float) -> bool:
-    """True when filesystem mtime is newer than last indexed timestamp."""
+    """True when *file_mtime* is newer than the mtime stored for *doc_url*.
+
+    Compare against the stored ``file_mtime`` captured from the file when it
+    was indexed. ``last_indexed_at`` is wall-clock ``time.time()`` at write
+    time, so a restored or ``touch -d`` mtime that moved forward but stayed
+    older than that clock looks fresh, and a file mtime ahead of the clock
+    looks stale on every pass.
+    """
     info = get_file_index_info(conn, doc_url)
     if info["chunk_count"] == 0:
         return True
-    return float(file_mtime) > float(info["last_indexed_at"])
+    return float(file_mtime) > float(info["file_mtime"])
 
 
 def mark_file_indexed_in_db(
@@ -645,8 +743,24 @@ def mark_file_indexed_in_db(
     conn.commit()
 
 
+
+def get_all_indexed_urls_in_db(conn: sqlite3.Connection) -> list[str]:
+    """Return a list of all doc_url entries in indexed_files."""
+    rows = conn.execute("SELECT doc_url FROM indexed_files").fetchall()
+    return [str(row["doc_url"] or "") for row in rows]
+
+
+def remove_file_from_index_in_db(conn: sqlite3.Connection, doc_url: str) -> None:
+    """Remove a file's freshness metadata from the index."""
+    doc_url = str(doc_url or "")
+    conn.execute("DELETE FROM indexed_files WHERE doc_url = ?", (doc_url,))
+    conn.execute("DELETE FROM indexed_paragraphs WHERE doc_url = ?", (doc_url,))
+    conn.commit()
+
+
 def diff_chunk_rows_in_db(
     conn: sqlite3.Connection,
+    doc_url: str,
     chunks: list[Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return (rows_to_index, keys_to_delete) comparing extracted chunks to corpus.db."""
@@ -656,19 +770,18 @@ def diff_chunk_rows_in_db(
     seen: set[tuple[str, int, int, int]] = set()
 
     stored: dict[tuple[int, int, int], str] = {}
-    if chunks:
-        doc_url = str(chunks[0].doc_url if isinstance(chunks[0], ParagraphChunk) else "")
-        if doc_url:
-            rows = conn.execute(
-                """
-                SELECT para_index, char_start, char_end, content_hash
-                FROM chunks WHERE doc_url = ?
-                """,
-                (doc_url,),
-            ).fetchall()
-            for row in rows:
-                locator = (int(row["para_index"]), int(row["char_start"]), int(row["char_end"]))
-                stored[locator] = str(row["content_hash"] or "")
+    doc_url = str(doc_url or "")
+    if doc_url:
+        rows = conn.execute(
+            """
+            SELECT para_index, char_start, char_end, content_hash
+            FROM chunks WHERE doc_url = ?
+            """,
+            (doc_url,),
+        ).fetchall()
+        for row in rows:
+            locator = (int(row["para_index"]), int(row["char_start"]), int(row["char_end"]))
+            stored[locator] = str(row["content_hash"] or "")
 
     for chunk in chunks:
         if not isinstance(chunk, ParagraphChunk):
@@ -681,21 +794,19 @@ def diff_chunk_rows_in_db(
             continue
         to_index.append(chunk_to_index_row(chunk))
 
-    if not chunks:
-        return to_index, []
-
-    doc_url = chunks[0].doc_url
+    # Empty extracts still purge this document. Do not require chunks[0].
     to_delete: list[dict[str, Any]] = []
-    for (para_index, char_start, char_end), _stored_hash in stored.items():
-        if (doc_url, para_index, char_start, char_end) not in seen:
-            to_delete.append(
-                {
-                    "doc_url": doc_url,
-                    "para_index": para_index,
-                    "char_start": char_start,
-                    "char_end": char_end,
-                }
-            )
+    if doc_url:
+        for (para_index, char_start, char_end), _stored_hash in stored.items():
+            if (doc_url, para_index, char_start, char_end) not in seen:
+                to_delete.append(
+                    {
+                        "doc_url": doc_url,
+                        "para_index": para_index,
+                        "char_start": char_start,
+                        "char_end": char_end,
+                    }
+                )
 
     return to_index, to_delete
 
@@ -768,6 +879,7 @@ __all__ = [
     "ensure_schema",
     "file_is_stale_in_db",
     "fts_corpus_search",
+    "get_all_indexed_urls_in_db",
     "get_file_index_info",
     "insert_paragraph_rows",
     "load_embeddings_for_candidates",
@@ -775,6 +887,7 @@ __all__ = [
     "paragraph_body_for_locator",
     "paragraph_bodies_for_locators",
     "rebuild_fts_corpus_index",
+    "remove_file_from_index_in_db",
     "sync_file_paragraph_state_in_db",
     "upsert_chunk_with_vector",
     "vec0_search",

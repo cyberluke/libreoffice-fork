@@ -803,7 +803,7 @@ void WinSalInstance::AddToRecentDocumentList(const OUString& rFileUrl, const OUS
 
             if ( !sApplicationName.isEmpty() )
             {
-                OUString sApplicationID("CreativePandas.OfficeLabs." + sApplicationName);
+                OUString sApplicationID("CreativePandas.NAI_OFFICE." + sApplicationName);
 
                 SHARDAPPIDINFO info;
                 info.psi = pShellItem;

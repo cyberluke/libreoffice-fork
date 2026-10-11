@@ -824,6 +824,7 @@ $(eval $(call gb_Library_add_exception_objects,sw,\
     sw/source/uibase/uno/unotxdoc \
     sw/source/uibase/uno/loktxdoc \
     sw/source/uibase/uno/unotxvw \
+    sw/source/uibase/uno/writer2027semantic \
     sw/source/uibase/utlui/AccessibilityStatusBarControl \
     sw/source/uibase/utlui/attrdesc \
     sw/source/uibase/utlui/bookctrl \

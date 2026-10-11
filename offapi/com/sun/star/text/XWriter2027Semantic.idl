@@ -1,0 +1,107 @@
+/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/*
+ * This file is part of the LibreOffice project.
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
+#ifndef __com_sun_star_text_XWriter2027Semantic_idl__
+#define __com_sun_star_text_XWriter2027Semantic_idl__
+
+#include <com/sun/star/beans/NamedValue.idl>
+#include <com/sun/star/frame/XModel.idl>
+#include <com/sun/star/uno/XInterface.idl>
+
+module com {  module sun {  module star {  module text {
+
+/** Bridge between external clients (e.g. an AI tool runtime) and the
+    canonical Writer 2027 semantic document layer.
+
+    The WriterAgent extension calls these methods instead of reaching into
+    internal C++ objects. Every operation routes to the canonical Writer 2027
+    implementation (the Type System manager, the Document Kit / Editorial
+    Block catalogs, the Story authoring view, and the publication Preflight
+    engine) for the given Writer document. Mutations run through the normal
+    undo / track-changes machinery and never via a Python reimplementation
+    of the product.
+
+    @since LibreOffice 8.4
+ */
+published interface XWriter2027Semantic : com::sun::star::uno::XInterface
+{
+    /** Apply a Writer 2027 Type System preset by stable id.
+        @param xModel the Writer document to migrate.
+        @returns true when applied; false when the preset id is unknown,
+        the document is read-only, or xModel is not a Writer document.
+     */
+    boolean applyTypeSystem([in] ::com::sun::star::frame::XModel xModel,
+                            [in] string PresetId);
+
+    /** Canonical catalog of installed Type System presets.
+        One NamedValue per preset: "id", "name", "description".
+     */
+    sequence< ::com::sun::star::beans::NamedValue > listTypeSystems();
+
+    /** Canonical catalog of installed Document Kits.
+        One NamedValue per kit: "id", "name", "description", "typesystem_id".
+     */
+    sequence< ::com::sun::star::beans::NamedValue > listKits();
+
+    /** Apply a Document Kit to the Writer document. The kit is a
+        session-level insertion aid; it records the active kit for block
+        recommendation and, when bApplyRecommendedTypeSystem is true, applies
+        the kit's recommended Type System preset (skipping the interactive
+        confirmation dialog).
+        @returns false when the kit id is unknown or the document is read-only.
+     */
+    boolean applyKit([in] ::com::sun::star::frame::XModel xModel,
+                     [in] string KitId, [in] boolean bApplyRecommendedTypeSystem);
+
+    /** Canonical catalog of Editorial Blocks, optionally re-ordered so the
+        active kit's recommended group comes first.
+        One NamedValue per block: "id", "name", "description", "category",
+        "insertion_policy".
+     */
+    sequence< ::com::sun::star::beans::NamedValue > listBlocks([in] string ActiveKitId);
+
+    /** Insert an Editorial Block at the caret/selection of xModel.
+        @returns true when the block was inserted; false when the id is
+        unknown or the document is read-only.
+     */
+    boolean insertBlock([in] ::com::sun::star::frame::XModel xModel,
+                        [in] string BlockId);
+
+    /** Switch the Writer 2027 Story authoring view on or off. View-only.
+     */
+    void setStoryMode([in] ::com::sun::star::frame::XModel xModel,
+                      [in] boolean bEnable);
+
+    /** @returns true while the Story authoring view is active for xModel.
+     */
+    boolean isStoryMode([in] ::com::sun::star::frame::XModel xModel);
+
+    /** Run the Writer 2027 publication Preflight engine.
+        @param xModel the Writer document to inspect.
+        @param Profile stable profile id ("general", "pdf_digital",
+            "print_friendly", "print_digital", "web_package", "single_html").
+        @param bFullMode true for the expensive Full scan, false for Quick.
+        @returns the deterministic JSON report (checkId identity).
+     */
+    string runPreflight([in] ::com::sun::star::frame::XModel xModel,
+                        [in] string Profile, [in] boolean bFullMode);
+
+    /** Record the session-level active Document Kit (no document change).
+        This only drives block recommendation ordering; the document remains
+        the source of truth.
+     */
+    boolean setActiveKit([in] string KitId);
+};
+
+
+}; }; }; };
+
+#endif
+
+/* vim:set shiftwidth=4 softtabstop=4 expandtab: */

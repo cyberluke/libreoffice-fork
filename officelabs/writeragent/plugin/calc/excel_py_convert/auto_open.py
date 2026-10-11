@@ -30,76 +30,16 @@ _busy_paths: set[str] = set()
 # Only *Done* events — OnSave/OnSaveAs also fire and would double-patch the file.
 _SAVE_DONE_EVENTS = frozenset({"OnSaveDone", "OnSaveAsDone", "OnSaveToDone"})
 # Factory ``private:factory/scalc`` fires OnNew, not OnLoadFinished. Geometric
-# strip / Shared kernel need ``record_active_calc_session`` in the evaluating
-# process before the first off-main ``=PY()`` (headless URP: session_id=None).
+# strip state and the unload listener are set up on these events too.
 _GEOMETRIC_OPEN_EVENTS = frozenset({"OnLoadFinished", "OnNew", "OnLoad", "OnCreate"})
-
-
-def _record_desktop_calc_sessions(ctx: Any) -> None:
-    """Record the leftover scalc only when it is the sole open Calc.
-
-    OnCreate Source is often the Writer keeper. Scanning *every* Calc made
-    leftover ``recorded=2`` / ``unambiguous=False`` (Shared drops session_id).
-    Two open workbooks stay Isolated by design. Cap stops MagicMock enums.
-    """
-    from plugin.framework.uno_context import get_desktop
-    from plugin.scripting.session_manager import calc_workbook_base_session_id, clear_active_calc_session, is_opencl_probe_session_id, recorded_calc_session_count, recorded_calc_session_ids
-
-    desktop = get_desktop(ctx)
-    comps = getattr(desktop, "getComponents", lambda: None)()
-    if comps is None or not hasattr(comps, "createEnumeration"):
-        return
-    enum = comps.createEnumeration()
-    _ENUM_CAP = 32
-    n = 0
-    calcs: list[Any] = []
-    while True:
-        try:
-            has_more = enum.hasMoreElements()
-        except Exception:
-            break
-        if type(has_more).__name__ in ("Mock", "MagicMock") or not has_more:
-            break
-        if n >= _ENUM_CAP:
-            log.error("excel_py lifecycle: desktop enum hit cap=%s; stopping", _ENUM_CAP)
-            break
-        n += 1
-        elem = enum.nextElement()
-        model = elem
-        if not _is_calc_doc(model):
-            try:
-                ctrl = getattr(elem, "getController", lambda: None)()
-                model = ctrl.getModel() if ctrl is not None else None
-            except Exception:
-                continue
-        if _is_calc_doc(model):
-            try:
-                url = str(getattr(model, "getURL", lambda: "")() or "")
-            except Exception:
-                url = ""
-            if is_opencl_probe_session_id(url):
-                continue
-            calcs.append(model)
-    if len(calcs) == 1:
-        sid = calc_workbook_base_session_id(calcs[0])
-        # Opening a saved showcase file records calc:file:… in soffice. Closing
-        # it does not always drop that id (OnUnload only discards the listener's
-        # early uuid). The next factory OnNew must prune those leftovers or
-        # Shared leftover stays recorded>1 / Isolated (A3 NameError).
-        for other in recorded_calc_session_ids():
-            if other != sid:
-                clear_active_calc_session(other)
-    log.info("excel_py lifecycle: desktop calc sessions scanned=%s calcs=%s recorded=%s", n, len(calcs), recorded_calc_session_count())
 
 
 def _geometric_open_job(ctx: Any, doc: Any) -> None:
     from plugin.calc.python.geometric_recalc import maybe_geometric_on_document_open
 
     maybe_geometric_on_document_open(ctx, doc)
-    # Geometric record uses getURL (not get_desktop), so a Dummy-thread
-    # OnLoadFinished still adds calc:file:…. The desktop scan then dies on
-    # the thread guard and never prunes. Wire OnUnload here so closing the
-    # showcase file drops that id — client-side clear cannot reach soffice.
+    # Wire OnUnload here so closing the workbook resets its kernel and
+    # geometric state; client-side clear cannot reach soffice.
     if _is_calc_doc(doc):
         try:
             from plugin.calc.python.workbook_lifecycle import ensure_calc_workbook_unload_resets_python
@@ -107,10 +47,6 @@ def _geometric_open_job(ctx: Any, doc: Any) -> None:
             ensure_calc_workbook_unload_resets_python(ctx, doc)
         except Exception:
             log.debug("excel_py lifecycle: unload listener install failed", exc_info=True)
-    try:
-        _record_desktop_calc_sessions(ctx)
-    except Exception:
-        log.debug("excel_py lifecycle: desktop calc session scan failed", exc_info=True)
 
 
 def _run_geometric_on_open(ctx: Any, doc: Any) -> None:
@@ -314,10 +250,8 @@ def install_excel_py_auto_convert(ctx: Any) -> None:
                     name = getattr(Event, "EventName", "") or ""
                     doc = _doc_from_event(Event)
                     # Hidden factory OnNew/OnCreate often has Source the Writer
-                    # keeper (leftover scalc is not focused). ``doc is None``
-                    # used to return here and skip the desktop scan, so soffice
-                    # ``_RECORDED_CALC_SESSION_IDS`` stayed empty and leftover
-                    # Shared ``=PY()`` ran Isolated (A1=41, A3 NameError).
+                    # keeper (leftover scalc is not focused), so the geometric
+                    # open hook still runs when ``doc is None``.
                     if name in _GEOMETRIC_OPEN_EVENTS:
                         try:
                             log.info("excel_py lifecycle: geometric on_open event=%s has_doc=%s", name, doc is not None)

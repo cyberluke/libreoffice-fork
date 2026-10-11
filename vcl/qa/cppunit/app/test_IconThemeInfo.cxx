@@ -24,6 +24,9 @@ class IconThemeInfoTest : public CppUnit::TestFixture
     UpperCaseDisplayNameIsReturnedForNonDefaultId();
 
     void
+    Writer2027DisplayNamesAreProductFacing();
+
+    void
     ImagesZipIsNotValid();
 
     void
@@ -41,6 +44,7 @@ class IconThemeInfoTest : public CppUnit::TestFixture
     // Adds code needed to register the test suite
     CPPUNIT_TEST_SUITE(IconThemeInfoTest);
     CPPUNIT_TEST(UpperCaseDisplayNameIsReturnedForNonDefaultId);
+    CPPUNIT_TEST(Writer2027DisplayNamesAreProductFacing);
     CPPUNIT_TEST(ThemeIdIsDetectedFromFileNameWithUnderscore);
     CPPUNIT_TEST(ImagesZipIsNotValid);
     CPPUNIT_TEST(ImagesColibreZipIsValid);
@@ -56,6 +60,17 @@ IconThemeInfoTest::UpperCaseDisplayNameIsReturnedForNonDefaultId()
 {
     OUString displayName = vcl::IconThemeInfo::ThemeIdToDisplayName(u"katze"_ustr);
     CPPUNIT_ASSERT_EQUAL_MESSAGE("theme id is properly uppercased", u"Katze"_ustr, displayName);
+}
+
+void
+IconThemeInfoTest::Writer2027DisplayNamesAreProductFacing()
+{
+    CPPUNIT_ASSERT_EQUAL_MESSAGE("carbon theme has a product-facing display name",
+                                 u"Writer 2027 - Carbon"_ustr,
+                                 vcl::IconThemeInfo::ThemeIdToDisplayName(u"writer2027_carbon_svg"_ustr));
+    CPPUNIT_ASSERT_EQUAL_MESSAGE("phosphor theme has a product-facing display name",
+                                 u"Writer 2027 - Phosphor"_ustr,
+                                 vcl::IconThemeInfo::ThemeIdToDisplayName(u"writer2027_phosphor_svg"_ustr));
 }
 
 void

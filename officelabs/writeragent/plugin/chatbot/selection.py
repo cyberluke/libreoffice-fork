@@ -22,12 +22,14 @@ from typing import Any, Callable
 
 from plugin.chatbot.config_ui_helpers import update_lru_history
 from plugin.doc.doc_type import DocumentType, get_document_type
+from plugin.framework.async_drain_guard import add_drain_idle_callback, get_drain_owner, remove_drain_idle_callback
+from plugin.framework.queue_executor import post_to_main_thread
 from plugin.framework.async_stream import run_stream_completion_async
 from plugin.framework.errors import format_error_message
 from plugin.framework.client.llm_client import LlmClient
 from plugin.framework.config import get_api_config, set_config, validate_api_config
 from plugin.framework.i18n import _
-from plugin.framework.uno_context import get_ctx
+from plugin.framework.uno_context import get_ctx, get_document_from_frame
 from .dialogs import msgbox
 from .dialog_views import input_box
 
@@ -74,7 +76,8 @@ def prompt_for_edit_instructions(ctx: Any, input_box_fn: Any, title: str) -> tup
 def stream_completion(ctx: Any, client: LlmClient, prompt: str, system_prompt: str, max_tokens: int, apply_chunk_fn: ApplyChunkFn, on_done_fn: Callable[[], None], on_error_fn: ErrorFn) -> None:
     """Start a simple completion stream and route startup failures like stream errors."""
     try:
-        run_stream_completion_async(ctx, client, prompt, system_prompt, max_tokens, apply_chunk_fn, on_done_fn, on_error_fn)
+        stop_checker = getattr(ctx, "stop_checker", None)
+        run_stream_completion_async(ctx, client, prompt, system_prompt, max_tokens, apply_chunk_fn, on_done_fn, on_error_fn, stop_checker=stop_checker)
     except Exception as e:
         on_error_fn(e)
 
@@ -83,13 +86,35 @@ def stream_completion_tasks(ctx: Any, client: LlmClient, tasks: list[StreamCompl
     """Run simple completion streams sequentially, advancing from each done callback."""
     task_index = [0]
 
+    # schedule_next_when_idle registers a one-shot callback that removes
+    # itself. run_next_task defers itself with that callback if the pump is
+    # already owned. A fresh lambda per task fires while the previous task
+    # still owns the pump, and async_stream then rejects the later task
+    # (NestedDrainOwnerError).
+
+    def schedule_next_when_idle() -> None:
+        fired = [False]
+
+        def _once() -> None:
+            if not fired[0]:
+                fired[0] = True
+                # It is possible this is running from _notify_drain_idle traversing the list,
+                # meaning it's still in the list when it runs. We remove it so it's gone for good.
+                remove_drain_idle_callback(_once)
+                post_to_main_thread(run_next_task)
+
+        add_drain_idle_callback(_once)
+
     def run_next_task() -> None:
+        if task_index[0] > 0 and get_drain_owner() is not None:
+            schedule_next_when_idle()
+            return
         if task_index[0] >= len(tasks):
             return
         task = tasks[task_index[0]]
         task_index[0] += 1
         apply_chunk_fn, on_error_fn = prepare_task_fn(task)
-        stream_completion(ctx, client, task.prompt, task.system_prompt, task.max_tokens, apply_chunk_fn, run_next_task, on_error_fn)
+        stream_completion(ctx, client, task.prompt, task.system_prompt, task.max_tokens, apply_chunk_fn, schedule_next_when_idle, on_error_fn)
 
     run_next_task()
 
@@ -118,12 +143,19 @@ def do_selection_action_for_document(ctx: Any, model: Any, input_box_fn: Any, is
     msgbox(ctx, "WriterAgent", _("{0} selection not supported for this document type").format(action))
 
 
-def _action_selection(services: Any, is_edit: bool) -> None:
-    """Resolve the active document, then use the canonical selection action."""
+def _action_selection(services: Any, is_edit: bool, frame: Any = None) -> None:
+    """Extend or Edit the sidebar frame's document, or the focused one.
 
+    A passed frame resolves with ``get_document_from_frame``. The hamburger
+    already has the sidebar frame; ``get_active_document()`` edits whichever
+    document has focus. The menubar calls this with no frame, so it still
+    uses the focused document.
+    """
     ctx = get_ctx()
-    doc_svc = services.document
-    doc = doc_svc.get_active_document()
+    if frame is not None:
+        doc = get_document_from_frame(frame)
+    else:
+        doc = services.document.get_active_document()
     if not doc:
         msgbox(ctx, "WriterAgent", _("No document open"))
         return
@@ -131,11 +163,11 @@ def _action_selection(services: Any, is_edit: bool) -> None:
     do_selection_action_for_document(ctx, doc, input_box, is_edit)
 
 
-def action_extend_selection(services: Any) -> None:
+def action_extend_selection(services: Any, frame: Any = None) -> None:
     """Get document selection -> stream AI completion -> append to text."""
-    _action_selection(services, is_edit=False)
+    _action_selection(services, is_edit=False, frame=frame)
 
 
-def action_edit_selection(services: Any) -> None:
+def action_edit_selection(services: Any, frame: Any = None) -> None:
     """Get selection -> input instructions -> stream AI -> replace text."""
-    _action_selection(services, is_edit=True)
+    _action_selection(services, is_edit=True, frame=frame)

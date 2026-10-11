@@ -12,11 +12,13 @@ explicit via ``header_row``; string→number/date guessing is opt-in via
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, cast
 
-from plugin.scripting.calc_range import _dedupe_column_names, ensure_rectangular_2d
+from plugin.framework.deal_shim import deal
+from plugin.scripting.calc_range import ensure_rectangular_2d
 
 _NUMERIC_PROFILE_KEYS = (
     ("mean", "mean"),
@@ -58,21 +60,80 @@ class CoerceResult:
     metadata: dict[str, Any]
 
 
+@deal.post(lambda result: isinstance(result, list) and len(set(result)) == len(result))
+def _dedupe_column_names(names: list[str]) -> list[str]:
+    """Unique labels, one per input, on the default ``CalcRange.to_pandas`` path.
+
+    The counter used to be stored only under the raw base. ``['a', 'a', 'a_1']``
+    therefore emitted ``a_1`` twice (the generated suffix and the later header),
+    and the uniqueness postcondition raised ``deal.PostContractError``. A suffix
+    is skipped when that label was already emitted.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in names:
+        base = (raw or "column").strip() or "column"
+        candidate = base
+        suffix = 1
+        while candidate in seen:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        seen.add(candidate)
+        out.append(candidate)
+    return out
+
+
 def is_missing_value(value: Any) -> bool:
     """Check if value represents a missing cell, blank string, error token, or NaN/None."""
     if value is None:
         return True
-    if isinstance(value, float):
-        import math
-        if math.isnan(value):
-            return True
     if isinstance(value, str):
         stripped = value.strip()
-        if stripped == "" or stripped in _LO_ERROR_TOKENS:
-            return True
+        return stripped == "" or stripped in _LO_ERROR_TOKENS
+    if isinstance(value, float):
+        import math
+
+        return math.isnan(value)
     try:
         import numpy as np
-        if isinstance(value, (np.floating, float)) and np.isnan(value):
+
+        if isinstance(value, np.floating) and np.isnan(value):
+            return True
+    except ImportError:
+        pass
+    try:
+        import pandas as pd
+
+        if value is pd.NA or value is pd.NaT:
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+# ISBLANK used to call is_missing_value, so ISBLANK("#VALUE!") was True.
+# Blank is only None or a stripped empty string; error tokens and NaN are not blank.
+# NA() is float nan. None and "" are not NA.
+def is_blank_value(value: Any) -> bool:
+    """True for None or a stripped empty string. Errors and NaN are not blank."""
+    if value is None:
+        return True
+    return isinstance(value, str) and value.strip() == ""
+
+
+def is_na_value(value: Any) -> bool:
+    """True for float or numpy NaN, or a stripped #N/A token."""
+    if isinstance(value, float):
+        import math
+
+        if math.isnan(value):
+            return True
+    if isinstance(value, str) and value.strip().upper() == "#N/A":
+        return True
+    try:
+        import numpy as np
+
+        if isinstance(value, np.floating) and np.isnan(value):
             return True
     except ImportError:
         pass
@@ -104,6 +165,26 @@ def _parse_numeric_string(text: str) -> float | None:
     if num:
         return _signed_magnitude(num.group(1), num.group(2), num.group(3))
     return None
+
+
+def header_label(value: Any) -> str:
+    """Column-name text for a header cell.
+
+    Calc numeric cells arrive as floats. ``str(2024.0)`` is ``\"2024.0\"``, so
+    ``df[\"2024\"]`` and a DSUM field ``\"2024\"`` missed the column. Whole-number
+    floats use the integer spelling. Callers must not run ``parse_strings`` on
+    headers first: ``\"00123\"`` is a label, not the number 123.
+    """
+    if value is None:
+        return ""
+    # bool is an int subclass; ``True`` must stay the label "True", not "1".
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
 
 
 def _coerce_cell_basic(value: Any) -> Any:
@@ -234,12 +315,15 @@ def _coerce_column_types(
                 numeric: Any = pd.to_numeric(coerced, errors="coerce")
                 non_null = coerced.notna().sum()
                 numeric_non_null = numeric.notna().sum()
-                if non_null > 0 and numeric_non_null >= max(1, int(non_null * 0.8)):
+                # Promote only when every non-null cell parsed. An 80% cutoff
+                # replaced the column with to_numeric and turned the remaining
+                # text into NaN (a mixed [10, "x", 30, ...] column became float).
+                if non_null > 0 and numeric_non_null == non_null:
                     out[col] = numeric
                 else:
                     dt: Any = pd.to_datetime(coerced, errors="coerce", utc=False, format="mixed")
                     dt_non_null = dt.notna().sum()
-                    if non_null > 0 and dt_non_null >= max(1, int(non_null * 0.8)):
+                    if non_null > 0 and dt_non_null == non_null:
                         out[col] = dt
                     else:
                         out[col] = coerced
@@ -261,6 +345,38 @@ def _build_metadata(df: Any, *, sheet_hint: str | None, dropped_rows: int) -> di
     if sheet_hint:
         meta["sheet_hint"] = sheet_hint
     return meta
+
+
+def resolve_df(
+    data: Any,
+    *,
+    headers: bool = True,
+    header_row: int = 0,
+    sheet_hint: str | None = None,
+) -> CoerceResult:
+    """Coerce *data* to a DataFrame without treating an existing frame's columns as a header row."""
+    if isinstance(data, CoerceResult):
+        return data
+    # DataFrame duck-type. Do not send it through grid_to_dataframe: that would
+    # treat column names as a header row. CalcRange is unwrapped by
+    # _normalize_input_grid inside coerce_to_dataframe.
+    if type(data).__name__ == "CalcRange":
+        hint = sheet_hint or getattr(data, "address", None)
+        return coerce_to_dataframe(data, headers=headers, header_row=header_row, sheet_hint=hint)
+    if hasattr(data, "columns") and hasattr(data, "index"):
+        df = data.copy()
+        return CoerceResult(df=df, metadata=_build_metadata(df, sheet_hint=sheet_hint, dropped_rows=0))
+    return coerce_to_dataframe(data, headers=headers, header_row=header_row, sheet_hint=sheet_hint)
+
+
+def numeric_columns(df: Any, columns: list[str] | None = None) -> list[str]:
+    """Return *columns* when given, else the numeric column names. Unknown names raise."""
+    if columns:
+        missing = [c for c in columns if c not in df.columns]
+        if missing:
+            raise ValueError(f"Unknown columns: {', '.join(missing)}")
+        return list(columns)
+    return [str(c) for c in df.select_dtypes(include="number").columns]
 
 
 def grid_to_dataframe(
@@ -295,8 +411,10 @@ def grid_to_dataframe(
 
     if header_row is not None:
         header_idx = max(0, min(int(header_row), len(grid) - 1))
-        raw_headers = [cell_fn(cell) for cell in grid[header_idx]]
-        col_names = _dedupe_column_names([str(h) if h is not None else "" for h in raw_headers])
+        # Labels, not values. parse_strings on this row turned "00123" into the
+        # column name "123.0" and str(2024.0) into "2024.0".
+        raw_headers = [_coerce_cell_basic(cell) for cell in grid[header_idx]]
+        col_names = _dedupe_column_names([header_label(h) for h in raw_headers])
         body = grid[header_idx + 1 :]
     else:
         width = max((len(row) for row in grid), default=0)
@@ -355,6 +473,36 @@ def coerce_to_dataframe(
 
 def ok_result(helper: str, **payload: Any) -> dict[str, Any]:
     return {"status": "ok", "helper": helper, **payload}
+
+
+def parse_trusted_spec(
+    spec: dict[str, Any] | str,
+    *,
+    helper_names: frozenset[str] | set[str],
+    context: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any], bool, int, dict[str, Any], dict[str, Any]] | dict[str, Any]:
+    """Shared preamble for run_analysis / run_forecast / run_optimize.
+
+    Returns ``(helper, params, headers, header_row, context, spec)`` or an error dict.
+    """
+    if isinstance(spec, str):
+        spec_dict: dict[str, Any] = {"helper": spec}
+    elif isinstance(spec, dict):
+        spec_dict = spec
+    else:
+        return error_result("INVALID_SPEC", "spec must be a dict or helper name string")
+
+    helper = str(spec_dict.get("helper") or "").strip()
+    if not helper:
+        return error_result("MISSING_HELPER", "spec.helper is required")
+    if helper not in helper_names:
+        return error_result("UNKNOWN_HELPER", f"Unknown helper {helper!r}", helper=helper)
+
+    params: dict[str, Any] = spec_dict["params"] if isinstance(spec_dict.get("params"), dict) else {}
+    headers = bool(spec_dict.get("headers", True))
+    header_row = int(spec_dict.get("header_row", 0))
+    ctx = context if isinstance(context, dict) else {}
+    return helper, params, headers, header_row, ctx, spec_dict
 
 
 def error_result(

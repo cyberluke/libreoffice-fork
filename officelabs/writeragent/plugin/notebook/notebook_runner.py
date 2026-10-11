@@ -15,30 +15,37 @@ from typing import Any
 from plugin.chatbot.dialogs import msgbox
 from plugin.doc.doc_type import is_writer
 from plugin.doc.text_helpers import clone_text_range
-from plugin.framework.async_stream import BlockingWaitStopped, run_blocking_in_thread
-from plugin.framework.constants import EXTENSION_ID_WRITERAGENT
+from plugin.framework.errors import is_disposed_exception, is_document_disposed
+from plugin.framework.async_stream import run_blocking_in_thread
 from plugin.framework.i18n import _
-from plugin.framework.uno_context import get_active_document, get_runtime_uid
+from plugin.framework.uno_context import get_active_document
 from plugin.notebook import form_lookup
-from plugin.notebook.cell_registry import NotebookCodeCell, NotebookDocState, _IN_PROMPT_RE, _format_in_prompt, _prepare_display_text, cell_id_to_hex, find_cell_by_hex, load_registry, save_registry
-from plugin.notebook.notebook_controls import _resolve_para_style
-from plugin.notebook.writer_importer import _PARAGRAPH_BREAK, _STYLE_MD_H1, _STYLE_MD_H2, _STYLE_NOTEBOOK_IN, _STYLE_OUTPUT, _insert_image_in_flow, _strip_ansi
+from plugin.notebook.cell_registry import NotebookCodeCell, NotebookDocState, _IN_PROMPT_RE, _format_in_prompt, _prepare_display_text, find_cell_by_hex, load_registry, save_registry
+from plugin.notebook.notebook_controls import _doc_key, _resolve_para_style
+from plugin.notebook.writer_importer import _PARAGRAPH_BREAK, _STYLE_MD_H1, _STYLE_MD_H2, _STYLE_NOTEBOOK_IN, _STYLE_NOTEBOOK_OUT, _insert_image_in_flow, _strip_ansi, output_para_style
 from plugin.scripting.payload_codec import find_image_payloads, host_unpack_data, is_image_payload
-from plugin.scripting.session_manager import notebook_session_id
+from plugin.scripting.session_manager import notebook_session_id, pin_script_document, release_script_document
 from plugin.scripting.venv_worker import run_code_in_user_venv
 
 log = logging.getLogger("writeragent.notebook")
 
-NOTEBOOK_RUN_CELL_URL_PREFIX = f"{EXTENSION_ID_WRITERAGENT}:notebook.run_cell."
-
 # Per-document re-entrancy guard. Shared ``notebook:…`` kernel must not run two
 # cells at once; a second ▶ used to interleave registry/output mutation when
-# execute_code pumped VCL. Keyed like notebook_controls._doc_key (RuntimeUID).
-# Run All holds this key for the whole sequence so a ▶ mid-batch is skipped.
+# execute_code pumped VCL. Same key as ``notebook_controls._doc_key``
+# (RuntimeUID, then URL, then id) so two PyUNO wrappers of one document cannot
+# both pass. Run All holds this key for the whole sequence so a ▶ mid-batch
+# is skipped.
 _running_docs: set[str] = set()
 
-# Stop is a separate signal so the busy guard never blocks it. Set from the
-# menu/toolbar; execute_code's wait polls it without processEventsToIdle.
+# Stop is a separate signal so the busy guard never blocks it. The hamburger
+# sets the per-doc Event on the UI thread. Chat Stop only latches
+# SendCancellation on that same thread. ``execute_code`` waits without a VCL
+# pump, so neither click lands during the in-flight cell. Between cells,
+# ``flush_ui_idle`` delivers the click when no drain owns VCL. That flush
+# no-ops while a chat drain holds the owner (event-driven drain has already
+# returned to VCL). A chat-owned sequence therefore pumps between cells with
+# ``pump_ui_idle`` instead (depth <= 1 still pumps). ``_clear_stop`` does not
+# reset the chat scope.
 _stop_flags: dict[str, threading.Event] = {}
 _stop_lock = threading.Lock()
 
@@ -60,14 +67,6 @@ class RunResult:
     cells_run: int = 0
 
 
-def _doc_busy_key(doc: Any) -> str:
-    """Stable per-document key for the run-cell re-entrancy guard."""
-    uid = get_runtime_uid(doc)
-    if uid:
-        return f"uid:{uid}"
-    return f"id:{id(doc)}"
-
-
 def _stop_event(busy_key: str) -> threading.Event:
     with _stop_lock:
         ev = _stop_flags.get(busy_key)
@@ -77,10 +76,26 @@ def _stop_event(busy_key: str) -> threading.Event:
         return ev
 
 
+def _chat_stop_requested() -> bool:
+    """True when sidebar Stop has latched the active send scope.
+
+    Chat Stop cancels ``SendCancellation`` only. Run All must read that
+    scope (it is on this thread, and ``_clear_stop`` does not reset it).
+    The notebook Event is never set by that button, so watching it left
+    the rest of a chat-owned Run All running.
+    """
+    from plugin.framework.queue_executor import get_current_send_cancellation
+
+    scope = get_current_send_cancellation()
+    return scope is not None and scope.is_cancelled()
+
+
 def _is_stop_requested(busy_key: str) -> bool:
     with _stop_lock:
         ev = _stop_flags.get(busy_key)
-    return bool(ev is not None and ev.is_set())
+    if ev is not None and ev.is_set():
+        return True
+    return _chat_stop_requested()
 
 
 def _clear_stop(busy_key: str) -> None:
@@ -93,7 +108,7 @@ def request_stop(doc: Any) -> None:
     Must not check ``_running_docs`` — the busy guard skips a second ▶, but
     Stop has to land while that key is held.
     """
-    _stop_event(_doc_busy_key(doc)).set()
+    _stop_event(_doc_key(doc)).set()
 
 
 def stop_for_doc(doc: Any) -> None:
@@ -109,25 +124,37 @@ def execute_code(ctx: Any, doc: Any, code: str) -> dict[str, Any]:
     ``pump_idle=False``: ``processEventsToIdle`` waits for ``LayoutIdle``, which
     livelocks (92% CPU, never returns) on notebooks with many in-flow form
     controls — the same bug ``flush_ui_idle`` documents after import. Drain
-    *between* cells in Run All, never here. Stop polls ``stop_checker`` on the
-    wait (no VCL pump); the worker may finish the in-flight cell.
+    *between* cells in Run All, never here. ``stop_checker`` is polled on this
+    wait (notebook Event or chat ``SendCancellation``). Both Stop buttons run
+    on this same UI thread, and this wait does not pump, so a click during the
+    cell is not seen until the worker returns. Stop therefore skips cells that
+    have not started; it does not abort the in-flight cell.
     """
     session_id = notebook_session_id(ctx, doc)
     if not session_id:
         return {"status": "error", "message": "Could not resolve notebook Python session."}
+    from plugin.calc.python.workbook_lifecycle import ensure_python_session_cleared_on_unload
 
-    def _run() -> dict[str, Any]:
-        return run_code_in_user_venv(ctx, code, session_id=session_id)
+    ensure_python_session_cleared_on_unload(ctx, doc, session_id)
 
-    busy_key = _doc_busy_key(doc)
+    script_session_id = pin_script_document(doc)
+
+    busy_key = _doc_key(doc)
 
     def _stopped() -> bool:
         return _is_stop_requested(busy_key)
 
-    try:
-        return run_blocking_in_thread(ctx, _run, pump_idle=False, stop_checker=_stopped)
-    except BlockingWaitStopped:
-        return {"status": "interrupted", "message": "Stopped."}
+    def _run() -> dict[str, Any]:
+        try:
+            return run_code_in_user_venv(ctx, code, session_id=session_id, script_session_id=script_session_id, stop_checker=_stopped)
+        except Exception:
+            if _stopped():
+                return {"status": "stopped", "message": "Stopped."}
+            raise
+        finally:
+            release_script_document(script_session_id)
+
+    return run_blocking_in_thread(ctx, _run, pump_idle=False)
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +214,10 @@ def _style_is_heading12(para_style: str) -> bool:
 
 
 def _style_is_preformatted(para_style: str) -> bool:
-    return _style_compact(para_style) in ("preformattedtext", "preformatted")
+    # The fallback style is stdout, not a cell boundary. Missing that check
+    # made clear_cell_output stop and the next run stack another copy.
+    compact = _style_compact(para_style)
+    return compact in ("preformattedtext", "preformatted") or compact == _style_compact(_STYLE_NOTEBOOK_OUT)
 
 
 def _same_paragraph(a: Any, b: Any) -> bool:
@@ -403,7 +433,10 @@ def _is_next_cell_boundary(para_style: str, content: str, notebook_in_resolved: 
     if _style_is_heading12(para_style) and stripped:
         return True
     compact = _style_compact(para_style)
-    if stripped and compact in ("textbody", "textkörper", "bodytext"):
+    # Treat following markdown blockquote/list (and other non-output notebook body
+    # that belongs to the next cell / markdown cell) as a stop boundary so clearing
+    # outputs never deletes them.
+    if stripped and compact not in ("", "preformattedtext", "preformatted", "writeragentnotebookoutput"):
         return True
     return False
 
@@ -770,6 +803,10 @@ def _insert_run_image(doc: Any, payload: dict[str, Any], *, ctx: Any, images_bef
         mime = "image/svg+xml"
     elif fmt in ("jpg", "jpeg"):
         mime = "image/jpeg"
+    elif fmt == "webp":
+        mime = "image/webp"
+    elif fmt == "gif":
+        mime = "image/gif"
     else:
         mime = "image/png"
     return _insert_image_in_flow(doc, raw=bytes(raw), mime=mime, images_before=images_before, ctx=ctx, text_cursor=text_cursor)
@@ -876,7 +913,7 @@ def apply_run_result(doc: Any, cell: NotebookCodeCell, result: dict[str, Any], *
     cursor = _cursor_after_bookmark(doc, cell.output_start_bookmark)
     if cursor is None:
         cursor = _find_cell_output_heading_end(doc, cell)
-    output_style = _resolve_para_style(doc, _STYLE_OUTPUT)
+    output_style = output_para_style(doc)
     notebook_in = _resolve_para_style(doc, _STYLE_NOTEBOOK_IN)
     if out_text.strip():
         display, _unused = _prepare_display_text(out_text)
@@ -978,6 +1015,10 @@ def update_in_prompt(doc: Any, cell: NotebookCodeCell, execution_count: int | No
         return
 
     para = None
+    # Walk only the paragraph before this cell's code field. A document-wide
+    # search for the first ``In [n]:`` rewrote cell 1's gutter when this
+    # cell's ControlShape was missing (the importer no longer writes
+    # ``Cell N: Code``).
     shape = form_lookup.find_control_shape_by_name(doc, cell.code_field_name)
     if shape is not None:
         try:
@@ -992,23 +1033,7 @@ def update_in_prompt(doc: Any, cell: NotebookCodeCell, execution_count: int | No
             log.debug("notebook run: gutter from code field failed", exc_info=True)
             para = None
     if para is None:
-        try:
-            enum = text.createEnumeration()
-        except Exception:
-            log.debug("notebook run: could not enumerate text for in prompt", exc_info=True)
-            return
-        marker = f"Cell {cell.index + 1}: Code"
-        while enum.hasMoreElements():
-            candidate = enum.nextElement()
-            try:
-                content = candidate.getString() or ""
-            except Exception:
-                continue
-            stripped = str(content).strip()
-            if marker in stripped or _IN_PROMPT_RE.match(stripped) or stripped.startswith("[In ["):
-                para = candidate
-                break
-    if para is None:
+        log.warning("notebook run: could not find code field %r to update In prompt for cell %d", cell.code_field_name, cell.index)
         return
     try:
         cursor = _gutter_text_cursor(text, para)
@@ -1050,13 +1075,18 @@ def _restore_view_to_cell(doc: Any, cell: NotebookCodeCell, saved: Any | None = 
 # ---------------------------------------------------------------------------
 
 
+_FATAL_WORKER_CODES = frozenset({"VENV_TIMEOUT", "WORKER_IPC_ERROR"})
+
+
 def _execute_and_apply(ctx: Any, doc: Any, state: NotebookDocState, cell: NotebookCodeCell, code: str) -> RunResult:
     """Run *code* for *cell* and write outputs. Caller holds the busy key."""
     saved_view = _save_view_cursor(doc)
     result = execute_code(ctx, doc, code)
     # After execute so live smoke can tell ok from a sandbox dunder deny.
     log.info("notebook run cell index=%d field=%s status=%s", cell.index, cell.code_field_name, result.get("status"))
-    if result.get("status") == "interrupted":
+    # The venv worker reports Stop as an error with code CANCELLED. That cell
+    # did not finish: no traceback, no In [n].
+    if result.get("status") == "stopped" or result.get("code") == "CANCELLED":
         # In [n] / outputs only for cells that actually finished.
         return RunResult("stopped", None, "Stopped.", cells_run=0)
 
@@ -1079,7 +1109,10 @@ def _execute_and_apply(ctx: Any, doc: Any, state: NotebookDocState, cell: Notebo
 
     if result.get("status") != "ok":
         msg = result.get("message") or _("Cell execution failed.")
-        return RunResult("error", execution_count, str(msg), cells_run=1)
+        # The worker was killed or lost; later cells would run in a fresh
+        # kernel without this cell's state. Run All stops after this one.
+        status = "fatal" if result.get("code") in _FATAL_WORKER_CODES else "error"
+        return RunResult(status, execution_count, str(msg), cells_run=1)
     return RunResult("ok", execution_count, cells_run=1)
 
 
@@ -1093,20 +1126,26 @@ def run_cell(ctx: Any, doc: Any, cell_id: str) -> RunResult:
         return RunResult("error", None, "Unknown notebook cell.")
 
     code = form_lookup.read_code_from_field(doc, cell.code_field_name)
-    if not (code or "").strip():
+    if code is None:
+        log.warning("notebook run: code field %r missing for cell %d", cell.code_field_name, cell.index)
+        return RunResult("error", None, "Code field is missing.")
+    if not code.strip():
         return RunResult("error", None, "Code cell is empty.")
 
     # Shared kernel: one run per document. Without this, a second ▶ (or the
     # leftover double-wire we already hit on two PyUNO wrappers) interleaved
     # next_execution_count / clear_cell_output / apply_run_result.
-    busy_key = _doc_busy_key(doc)
+    busy_key = _doc_key(doc)
     if busy_key in _running_docs:
         log.info("notebook run skipped: a cell is already running on this document")
         return RunResult("busy", None, "A cell is already running.")
     _running_docs.add(busy_key)
     try:
         _clear_stop(busy_key)
-        return _execute_and_apply(ctx, doc, state, cell, code)
+        one = _execute_and_apply(ctx, doc, state, cell, code)
+        if one.status == "fatal":
+            return RunResult("error", one.execution_count, one.message, cells_run=one.cells_run)
+        return one
     finally:
         _running_docs.discard(busy_key)
 
@@ -1127,21 +1166,10 @@ def run_cell_for_doc_hex(ctx: Any, doc: Any, hex_id: str) -> None:
     # Execution errors (sandbox, syntax, traceback) already land under the cell
     # via apply_run_result. A modal here blocked the document and would make
     # Run All unusable. Keep msgbox only for the setup failures above.
-    run_cell(ctx, doc, cell.cell_id)
+    result = run_cell(ctx, doc, cell.cell_id)
+    if result.status == "error" and not result.cells_run:
+        msgbox(ctx, "WriterAgent", result.message)
 
-
-def run_cell_by_hex(ctx: Any, hex_id: str) -> None:
-    """Menu / protocol entry: ``notebook.run_cell.{hex}`` on the active Writer document."""
-    doc = get_active_document(ctx)
-    if doc is None:
-        msgbox(ctx, "WriterAgent", _("Open a Writer document first."))
-        return
-    run_cell_for_doc_hex(ctx, doc, hex_id)
-
-
-def run_cell_target_url(cell_id: str) -> str:
-    """Build the protocol URL for a play button on a code cell."""
-    return f"{NOTEBOOK_RUN_CELL_URL_PREFIX}{cell_id_to_hex(cell_id)}"
 
 
 def find_run_from_here_index(doc: Any, state: NotebookDocState) -> int:
@@ -1180,19 +1208,48 @@ def find_run_from_here_index(doc: Any, state: NotebookDocState) -> int:
     return len(cells)
 
 
+def _pump_between_notebook_cells(ctx: Any) -> None:
+    """Deliver a Stop click between cells.
+
+    While a drain owner is set, call ``pump_ui_idle`` (depth 1 still
+    delivers VCL). ``flush_ui_idle`` calls ``process_events_to_idle``, which
+    does not pump while an owner is set. The event-driven drain has already
+    returned but still holds the owner across slices, so between-cell
+    ``flush_ui_idle`` no-ops and chat Stop never runs. With no owner, keep
+    ``flush_ui_idle`` (hamburger Stop, and the tests that patch it). Do not
+    pump inside ``execute_code`` (LayoutIdle).
+    """
+    try:
+        from plugin.framework.async_drain_guard import get_drain_owner
+        from plugin.framework.queue_executor import pump_main_thread_work_queue, pump_ui_idle
+        from plugin.framework.uno_context import get_toolkit
+        from plugin.notebook.writer_importer import flush_ui_idle
+
+        pump_main_thread_work_queue(max_items=1)
+        if get_drain_owner() is not None:
+            pump_ui_idle(get_toolkit(ctx), max_queue_items=1)
+        else:
+            flush_ui_idle(ctx)
+    except Exception:
+        log.debug("notebook run: between-cell pump failed", exc_info=True)
+
+
 def run_cells(ctx: Any, doc: Any, *, start_index: int = 0) -> RunResult:
     """Execute code cells from *start_index* in registry order.
 
     Holds the busy key for the whole sequence so a ▶ is skipped (``busy``).
-    Stop still works: it does not take this guard. Empty fields are skipped
-    (single-cell ▶ still errors). A traceback is written under the cell and
-    the batch continues unless Stop was requested. Drain between cells only.
+    Stop does not take this guard. It is observed between cells: the in-flight
+    ``execute_code`` wait does not pump VCL, so a Stop click cannot land until
+    that wait returns. Empty fields are skipped (single-cell ▶ still errors).
+    A missing code field is logged and skipped. A traceback is written under
+    the cell and the batch continues unless Stop was requested. Drain between
+    cells only.
     """
     state = load_registry(doc)
     if state is None:
         return RunResult("error", None, "No notebook registry on document.")
 
-    busy_key = _doc_busy_key(doc)
+    busy_key = _doc_key(doc)
     if busy_key in _running_docs:
         log.info("notebook run skipped: a cell is already running on this document")
         return RunResult("busy", None, "A cell is already running.")
@@ -1209,21 +1266,36 @@ def run_cells(ctx: Any, doc: Any, *, start_index: int = 0) -> RunResult:
                 stopped = True
                 break
             code = form_lookup.read_code_from_field(doc, cell.code_field_name)
-            if not (code or "").strip():
+            if code is None:
+                log.warning("notebook run: code field %r missing for cell %d; skipping", cell.code_field_name, cell.index)
+                continue
+            if not code.strip():
                 continue
             if need_drain:
                 # LayoutIdle livelock is during execute, not this between-cell pump.
                 # Stop clicks are delivered here; check the flag before the next cell.
-                from plugin.notebook.writer_importer import flush_ui_idle
-
-                flush_ui_idle(ctx)
+                _pump_between_notebook_cells(ctx)
+            if is_document_disposed(doc):
+                stopped = True
+                break
             if _is_stop_requested(busy_key):
                 stopped = True
                 break
-            one = _execute_and_apply(ctx, doc, state, cell, code)
+            try:
+                one = _execute_and_apply(ctx, doc, state, cell, code)
+            except Exception as exc:
+                # Document closed mid-batch: stop quietly instead of raising
+                # out of Run All.
+                if is_disposed_exception(exc) or is_document_disposed(doc):
+                    stopped = True
+                    break
+                raise
             if one.status == "stopped":
                 stopped = True
                 break
+            if one.status == "fatal":
+                executed += 1
+                return RunResult("error", one.execution_count, one.message, cells_run=executed)
             executed += 1
             last_count = one.execution_count
             need_drain = True
@@ -1234,6 +1306,8 @@ def run_cells(ctx: Any, doc: Any, *, start_index: int = 0) -> RunResult:
             return RunResult("stopped", last_count, "Stopped.", cells_run=executed)
         return RunResult("ok", last_count, cells_run=executed)
     finally:
+        with _stop_lock:
+            _stop_flags.pop(busy_key, None)
         _running_docs.discard(busy_key)
 
 
@@ -1267,22 +1341,43 @@ def run_from_here_for_doc(ctx: Any, doc: Any) -> RunResult | None:
     return run_cells(ctx, doc, start_index=find_run_from_here_index(doc, state))
 
 
-def run_all_from_menu(ctx: Any | None = None) -> None:
+def run_all_from_menu(ctx: Any | None = None, frame: Any | None = None) -> None:
     from plugin.framework.uno_context import get_ctx
 
     resolved = ctx if ctx is not None else get_ctx()
-    run_all_for_doc(resolved, get_active_document(resolved))
+    doc = None
+    if frame is not None and hasattr(frame, "getController"):
+        ctrl = frame.getController()
+        if ctrl is not None and hasattr(ctrl, "getModel"):
+            doc = ctrl.getModel()
+    if doc is None:
+        doc = get_active_document(resolved)
+    run_all_for_doc(resolved, doc)
 
 
-def run_from_here_from_menu(ctx: Any | None = None) -> None:
+def run_from_here_from_menu(ctx: Any | None = None, frame: Any | None = None) -> None:
     from plugin.framework.uno_context import get_ctx
 
     resolved = ctx if ctx is not None else get_ctx()
-    run_from_here_for_doc(resolved, get_active_document(resolved))
+    doc = None
+    if frame is not None and hasattr(frame, "getController"):
+        ctrl = frame.getController()
+        if ctrl is not None and hasattr(ctrl, "getModel"):
+            doc = ctrl.getModel()
+    if doc is None:
+        doc = get_active_document(resolved)
+    run_from_here_for_doc(resolved, doc)
 
 
-def stop_from_menu(ctx: Any | None = None) -> None:
+def stop_from_menu(ctx: Any | None = None, frame: Any | None = None) -> None:
     from plugin.framework.uno_context import get_ctx
 
     resolved = ctx if ctx is not None else get_ctx()
-    stop_for_doc(get_active_document(resolved))
+    doc = None
+    if frame is not None and hasattr(frame, "getController"):
+        ctrl = frame.getController()
+        if ctrl is not None and hasattr(ctrl, "getModel"):
+            doc = ctrl.getModel()
+    if doc is None:
+        doc = get_active_document(resolved)
+    stop_for_doc(doc)

@@ -24,12 +24,12 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Any, TypedDict
+from typing import Any
 
 from plugin.framework.i18n import _
 from plugin.framework.json_utils import safe_json_loads, safe_python_literal_eval
 
-from plugin.framework.deal_shim import DEAL_MAX_TOKEN, UNDER_CROSSHAIR, ascii_bounded, deal
+from plugin.framework.deal_shim import DEAL_MAX_MSGID, DEAL_MAX_TOKEN, UNDER_CROSSHAIR, ascii_bounded, deal
 
 try:
     from com.sun.star.lang import DisposedException
@@ -77,6 +77,7 @@ class suppress_disposed(contextlib.ContextDecorator):
 
     Unexpected non-disposal exceptions are logged (via logger.exception) and,
     if suppress_all is True (default for UI lifecycle blocks), suppressed so they do not crash host UI event loops.
+    KeyboardInterrupt, SystemExit, and GeneratorExit always propagate.
     """
 
     action: str
@@ -99,6 +100,11 @@ class suppress_disposed(contextlib.ContextDecorator):
         if exc_val is None:
             return False
 
+        # suppress_all (default True) covers Exception only. KeyboardInterrupt,
+        # SystemExit, and GeneratorExit must still propagate.
+        if exc_type is not None and not issubclass(exc_type, Exception):
+            return False
+
         log_obj = self.logger or logging.getLogger("writeragent.errors")
 
         if is_disposed_exception(exc_val):
@@ -114,32 +120,7 @@ class suppress_disposed(contextlib.ContextDecorator):
 ignore_disposed = suppress_disposed
 
 
-# TypedDict status fields use str, not Literal: CrossHair calls get_type_hints on
-# TypedDicts when realizing Any-heap objects; Literal there TypeErrors and flakes check-all on
-# importers (e.g. stream_normalizer via plugin.framework.client). Same rule as payload_codec ColumnKind.
-class ToolResult(TypedDict, total=False):
-    status: str
-    code: str
-    message: str
-    details: dict[str, Any]
-
-
-# Type for successful tool execution results. Kept as a TypedDict so
-# CrossHair get_type_hints on importers does not see a Literal status field.
-class ToolSuccess(TypedDict):
-    status: str  # "ok"
-    # Other fields are optional in success case
-
-
-# Type for failed tool execution results
-class ToolError(TypedDict):
-    status: str  # "error"
-    code: str
-    message: str
-    details: dict[str, Any]
-
-
-def _resolve_exception_message(e: Any) -> str:
+def resolve_exception_message(e: Any) -> str:
     """Extract non-empty message string from an exception, resolving UNO Exception Message attributes and causes."""
     msg = getattr(e, "Message", None) or str(e)
     if isinstance(msg, str):
@@ -157,6 +138,21 @@ def _resolve_exception_message(e: Any) -> str:
     if not msg:
         msg = type(e).__name__ if isinstance(e, Exception) else "Unknown error"
     return msg
+
+
+def _translate_exception_message(message: Any) -> str:
+    """Translate a catalog msgid. Long runtime text skips ``_()``.
+
+    ``_()`` rejects strings longer than ``DEAL_MAX_MSGID`` with
+    ``deal.PreContractError``. A provider body or UNO text would then raise
+    that contract error instead of the exception the caller asked for.
+    Gettext only matches an extracted source string, so a message past the
+    msgid bound is not in the catalog anyway. Return it unchanged.
+    """
+    text = resolve_exception_message(message)
+    if len(text) > DEAL_MAX_MSGID:
+        return text
+    return _(text)
 
 
 class WriterAgentException(Exception):
@@ -182,7 +178,9 @@ class WriterAgentException(Exception):
         else:
             # Runtime / interpolated strings are not in the gettext catalog;
             # _() is a no-op unless the exact source string was extracted.
-            self.message = _(_resolve_exception_message(message))
+            # Messages longer than the msgid bound skip _() — see
+            # _translate_exception_message.
+            self.message = _translate_exception_message(message)
         if code is not None:
             self.code = code
         self.details = details or {}
@@ -309,7 +307,7 @@ def format_error_payload(e: BaseException) -> dict[str, Any]:
         err_msg = "mock"
     else:
         err_type = type(e).__name__
-        err_msg = _resolve_exception_message(e)
+        err_msg = resolve_exception_message(e)
     return {"status": "error", "code": "INTERNAL_ERROR", "message": err_msg, "details": {"type": err_type}}
 
 
@@ -355,13 +353,16 @@ def format_error_message(e: Exception) -> str:
     """
     import ssl
     import socket
-    import http.client
     import urllib.error
 
     msg = "mock" if UNDER_CROSSHAIR else str(e)
     if isinstance(e, ssl.SSLError):
         return _("TLS/SSL Error: {0}").format(msg)
-    if isinstance(e, (urllib.error.HTTPError, http.client.HTTPException)):
+    # Only HTTPError carries a status. RemoteDisconnected, BadStatusLine,
+    # and IncompleteRead have no .code/.status/.reason; treating every
+    # HTTPException like HTTPError discarded str(e) and reported "HTTP Error 0".
+    # Those fall through to the connection/OSError path or the final str(e).
+    if isinstance(e, urllib.error.HTTPError):
         code_candidate = getattr(e, "code", None)
         if code_candidate is None:
             code_candidate = getattr(e, "status", None)
@@ -402,13 +403,30 @@ def format_error_message(e: Exception) -> str:
     if isinstance(e, socket.timeout):
         return _("Request Timed Out. Try increasing 'Request Timeout' in Settings.")
 
-    if isinstance(e, (urllib.error.URLError, OSError)):
+    # Filesystem errors are not a down local server. Match connection-shaped
+    # OSError, not FileNotFoundError or PermissionError.
+    if isinstance(e, (urllib.error.URLError, OSError)) and not isinstance(e, (FileNotFoundError, PermissionError, IsADirectoryError, NotADirectoryError)):
+        # URLError is not itself a socket.timeout; the timeout is e.reason.
+        # Check that before the connection-error sentence, or a wrapped
+        # timeout tells the user the server is down.
+        reason_obj: BaseException | None
+        if isinstance(e, urllib.error.URLError):
+            raw_reason = getattr(e, "reason", None)
+            reason_obj = raw_reason if isinstance(raw_reason, BaseException) else None
+        else:
+            reason_obj = e
+        if reason_obj is not None and isinstance(reason_obj, (socket.timeout, TimeoutError)):
+            return _("Request Timed Out. Try increasing 'Request Timeout' in Settings.")
         if UNDER_CROSSHAIR:
             reason = "mock"
+        elif reason_obj is not None:
+            reason = str(reason_obj)
         elif isinstance(e, urllib.error.URLError):
             reason = str(getattr(e, "reason", None) or e)
         else:
             reason = str(e)
+        if "timed out" in reason.lower() and "formula" not in reason.lower():
+            return _("Request Timed Out. Try increasing 'Request Timeout' in Settings.")
         # Errno text and unrelated messages both contain "111" (port 1111).
         # Match the errno or the words, not that substring.
         if _is_connection_refused(e, reason):
@@ -420,11 +438,14 @@ def format_error_message(e: Exception) -> str:
     lower = msg.lower()
     if "venv not found" in lower or "no python executable found" in lower:
         return _("Python venv not found. Open Settings → Python, set the venv path, then Test.")
-    if "python timed out" in lower or "worker failed: timed out" in lower:
+    if "python timed out" in lower or "python execution timed out" in lower or "worker failed: timed out" in lower:
         return _("Python execution timed out. Open Settings → Python to raise the timeout.")
     if msg.strip() == "#SPILL!":
         return _("Formula spill collision: destination range contains non-empty cells.")
-    if "timed out" in lower:
+    # Formula evaluation also says "timed out". The Python branch above
+    # already covers "python timed out" and "python execution timed out",
+    # so this request-timeout sentence skips formula text.
+    if "timed out" in lower and "formula" not in lower:
         return _("Request Timed Out. Try increasing 'Request Timeout' in Settings.")
     if "finish_reason=error" in msg:
         return _("The AI provider reported an error. Try again.")
@@ -435,7 +456,12 @@ def format_error_message(e: Exception) -> str:
 @deal.pre(lambda message, code="TOOL_EXECUTION_ERROR", **details: isinstance(message, str) and ascii_bounded(code, DEAL_MAX_TOKEN, min_len=1))
 @deal.post(lambda result: isinstance(result, dict) and result.get("status") == "error" and "code" in result and "message" in result)
 def make_tool_error(message: str, code: str = "TOOL_EXECUTION_ERROR", **details: Any) -> dict[str, Any]:
-    """Central factory for all standardized tool error payloads."""
+    """Central factory for all standardized tool error payloads.
+
+    A long UNO or provider string is a runtime message. Construction goes
+    through ``WriterAgentException``, which does not apply the gettext msgid
+    length contract to that text.
+    """
     return format_error_payload(ToolExecutionError(message, code=code, details=details))
 
 
@@ -448,7 +474,9 @@ class UnoObjectError(WriterAgentException):
 class DocumentDisposedError(UnoObjectError):
     """Document or UNO object was disposed during operation."""
 
-    code: str = "DISPOSED_OBJECT"
+    # Same code as execute_safe / tool DOCUMENT_DISPOSED so callers comparing
+    # codes do not miss one of the two historical spellings.
+    code: str = "DOCUMENT_DISPOSED"
     object_type: str
 
     def __init__(self, message: Any, object_type: str = "Object", code: str | None = None, details: dict[str, Any] | None = None, context: dict[str, Any] | None = None) -> None:
@@ -546,26 +574,50 @@ def is_tool_document_disposed(exc: BaseException, doc: Any = None) -> bool:
     Writer body — not a closed document. Do not map that to the lying
     "Document was closed or disposed by LibreOffice" chat string.
     """
-    if isinstance(exc, DocumentDisposedError):
-        return True
     if not is_disposed_exception(exc):
         return False
-    if "DisposedException" in type(exc).__name__:
+    # "DocumentDisposedError" does not contain "DisposedException", so the
+    # name test alone would let a live-doc probe hide this type. The
+    # exception already says the object was disposed.
+    if isinstance(exc, DocumentDisposedError) or "DisposedException" in type(exc).__name__:
         return True
     if doc is not None and not is_document_disposed(doc):
         return False
     return True
 
 
-# Three wrappers, three jobs: safe_uno_call is for probes (RuntimeException is
-# not disposal — return default). handle_errors / safe_call are for real
-# operations (RuntimeException usually means the object is gone).
+def is_real_disposal(exc: BaseException) -> bool:
+    """True only for DisposedException / DocumentDisposedError.
+
+    A bare UNO RuntimeException on a live document is a real error. Mapping it
+    to DocumentDisposedError made is_tool_document_disposed skip the live-doc
+    check and report "Document was closed".
+    """
+    return isinstance(exc, DocumentDisposedError) or "DisposedException" in type(exc).__name__
+
+
+def reraise_if_disposed(
+    exc: BaseException,
+    message: str = "Document disposed during operation",
+    *,
+    object_type: str = "document",
+) -> None:
+    """Disposed UNO is a closed document or component, not a generic tool failure."""
+    if is_disposed_exception(exc):
+        raise DocumentDisposedError(message, object_type=object_type) from exc
+
+
+
+# safe_uno_call is for probes (any failure returns default, except real disposal).
+# handle_errors / safe_call wrap real operations. Both treat only DisposedException
+# as disposal. suppress_disposed still uses the broad is_disposed_exception heuristic.
 def safe_uno_call(default: Any = None) -> Any:
     """Decorator to safely call UNO methods with automatic error handling, returning default on failure (disposal exceptions re-raised).
 
-    Unlike :func:`handle_errors` / :func:`safe_call`, a UNO ``RuntimeException``
-    is *not* treated as disposal here: probes (e.g. ``doc_type``) must fall back
-    to ``default``. Re-raise only ``DisposedException`` / ``DocumentDisposedError``.
+    A UNO ``RuntimeException`` is not disposal: probes return ``default``, and
+    :func:`safe_call` / :func:`handle_errors` wrap it as ``UnoObjectError`` /
+    ``ToolExecutionError``. Re-raise only ``DisposedException`` /
+    ``DocumentDisposedError``.
     See ``docs/framework/uno-thread-safety.md`` and
     ``test_safe_uno_call_returns_default_on_runtime_error``.
     """
@@ -578,9 +630,8 @@ def safe_uno_call(default: Any = None) -> Any:
             try:
                 return func(*args, **kwargs)
             except Exception as e:
-                e_name = type(e).__name__
                 # Do not add "RuntimeException": that is a probe failure, not disposal.
-                if "DisposedException" in e_name or isinstance(e, DocumentDisposedError):
+                if is_real_disposal(e):
                     raise DocumentDisposedError(f"UNO object disposed during {func.__name__}", object_type=func.__name__, details={"args": str(args), "kwargs": str(kwargs), "original_error": str(e)}) from e
                 logging.getLogger("writeragent.errors").debug("safe_uno_call: %s failed (%s), returning default %r", func.__name__, e, default)
                 return default
@@ -606,9 +657,10 @@ def handle_errors(context_name: str) -> Any:
                 # We catch Exception here because pyuno bridge exceptions don't always inherit from Python's standard Exception cleanly in all builds,
                 # but catching Exception is the standard way to grab them. We immediately wrap it.
                 e_name = type(e).__name__
-                # Real operations: UNO RuntimeException usually means the object is gone.
-                # Contrast safe_uno_call, which returns default for that name (probes).
-                if is_disposed_exception(e):
+                # is_disposed_exception matches any RuntimeException name.
+                # A live-document failure is not disposal and must not skip
+                # the live-doc check in is_tool_document_disposed.
+                if is_real_disposal(e):
                     raise DocumentDisposedError(f"UNO object disposed during {context_name}", object_type=context_name, details={"original_error": str(e)}) from e
                 else:
                     raise ToolExecutionError(f"{context_name} failed: {e}", code="INTERNAL_ERROR", details={"error": str(e), "type": e_name}) from e
@@ -623,9 +675,11 @@ def safe_call(fn: Any, context_name: str, *args: Any, **kwargs: Any) -> Any:
     try:
         return fn(*args, **kwargs)
     except Exception as e:
-        # Real UNO calls: RuntimeException ≈ disposed. safe_uno_call does not.
+        # Only DisposedException is disposal. Treating RuntimeException as
+        # disposal makes a live document look closed. Other UNO failures
+        # stay UnoObjectError.
         e_name = type(e).__name__
-        if is_disposed_exception(e):
+        if is_real_disposal(e):
             raise DocumentDisposedError(f"UNO object disposed during {context_name}", object_type=context_name, details={"original_error": str(e)}) from e
 
         # We catch Exception here because pyuno bridge exceptions don't always inherit from Python's standard Exception cleanly in all builds,
@@ -672,8 +726,11 @@ __all__ = [
     "ignore_disposed",
     "is_disposed_exception",
     "is_document_disposed",
+    "is_real_disposal",
     "is_tool_document_disposed",
     "make_tool_error",  # Central factory for all tool error dicts
+    "reraise_if_disposed",
+    "resolve_exception_message",
     "safe_call",
     "safe_json_loads",
     "safe_python_literal_eval",

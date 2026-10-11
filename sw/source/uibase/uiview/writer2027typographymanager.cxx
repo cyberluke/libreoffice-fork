@@ -400,6 +400,7 @@ ApplyPresetTransaction(const css::uno::Reference<css::frame::XFrame>& rFrame,
                 + u" before=" + OUString::number(aResult.before.Total())
                 + u" after=" + OUString::number(aResult.after.Total())
                 + u" detected=" + aResult.detectedPresetAfter);
+        return aResult;
     }
     catch (const css::uno::Exception& rEx)
     {

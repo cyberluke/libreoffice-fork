@@ -1,0 +1,3 @@
+cmd/sc_savegraphic.svg cmd/sc_save.svg
+cmd/lc_savegraphic.svg cmd/lc_save.svg
+cmd/32/savegraphic.svg cmd/32/save.svg

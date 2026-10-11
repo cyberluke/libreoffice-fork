@@ -24,6 +24,10 @@ APP_REFERER = "https://github.com/KeithCu/writeragent"
 APP_TITLE = "WriterAgent"
 USER_AGENT = f"{APP_TITLE} ({APP_REFERER})"
 
+# DNS/TCP/TLS connect budget for LLM HTTP. Settings ``request_timeout`` is the
+# read/stall budget only — a hung open must not wait the full 120s stream stall.
+LLM_CONNECT_TIMEOUT_SEC = 15
+
 # OXT package identifiers (description.xml). Single source for product/package identity.
 EXTENSION_ID_LIBREPY = "org.extension.librepy"
 EXTENSION_ID_WRITERAGENT = "org.extension.writeragent"
@@ -58,6 +62,10 @@ EMBEDDINGS_INDEX_INTERVAL_S = 300
 # Worker heartbeat during long folder maintain RPC (docs/embeddings.md).
 EMBEDDINGS_HEARTBEAT_INTERVAL_S = 5
 EMBEDDINGS_HEARTBEAT_GRACE_S = 90
+# Heartbeats may extend a trusted-action read, but not past this many seconds
+# from the start of that read. A tight emit loop must not hold the pipe forever.
+# Long folder indexes still fit; the cap is the wall clock, not timeout+grace.
+HEARTBEAT_ABSOLUTE_CAP_SEC = 2 * 60 * 60
 # Max sub-chunks per embed+upsert window during ingest (docs/embeddings.md).
 EMBEDDINGS_INGEST_BATCH_SIZE = 64
 # Host-side bounded pool for short run_in_background jobs (not venv subprocess pools).
@@ -66,6 +74,8 @@ BACKGROUND_POOL_MAX_WORKERS = 2
 # Warm venv worker pools (docs/embeddings.md — dedicated embeddings subprocess).
 WORKER_POOL_DEFAULT = "default"
 WORKER_POOL_EMBEDDINGS = "embeddings"
+# Settings → Python probes. A timeout must not kill the formula worker.
+WORKER_POOL_DIAGNOSTICS = "diagnostics"
 # In-worker read-through corpus matrix cache TTL (seconds since last access).
 EMBEDDINGS_CORPUS_CACHE_TTL_S = 60
 

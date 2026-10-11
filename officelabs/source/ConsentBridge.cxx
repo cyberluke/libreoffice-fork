@@ -221,7 +221,7 @@ void showDialog(const std::shared_ptr<PendingConsent>& pPending)
         finishOnWorker(pPending, false);
         return;
     }
-    xDialog->set_title(u"OfficeLabs \u2014 allow this macro to run?"_ustr);
+    xDialog->set_title(u"NAI Office \u2014 allow this macro to run?"_ustr);
 
     auto pTimer = std::make_shared<ConsentTimeout>(xDialog);
     pTimer->Start();

@@ -220,3 +220,6 @@ solenv/gcc-wrappers/*.obj
 
 # graphify build output — canonical home is ~/dev/Graphify/{Project}/{repo}/
 graphify-out/
+
+# Writer 2027 icon tooling dev cache (upstream source snapshots)
+/.work/

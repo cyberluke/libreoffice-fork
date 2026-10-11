@@ -85,6 +85,8 @@ dev = [
     "python-docx>=1.1.0",
     "xlrd>=2.0.0",
     "numpy",
+    # Annuity helpers (PMT, PV, FV, NPER, IPMT, MIRR) call this in the user venv.
+    "numpy-financial>=1.0.0",
     "pandas",
     "scipy",
     "scikit-learn",
@@ -105,6 +107,8 @@ dev = [
     "setuptools",
     "build",
     "sqlite-vec",
+    # python.org macOS CPython omits sqlite3.Connection.enable_load_extension.
+    "pysqlite3",
     "css-inline",
     "icu4py",
     "py-spy",

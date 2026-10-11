@@ -302,7 +302,7 @@ public:
     void OnWindowCreated(CefRefPtr<CefWindow> window) override
     {
         window->AddChildView(m_browserView);
-        window->SetTitle("OfficeLabs Macro Studio");
+        window->SetTitle("NAI Office Macro Studio");
         window->CenterWindow(CefSize(1400, 900));
 
         // Claim Cmd+W/Ctrl+W as THIS window's own accelerator, at the highest

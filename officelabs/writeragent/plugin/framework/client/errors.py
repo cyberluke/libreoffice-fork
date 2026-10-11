@@ -24,9 +24,12 @@ _LLAMA_SERVER_CRASH_MARKERS = ("llama-server process has terminated", "0xc000000
 
 def format_context_window_label(num_ctx: Any) -> str | None:
     """Human window size for the crash sentence (4096 → 4K). None if unknown."""
+    # float("inf") raises OverflowError ("cannot convert float infinity to
+    # integer"), which (TypeError, ValueError) does not catch. Infinite or
+    # overflowing values return None.
     try:
-        window = int(num_ctx)
-    except (TypeError, ValueError):
+        window = int(float(num_ctx))
+    except (TypeError, ValueError, OverflowError):
         return None
     if window <= 0:
         return None
@@ -75,12 +78,23 @@ def _format_http_error_response(status: int, reason: str, err_body: str, context
     """
     if status == 500 and err_body and is_local_model_server_crash(err_body):
         return local_model_overflow_message(context_window)
+    # Chat uses http.client, so format_error_message's urllib HTTPError
+    # 401/403/404 sentences never run. An empty body uses those sentences;
+    # a present body still appends the provider detail.
+    if not err_body or not err_body.strip():
+        if status == 401:
+            return _("Invalid API Key. Please check your settings.")
+        if status == 403:
+            return _("API access Forbidden. Your key may lack permissions for this model.")
+        if status == 404:
+            return _("Endpoint not found (404). Check your URL and Model name.")
+        if status == 429:
+            return _("Rate limited (429). Wait a moment and try again.")
+        return _("HTTP Error {0} from AI Provider: {1}").format(status, reason)
     if status == 429:
         base = _("Rate limited (429). Wait a moment and try again.")
     else:
         base = _("HTTP Error {0} from AI Provider: {1}").format(status, reason)
-    if not err_body or not err_body.strip():
-        return base
     from plugin.framework.errors import safe_json_loads
 
     data = safe_json_loads(err_body)
@@ -125,7 +139,15 @@ def format_error_for_display(e: Any) -> str:
         msg = e.get("message") or e.get("code") or str(e)
         return _("Error: {0}").format(msg)
     payload = format_error_payload(e)
-    return _("Error: {0}").format(payload.get("message", format_error_message(e)))
+    # dict.get evaluates its default before the lookup. format_error_message's
+    # deal.pre requires an Exception, so a string raised PreContractError even
+    # when the payload already had a message. Call the mapper only when the
+    # key is absent.
+    if "message" in payload:
+        message = payload["message"]
+    else:
+        message = format_error_message(e)
+    return _("Error: {0}").format(message)
 
 
 def is_audio_unsupported_error(e: Any) -> bool:

@@ -14,6 +14,7 @@ LIBREPY_CALC_FUNCTIONS_EXCLUDES: tuple[str, ...] = (
     "venv/calc_functions_i_m.py",
     "venv/calc_functions_n_s.py",
     "venv/calc_functions_t_z.py",
+    "venv/calc_functions_util.py",
 )
 
 # vendor/ package dirs copied into plugin/lib/ (WriterAgent ships full requirements-vendor.txt).
@@ -80,10 +81,12 @@ LIBREPY_PLUGIN_FILES: tuple[str, ...] = (
     "plugin/calc/python/cell_editor_ui.py",
     "plugin/calc/python/xl_static_rewrite.py",
     "plugin/calc/python/formula_edit.py",
+    "plugin/calc/python/formula_edit_contracts.py",
     "plugin/calc/python/editor_context_menu.py",
     "plugin/calc/python/image_egress.py",
     "plugin/calc/python/formula_locator_cache.py",
     "plugin/calc/python/cell_discovery.py",
+    "plugin/calc/python/geometric_recalc_core.py",
     "plugin/calc/python/geometric_recalc.py",
     "plugin/calc/python/sheet_modify.py",
     "plugin/calc/python/collabora_formula.py",
@@ -127,11 +130,16 @@ LIBREPY_PLUGIN_FILES: tuple[str, ...] = (
     "plugin/framework/main_shared.py",
     "plugin/framework/logging.py",
     "plugin/framework/uno_context.py",
+    "plugin/framework/scratch_writer.py",
+    "plugin/framework/vcl_pumping.py",
     "plugin/framework/worker_pool.py",
     "plugin/framework/appearance.py",
     "plugin/framework/menu_icon_dpi.py",
     "plugin/framework/async_drain_guard.py",
     "plugin/framework/async_stream.py",
+    "plugin/framework/stream_batch.py",
+    "plugin/framework/stream_delta.py",
+    "plugin/framework/blocking_wait.py",
     "plugin/framework/sidebar_column.py",
     "plugin/framework/queue_executor.py",
     "plugin/framework/uno_listeners.py",
@@ -140,6 +148,8 @@ LIBREPY_PLUGIN_FILES: tuple[str, ...] = (
     "plugin/framework/client/__init__.py",
     "plugin/framework/client/errors.py",
     "plugin/framework/client/requests.py",
+    # sync_request is a URL adapter over LlmHttpTransport (stop, timeout, retry, redaction).
+    "plugin/framework/client/http_transport.py",
     # requests.py calls LocalHttpsCertificateFallback for local HTTPS retries.
     "plugin/framework/client/request_controls.py",
     "plugin/framework/client/ssl_helpers.py",

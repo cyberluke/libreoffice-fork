@@ -1,0 +1,2781 @@
+commands:
+  .uno:AI:
+    output: ai
+    tier: ai
+    status: exact
+    carbon: ai
+    phosphor: ai
+  .uno:AI1:
+    output: ai1
+    tier: ai
+    status: exact
+    carbon: ai-1
+    phosphor: ai-1
+  .uno:AIArticle:
+    output: aiarticle
+    tier: ai
+    status: exact
+    carbon: ai-article
+    phosphor: ai-article
+  .uno:AIAssistant:
+    output: aiassistant
+    tier: ai
+    status: exact
+    carbon: ai
+    phosphor: ai
+  .uno:AIBookOpen:
+    output: aibookopen
+    tier: ai
+    status: exact
+    carbon: ai-book-open
+    phosphor: ai-book-open
+  .uno:AIChart:
+    output: aichart
+    tier: ai
+    status: exact
+    carbon: ai-chart-bar
+    phosphor: ai-chart-bar
+  .uno:AIChat:
+    output: aichat
+    tier: ai
+    status: exact
+    carbon: ai-1
+    phosphor: ai-1
+  .uno:AICoordinate:
+    output: aicoordinate
+    tier: ai
+    status: exact
+    carbon: ai-coordinate-system
+    phosphor: ai-coordinate-system
+  .uno:AICut:
+    output: aicut
+    tier: ai
+    status: exact
+    carbon: ai-cut
+    phosphor: ai-cut
+  .uno:AIEdit:
+    output: aiedit
+    tier: ai
+    status: exact
+    carbon: ai-edit
+    phosphor: ai-edit
+  .uno:AIEdit1:
+    output: aiedit1
+    tier: ai
+    status: exact
+    carbon: ai-edit-1
+    phosphor: ai-edit-1
+  .uno:AIEducation:
+    output: aieducation
+    tier: ai
+    status: exact
+    carbon: ai-education
+    phosphor: ai-education
+  .uno:AIGitBranch:
+    output: aigitbranch
+    tier: ai
+    status: exact
+    carbon: ai-git-branch
+    phosphor: ai-git-branch
+  .uno:AIImage:
+    output: aiimage
+    tier: ai
+    status: exact
+    carbon: ai-image
+    phosphor: ai-image
+  .uno:AIImage1:
+    output: aiimage1
+    tier: ai
+    status: exact
+    carbon: ai-image-1
+    phosphor: ai-image-1
+  .uno:AILayout:
+    output: ailayout
+    tier: ai
+    status: exact
+    carbon: ai-layout
+    phosphor: ai-layout
+  .uno:AIMusic:
+    output: aimusic
+    tier: ai
+    status: exact
+    carbon: ai-music
+    phosphor: ai-music
+  .uno:AIScreenshot:
+    output: aiscreenshot
+    tier: ai
+    status: exact
+    carbon: ai-screenshot
+    phosphor: ai-screenshot
+  .uno:AISearch:
+    output: aisearch
+    tier: ai
+    status: exact
+    carbon: ai-search
+    phosphor: ai-search
+  .uno:AISidebar:
+    output: aisidebar
+    tier: ai
+    status: exact
+    carbon: ai-1
+    phosphor: ai-1
+  .uno:AITerminal:
+    output: aiterminal
+    tier: ai
+    status: exact
+    carbon: ai-terminal
+    phosphor: ai-terminal
+  .uno:AITerminal1:
+    output: aiterminal1
+    tier: ai
+    status: exact
+    carbon: ai-terminal-1
+    phosphor: ai-terminal-1
+  .uno:AITextFormatItalic:
+    output: aitextformatitalic
+    tier: ai
+    status: exact
+    carbon: ai-textformat-italic
+    phosphor: ai-textformat-italic
+  .uno:AITool:
+    output: aitool
+    tier: ai
+    status: exact
+    carbon: ai-tool
+    phosphor: ai-tool
+  .uno:AIToolbar:
+    output: aitoolbar
+    tier: ai
+    status: exact
+    carbon: ai-tool
+    phosphor: ai-tool
+  .uno:AIVideo:
+    output: aivideo
+    tier: ai
+    status: exact
+    carbon: ai-video
+    phosphor: ai-video
+  .uno:AVMediaPlayer:
+    output: avmediaplayer
+    tier: 5
+    carbon: play
+    phosphor: play
+    status: semantic
+  .uno:AVMediaToolBox:
+    output: avmediatoolbox
+    tier: 5
+    carbon: video
+    phosphor: video
+    status: semantic
+  .uno:About:
+    output: about
+    tier: 5
+    carbon: info-circle
+    phosphor: info-circle
+    status: semantic
+  .uno:AboveSpacing:
+    output: abovespacing
+    tier: 1
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:AcceptAllTrackedChanges:
+    output: acceptalltrackedchanges
+    tier: 5
+    carbon: check-circle
+    phosphor: check-circle
+    status: semantic
+  .uno:AcceptTrackedChange:
+    output: accepttrackedchange
+    tier: 5
+    carbon: check
+    phosphor: check
+    status: semantic
+  .uno:AcceptTrackedChangeToNext:
+    output: accepttrackedchangetonext
+    tier: 5
+    carbon: arrow-right
+    phosphor: arrow-right
+    status: semantic
+  .uno:AcceptTrackedChanges:
+    output: accepttrackedchanges
+    tier: 5
+    carbon: check
+    phosphor: check
+    status: semantic
+  .uno:AddDirect:
+    output: adddirect
+    tier: 1
+    carbon: add-rectangle
+    phosphor: add-rectangle
+    status: semantic
+  .uno:AddressBookSource:
+    output: addressbooksource
+    tier: 5
+    carbon: address-book
+    phosphor: address-book
+    status: semantic
+  .uno:AlignCenter:
+    output: aligncenter
+    tier: 1
+    carbon: format-horizontal-align-center
+    phosphor: format-horizontal-align-center
+    status: semantic
+  .uno:AlignDown:
+    output: aligndown
+    tier: 4
+    carbon: align-bottom
+    phosphor: align-bottom
+    status: semantic
+  .uno:AlignMiddle:
+    output: alignmiddle
+    tier: 4
+    carbon: align-vertical
+    phosphor: align-vertical
+    status: semantic
+  .uno:AlignUp:
+    output: alignup
+    tier: 4
+    carbon: align-top
+    phosphor: align-top
+    status: semantic
+  .uno:AnchorMenu:
+    output: anchormenu
+    tier: 4
+    carbon: anchor
+    phosphor: anchor
+    status: semantic
+  .uno:ArrowShapes:
+    output: arrowshapes
+    tier: 5
+    carbon: arrow-right
+    phosphor: arrow-right
+    status: semantic
+  .uno:ArrowsToolbox:
+    output: arrowstoolbox
+    tier: 5
+    carbon: arrow-left-right-1
+    phosphor: arrow-left-right-1
+    status: semantic
+  .uno:AttributePageSize:
+    output: attributepagesize
+    tier: 4
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:AutoControlFocus:
+    output: autocontrolfocus
+    tier: 5
+    carbon: cursor
+    phosphor: cursor
+    status: semantic
+  .uno:AutoCorrectDlg:
+    output: autocorrectdlg
+    tier: 1
+    carbon: correct
+    phosphor: correct
+    status: semantic
+  .uno:BaselineGridVisible:
+    output: baselinegridvisible
+    tier: 5
+    carbon: grid-view
+    phosphor: grid-view
+    status: semantic
+  .uno:BasicIDEAppear:
+    output: basicideappear
+    tier: 5
+    carbon: code
+    phosphor: code
+    status: semantic
+  .uno:BelowSpacing:
+    output: belowspacing
+    tier: 1
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:BibliographyComponent:
+    output: bibliographycomponent
+    tier: 5
+    carbon: book
+    phosphor: book
+    status: semantic
+  .uno:Bold:
+    output: bold
+    tier: 1
+    carbon: textformat-bold
+    phosphor: textformat-bold
+    status: semantic
+  .uno:BorderDialog:
+    output: borderdialog
+    tier: 4
+    carbon: table
+    phosphor: table
+    status: semantic
+  .uno:BringToFront:
+    output: bringtofront
+    tier: 4
+    carbon: flip-to-front
+    phosphor: flip-to-front
+    status: semantic
+  .uno:BrowseView:
+    output: browseview
+    tier: 2
+    carbon: browse
+    phosphor: browse
+    status: semantic
+  .uno:CalloutShapes:
+    output: calloutshapes
+    tier: 5
+    carbon: chat-bubble
+    phosphor: chat-bubble
+    status: semantic
+  .uno:CancelCheckOut:
+    output: cancelcheckout
+    tier: 2
+    carbon: file-locked
+    phosphor: file-locked
+    status: semantic
+  .uno:CellVertBottom:
+    output: cellvertbottom
+    tier: 4
+    carbon: align-bottom
+    phosphor: align-bottom
+    status: semantic
+  .uno:CellVertCenter:
+    output: cellvertcenter
+    tier: 4
+    carbon: align-vertical
+    phosphor: align-vertical
+    status: semantic
+  .uno:CellVertTop:
+    output: cellverttop
+    tier: 4
+    carbon: align-top
+    phosphor: align-top
+    status: semantic
+  .uno:CenterPara:
+    output: centerpara
+    tier: 1
+    carbon: format-vertical-align-center
+    phosphor: format-vertical-align-center
+    status: semantic
+  .uno:ChainFrames:
+    output: chainframes
+    tier: 4
+    carbon: link
+    phosphor: link
+    status: semantic
+  .uno:ChangeCaseRotateCase:
+    output: changecaserotatecase
+    tier: 1
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:ChangeCaseToLower:
+    output: changecasetolower
+    tier: 1
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:ChangeCaseToSentenceCase:
+    output: changecasetosentencecase
+    tier: 1
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:ChangeCaseToTitleCase:
+    output: changecasetotitlecase
+    tier: 1
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:ChangeCaseToToggleCase:
+    output: changecasetotogglecase
+    tier: 1
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:ChangeCaseToUpper:
+    output: changecasetoupper
+    tier: 1
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:ChangeDatabaseField:
+    output: changedatabasefield
+    tier: 5
+    carbon: system-storage
+    phosphor: system-storage
+    status: semantic
+  .uno:ChangePicture:
+    output: changepicture
+    tier: 5
+    carbon: image-edit
+    phosphor: image-edit
+    status: semantic
+  .uno:ChangeTheme:
+    output: changetheme
+    tier: 5
+    carbon: palette
+    phosphor: palette
+    status: semantic
+  .uno:ChapterNumberingDialog:
+    output: chapternumberingdialog
+    tier: 5
+    carbon: list-numbered
+    phosphor: list-numbered
+    status: semantic
+  .uno:CharBackColor:
+    output: charbackcolor
+    tier: 1
+    carbon: font-background
+    phosphor: font-background
+    status: semantic
+  .uno:CharmapControl:
+    output: charmapcontrol
+    tier: 1
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:CheckBox:
+    output: checkbox
+    tier: 5
+    carbon: check-rectangle
+    phosphor: check-rectangle
+    status: semantic
+  .uno:CheckIn:
+    output: checkin
+    tier: 2
+    carbon: file-unlocked
+    phosphor: file-unlocked
+    status: semantic
+  .uno:CheckOut:
+    output: checkout
+    tier: 2
+    carbon: file-locked
+    phosphor: file-locked
+    status: semantic
+  .uno:ChineseConversion:
+    output: chineseconversion
+    tier: 1
+    carbon: translate
+    phosphor: translate
+    status: semantic
+  .uno:CloseDoc:
+    output: closedoc
+    tier: 2
+    carbon: close
+    phosphor: close
+    status: semantic
+  .uno:ClosePreview:
+    output: closepreview
+    tier: 5
+    carbon: close
+    phosphor: close
+    status: semantic
+  .uno:Color:
+    output: color
+    tier: 1
+    carbon: palette
+    phosphor: palette
+    status: semantic
+  .uno:ColorSettings:
+    output: colorsettings
+    tier: 5
+    carbon: palette
+    phosphor: palette
+    status: semantic
+  .uno:CompressGraphic:
+    output: compressgraphic
+    tier: 5
+    carbon: image-edit
+    phosphor: image-edit
+    status: semantic
+  .uno:ConnectorToolbox:
+    output: connectortoolbox
+    tier: 5
+    carbon: link
+    phosphor: link
+    status: semantic
+  .uno:ContinueNumbering:
+    output: continuenumbering
+    tier: 5
+    carbon: list-numbered
+    phosphor: list-numbered
+    status: semantic
+  .uno:ContourDialog:
+    output: contourdialog
+    tier: 4
+    carbon: edit-2
+    phosphor: edit-2
+    status: semantic
+  .uno:ControlCodes:
+    output: controlcodes
+    tier: 1
+    carbon: code
+    phosphor: code
+    status: semantic
+  .uno:ControlProperties:
+    output: controlproperties
+    tier: 5
+    carbon: setting
+    phosphor: setting
+    status: semantic
+  .uno:ConvertTableToText:
+    output: converttabletotext
+    tier: 4
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:ConvertTextToTable:
+    output: converttexttotable
+    tier: 4
+    carbon: table
+    phosphor: table
+    status: semantic
+  .uno:Copy:
+    output: copy
+    tier: 1
+    carbon: copy
+    phosphor: copy
+    status: semantic
+  .uno:Crop:
+    output: crop
+    tier: 5
+    carbon: image-edit
+    phosphor: image-edit
+    status: semantic
+  .uno:CurrencyField:
+    output: currencyfield
+    tier: 5
+    carbon: file-word
+    phosphor: file-word
+    status: semantic
+  .uno:Cut:
+    output: cut
+    tier: 1
+    carbon: cut
+    phosphor: cut
+    status: semantic
+  .uno:DateField:
+    output: datefield
+    tier: 5
+    carbon: calendar
+    phosphor: calendar
+    status: semantic
+  .uno:DecrementIndent:
+    output: decrementindent
+    tier: 1
+    carbon: indent-left
+    phosphor: indent-left
+    status: semantic
+  .uno:DecrementLevel:
+    output: decrementlevel
+    tier: 5
+    carbon: indent-left
+    phosphor: indent-left
+    status: semantic
+  .uno:DecrementSubLevels:
+    output: decrementsublevels
+    tier: 5
+    carbon: indent-left
+    phosphor: indent-left
+    status: semantic
+  .uno:DefaultBullet:
+    output: defaultbullet
+    tier: 1
+    carbon: bulletpoint
+    phosphor: bulletpoint
+    status: semantic
+  .uno:DefaultNumbering:
+    output: defaultnumbering
+    tier: 1
+    carbon: list-numbered
+    phosphor: list-numbered
+    status: semantic
+  .uno:DeleteColumns:
+    output: deletecolumns
+    tier: 4
+    carbon: view-column
+    phosphor: view-column
+    status: semantic
+  .uno:DeleteComment:
+    output: deletecomment
+    tier: 5
+    carbon: delete
+    phosphor: delete
+    status: semantic
+  .uno:DeleteRows:
+    output: deleterows
+    tier: 4
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:DeleteTable:
+    output: deletetable
+    tier: 4
+    carbon: table
+    phosphor: table
+    status: semantic
+  .uno:DevelopmentToolsDockingWindow:
+    output: developmenttoolsdockingwindow
+    tier: 5
+    carbon: code
+    phosphor: code
+    status: semantic
+  .uno:DistributeColumns:
+    output: distributecolumns
+    tier: 4
+    carbon: view-column
+    phosphor: view-column
+    status: semantic
+  .uno:DistributeRows:
+    output: distributerows
+    tier: 4
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:Documentation:
+    output: documentation
+    tier: 5
+    carbon: book
+    phosphor: book
+    status: semantic
+  .uno:Donation:
+    output: donation
+    tier: 5
+    carbon: star
+    phosphor: star
+    status: semantic
+  .uno:DraftView:
+    output: draftview
+    tier: 2
+    carbon: file-word
+    phosphor: file-word
+    status: semantic
+  .uno:DrawCaption:
+    output: drawcaption
+    tier: 5
+    carbon: chat-bubble
+    phosphor: chat-bubble
+    status: semantic
+  .uno:DrawText:
+    output: drawtext
+    tier: 3
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:Edit:
+    output: edit
+    tier: 5
+    carbon: edit-1
+    phosphor: edit-1
+    status: semantic
+  .uno:EditGlossary:
+    output: editglossary
+    tier: 1
+    carbon: book-open
+    phosphor: book-open
+    status: semantic
+  .uno:EndPara:
+    output: endpara
+    tier: 1
+    carbon: format-vertical-align-right
+    phosphor: format-vertical-align-right
+    status: semantic
+  .uno:EntireCell:
+    output: entirecell
+    tier: 4
+    carbon: table
+    phosphor: table
+    status: semantic
+  .uno:EntireColumn:
+    output: entirecolumn
+    tier: 4
+    carbon: view-column
+    phosphor: view-column
+    status: semantic
+  .uno:EntireRow:
+    output: entirerow
+    tier: 4
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:ExportDirectToEPUB:
+    output: exportdirecttoepub
+    tier: 2
+    carbon: book
+    phosphor: book
+    status: semantic
+  .uno:ExportDirectToPDF:
+    output: exportdirecttopdf
+    tier: 2
+    carbon: file-pdf
+    phosphor: file-pdf
+    status: semantic
+  .uno:ExportTo:
+    output: exportto
+    tier: 2
+    carbon: export
+    phosphor: export
+    status: semantic
+  .uno:ExportToEPUB:
+    output: exporttoepub
+    tier: 2
+    carbon: book
+    phosphor: book
+    status: semantic
+  .uno:ExportToPDF:
+    output: exporttopdf
+    tier: 2
+    carbon: file-pdf
+    phosphor: file-pdf
+    status: semantic
+  .uno:ExtendedHelp:
+    output: extendedhelp
+    tier: 5
+    carbon: help-circle
+    phosphor: help-circle
+    status: semantic
+  .uno:ExtensionManager:
+    output: extensionmanager
+    tier: 5
+    carbon: extension
+    phosphor: extension
+    status: semantic
+  .uno:ExternalEdit:
+    output: externaledit
+    tier: 5
+    carbon: share
+    phosphor: share
+    status: semantic
+  .uno:Extrusion3DColor:
+    output: extrusion3dcolor
+    tier: 5
+    carbon: palette
+    phosphor: palette
+    status: semantic
+  .uno:ExtrusionDirectionFloater:
+    output: extrusiondirectionfloater
+    tier: 5
+    carbon: compass
+    phosphor: compass
+    status: semantic
+  .uno:ExtrusionTiltDown:
+    output: extrusiontiltdown
+    tier: 5
+    carbon: arrow-down
+    phosphor: arrow-down
+    status: semantic
+  .uno:ExtrusionTiltLeft:
+    output: extrusiontiltleft
+    tier: 5
+    carbon: arrow-left
+    phosphor: arrow-left
+    status: semantic
+  .uno:ExtrusionTiltRight:
+    output: extrusiontiltright
+    tier: 5
+    carbon: arrow-right
+    phosphor: arrow-right
+    status: semantic
+  .uno:ExtrusionTiltUp:
+    output: extrusiontiltup
+    tier: 5
+    carbon: arrow-up
+    phosphor: arrow-up
+    status: semantic
+  .uno:FieldNames:
+    output: fieldnames
+    tier: 1
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:FileControl:
+    output: filecontrol
+    tier: 5
+    carbon: file-1
+    phosphor: file-1
+    status: semantic
+  .uno:FillStyle:
+    output: fillstyle
+    tier: 5
+    carbon: brush
+    phosphor: brush
+    status: semantic
+  .uno:FlipHorizontal:
+    output: fliphorizontal
+    tier: 4
+    carbon: flip-to-front
+    phosphor: flip-to-front
+    status: semantic
+  .uno:FlipVertical:
+    output: flipvertical
+    tier: 4
+    carbon: flip-to-back
+    phosphor: flip-to-back
+    status: semantic
+  .uno:FontHeight:
+    output: fontheight
+    tier: 1
+    carbon: textformat-longer
+    phosphor: textformat-longer
+    status: semantic
+  .uno:FormProperties:
+    output: formproperties
+    tier: 5
+    carbon: setting
+    phosphor: setting
+    status: semantic
+  .uno:FormatArea:
+    output: formatarea
+    tier: 5
+    carbon: font-background
+    phosphor: font-background
+    status: semantic
+  .uno:FormatLine:
+    output: formatline
+    tier: 5
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:FormatPaintbrush:
+    output: formatpaintbrush
+    tier: 1
+    carbon: format-painter
+    phosphor: format-painter
+    status: semantic
+  .uno:FormattedField:
+    output: formattedfield
+    tier: 5
+    carbon: file-word
+    phosphor: file-word
+    status: semantic
+  .uno:FrameLineColor:
+    output: framelinecolor
+    tier: 5
+    carbon: textformat-color
+    phosphor: textformat-color
+    status: semantic
+  .uno:FullScreen:
+    output: fullscreen
+    tier: 5
+    carbon: fullscreen
+    phosphor: fullscreen
+    status: semantic
+  .uno:Gallery:
+    output: gallery
+    tier: 3
+    carbon: image-1
+    phosphor: image-1
+    status: semantic
+  .uno:GetInvolved:
+    output: getinvolved
+    tier: 5
+    carbon: usergroup
+    phosphor: usergroup
+    status: semantic
+  .uno:GoToEndOfDoc:
+    output: gotoendofdoc
+    tier: 5
+    carbon: arrow-down
+    phosphor: arrow-down
+    status: semantic
+  .uno:GoToStartOfDoc:
+    output: gotostartofdoc
+    tier: 5
+    carbon: arrow-up
+    phosphor: arrow-up
+    status: semantic
+  .uno:GotoPage:
+    output: gotopage
+    tier: 5
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:GrafContrast:
+    output: grafcontrast
+    tier: 5
+    carbon: contrast
+    phosphor: contrast
+    status: semantic
+  .uno:GrafGamma:
+    output: grafgamma
+    tier: 5
+    carbon: contrast
+    phosphor: contrast
+    status: semantic
+  .uno:GrafLuminance:
+    output: grafluminance
+    tier: 5
+    carbon: contrast
+    phosphor: contrast
+    status: semantic
+  .uno:GrafMode:
+    output: grafmode
+    tier: 5
+    carbon: image-edit
+    phosphor: image-edit
+    status: semantic
+  .uno:GrafTransparence:
+    output: graftransparence
+    tier: 5
+    carbon: contrast
+    phosphor: contrast
+    status: semantic
+  .uno:GraphicDialog:
+    output: graphicdialog
+    tier: 5
+    carbon: image
+    phosphor: image
+    status: semantic
+  .uno:GraphicFilterToolbox:
+    output: graphicfiltertoolbox
+    tier: 5
+    carbon: filter
+    phosphor: filter
+    status: semantic
+  .uno:Grid:
+    output: grid
+    tier: 5
+    carbon: grid-view
+    phosphor: grid-view
+    status: semantic
+  .uno:GridUse:
+    output: griduse
+    tier: 5
+    carbon: grid-view
+    phosphor: grid-view
+    status: semantic
+  .uno:GridVisible:
+    output: gridvisible
+    tier: 5
+    carbon: grid-view
+    phosphor: grid-view
+    status: semantic
+  .uno:Grow:
+    output: grow
+    tier: 1
+    carbon: textformat-longer
+    phosphor: textformat-longer
+    status: semantic
+  .uno:HangingIndent:
+    output: hangingindent
+    tier: 1
+    carbon: indent-right
+    phosphor: indent-right
+    status: semantic
+  .uno:HangulHanjaConversion:
+    output: hangulhanjaconversion
+    tier: 1
+    carbon: translate
+    phosphor: translate
+    status: semantic
+  .uno:HeadingRowsRepeat:
+    output: headingrowsrepeat
+    tier: 4
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:HelpIndex:
+    output: helpindex
+    tier: 5
+    carbon: help-circle
+    phosphor: help-circle
+    status: semantic
+  .uno:HelplinesMove:
+    output: helplinesmove
+    tier: 5
+    carbon: move
+    phosphor: move
+    status: semantic
+  .uno:HyperlinkDialog:
+    output: hyperlinkdialog
+    tier: 3
+    carbon: link
+    phosphor: link
+    status: semantic
+  .uno:Hyphenate:
+    output: hyphenate
+    tier: 4
+    carbon: textformat-wrap
+    phosphor: textformat-wrap
+    status: semantic
+  .uno:ImageControl:
+    output: imagecontrol
+    tier: 5
+    carbon: image
+    phosphor: image
+    status: semantic
+  .uno:ImageMapDialog:
+    output: imagemapdialog
+    tier: 5
+    carbon: map
+    phosphor: map
+    status: semantic
+  .uno:Imagebutton:
+    output: imagebutton
+    tier: 5
+    carbon: image
+    phosphor: image
+    status: semantic
+  .uno:IncrementIndent:
+    output: incrementindent
+    tier: 1
+    carbon: indent-right
+    phosphor: indent-right
+    status: semantic
+  .uno:IncrementLevel:
+    output: incrementlevel
+    tier: 5
+    carbon: indent-right
+    phosphor: indent-right
+    status: semantic
+  .uno:IncrementSubLevels:
+    output: incrementsublevels
+    tier: 5
+    carbon: indent-right
+    phosphor: indent-right
+    status: semantic
+  .uno:InsertAVMedia:
+    output: insertavmedia
+    tier: 3
+    carbon: video
+    phosphor: video
+    status: semantic
+  .uno:InsertAnnotation:
+    output: insertannotation
+    tier: 3
+    carbon: chat-bubble-add
+    phosphor: chat-bubble-add
+    status: semantic
+  .uno:InsertAuthoritiesEntry:
+    output: insertauthoritiesentry
+    tier: 3
+    carbon: book
+    phosphor: book
+    status: semantic
+  .uno:InsertBookmark:
+    output: insertbookmark
+    tier: 3
+    carbon: bookmark
+    phosphor: bookmark
+    status: semantic
+  .uno:InsertBreak:
+    output: insertbreak
+    tier: 3
+    carbon: enter
+    phosphor: enter
+    status: semantic
+  .uno:InsertCaptionDialog:
+    output: insertcaptiondialog
+    tier: 3
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:InsertColumnDialog:
+    output: insertcolumndialog
+    tier: 3
+    carbon: view-column
+    phosphor: view-column
+    status: semantic
+  .uno:InsertColumnsAfter:
+    output: insertcolumnsafter
+    tier: 3
+    carbon: view-column
+    phosphor: view-column
+    status: semantic
+  .uno:InsertColumnsBefore:
+    output: insertcolumnsbefore
+    tier: 3
+    carbon: view-column
+    phosphor: view-column
+    status: semantic
+  .uno:InsertDateField:
+    output: insertdatefield
+    tier: 3
+    carbon: calendar
+    phosphor: calendar
+    status: semantic
+  .uno:InsertDoc:
+    output: insertdoc
+    tier: 3
+    carbon: file-add
+    phosphor: file-add
+    status: semantic
+  .uno:InsertDraw:
+    output: insertdraw
+    tier: 3
+    carbon: edit-2
+    phosphor: edit-2
+    status: semantic
+  .uno:InsertEndnote:
+    output: insertendnote
+    tier: 3
+    carbon: textformat-underline
+    phosphor: textformat-underline
+    status: semantic
+  .uno:InsertEnvelope:
+    output: insertenvelope
+    tier: 3
+    carbon: mail
+    phosphor: mail
+    status: semantic
+  .uno:InsertFieldCtrl:
+    output: insertfieldctrl
+    tier: 3
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:InsertFootnote:
+    output: insertfootnote
+    tier: 3
+    carbon: textformat-underline
+    phosphor: textformat-underline
+    status: semantic
+  .uno:InsertFootnoteDialog:
+    output: insertfootnotedialog
+    tier: 3
+    carbon: textformat-underline
+    phosphor: textformat-underline
+    status: semantic
+  .uno:InsertFrameInteract:
+    output: insertframeinteract
+    tier: 3
+    carbon: star
+    phosphor: star
+    status: semantic
+  .uno:InsertGraphic:
+    output: insertgraphic
+    tier: 3
+    carbon: image
+    phosphor: image
+    status: semantic
+  .uno:InsertHardHyphen:
+    output: inserthardhyphen
+    tier: 3
+    carbon: textformat-shorter
+    phosphor: textformat-shorter
+    status: semantic
+  .uno:InsertIndexesEntry:
+    output: insertindexesentry
+    tier: 3
+    carbon: list-numbered
+    phosphor: list-numbered
+    status: semantic
+  .uno:InsertLRM:
+    output: insertlrm
+    tier: 3
+    carbon: format-vertical-align-left
+    phosphor: format-vertical-align-left
+    status: semantic
+  .uno:InsertMultiIndex:
+    output: insertmultiindex
+    tier: 3
+    carbon: list-numbered
+    phosphor: list-numbered
+    status: semantic
+  .uno:InsertNeutralParagraph:
+    output: insertneutralparagraph
+    tier: 3
+    carbon: enter
+    phosphor: enter
+    status: semantic
+  .uno:InsertNonBreakingSpace:
+    output: insertnonbreakingspace
+    tier: 3
+    carbon: textformat-wrap
+    phosphor: textformat-wrap
+    status: semantic
+  .uno:InsertObject:
+    output: insertobject
+    tier: 3
+    carbon: object-storage
+    phosphor: object-storage
+    status: semantic
+  .uno:InsertObjectChart:
+    output: insertobjectchart
+    tier: 3
+    carbon: chart-bar
+    phosphor: chart-bar
+    status: semantic
+  .uno:InsertObjectMenu:
+    output: insertobjectmenu
+    tier: 3
+    carbon: object-storage
+    phosphor: object-storage
+    status: semantic
+  .uno:InsertPageCountField:
+    output: insertpagecountfield
+    tier: 3
+    carbon: page-last
+    phosphor: page-last
+    status: semantic
+  .uno:InsertPageFooter:
+    output: insertpagefooter
+    tier: 4
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:InsertPageHeader:
+    output: insertpageheader
+    tier: 4
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:InsertPageNumberField:
+    output: insertpagenumberfield
+    tier: 3
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:InsertPagebreak:
+    output: insertpagebreak
+    tier: 3
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:InsertQrCode:
+    output: insertqrcode
+    tier: 3
+    carbon: qrcode
+    phosphor: qrcode
+    status: semantic
+  .uno:InsertRLM:
+    output: insertrlm
+    tier: 3
+    carbon: format-vertical-align-right
+    phosphor: format-vertical-align-right
+    status: semantic
+  .uno:InsertReferenceField:
+    output: insertreferencefield
+    tier: 3
+    carbon: bookmark
+    phosphor: bookmark
+    status: semantic
+  .uno:InsertRowDialog:
+    output: insertrowdialog
+    tier: 3
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:InsertRowsAfter:
+    output: insertrowsafter
+    tier: 3
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:InsertRowsBefore:
+    output: insertrowsbefore
+    tier: 3
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:InsertSection:
+    output: insertsection
+    tier: 3
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:InsertSignatureLine:
+    output: insertsignatureline
+    tier: 3
+    carbon: edit-2
+    phosphor: edit-2
+    status: semantic
+  .uno:InsertSoftHyphen:
+    output: insertsofthyphen
+    tier: 3
+    carbon: textformat-shorter
+    phosphor: textformat-shorter
+    status: semantic
+  .uno:InsertTable:
+    output: inserttable
+    tier: 3
+    carbon: table
+    phosphor: table
+    status: semantic
+  .uno:InsertTimeField:
+    output: inserttimefield
+    tier: 3
+    carbon: time
+    phosphor: time
+    status: semantic
+  .uno:InsertTitleField:
+    output: inserttitlefield
+    tier: 3
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:InsertWJ:
+    output: insertwj
+    tier: 3
+    carbon: textformat-wrap
+    phosphor: textformat-wrap
+    status: semantic
+  .uno:InsertZWSP:
+    output: insertzwsp
+    tier: 3
+    carbon: textformat-wrap
+    phosphor: textformat-wrap
+    status: semantic
+  .uno:Italic:
+    output: italic
+    tier: 1
+    carbon: textformat-italic
+    phosphor: textformat-italic
+    status: semantic
+  .uno:JumpToSpecificPage:
+    output: jumptospecificpage
+    tier: 5
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:JustifyPara:
+    output: justifypara
+    tier: 1
+    carbon: format-vertical-align-center
+    phosphor: format-vertical-align-center
+    status: semantic
+  .uno:Label:
+    output: label
+    tier: 5
+    carbon: letters-a
+    phosphor: letters-a
+    status: semantic
+  .uno:LeftParaMargin:
+    output: leftparamargin
+    tier: 1
+    carbon: indent-right
+    phosphor: indent-right
+    status: semantic
+  .uno:Line:
+    output: line
+    tier: 5
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:LineEndStyle:
+    output: lineendstyle
+    tier: 5
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:LineNumberingDialog:
+    output: linenumberingdialog
+    tier: 4
+    carbon: list-numbered
+    phosphor: list-numbered
+    status: semantic
+  .uno:LineSpacing:
+    output: linespacing
+    tier: 1
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:LineStyle:
+    output: linestyle
+    tier: 5
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:LineToolbox:
+    output: linetoolbox
+    tier: 5
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:LineWidth:
+    output: linewidth
+    tier: 5
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:MacroDialog:
+    output: macrodialog
+    tier: 5
+    carbon: code
+    phosphor: code
+    status: semantic
+  .uno:MacroOrganizer:
+    output: macroorganizer
+    tier: 5
+    carbon: setting
+    phosphor: setting
+    status: semantic
+  .uno:MacroSignature:
+    output: macrosignature
+    tier: 5
+    carbon: certificate
+    phosphor: certificate
+    status: semantic
+  .uno:Marks:
+    output: marks
+    tier: 1
+    carbon: code
+    phosphor: code
+    status: semantic
+  .uno:Menubar:
+    output: menubar
+    tier: 5
+    carbon: menu
+    phosphor: menu
+    status: semantic
+  .uno:MergeCells:
+    output: mergecells
+    tier: 4
+    carbon: merge-cells
+    phosphor: merge-cells
+    status: semantic
+  .uno:MergeDocuments:
+    output: mergedocuments
+    tier: 5
+    carbon: git-merge
+    phosphor: git-merge
+    status: semantic
+  .uno:MergeTable:
+    output: mergetable
+    tier: 4
+    carbon: merge-cells
+    phosphor: merge-cells
+    status: semantic
+  .uno:MoreDictionaries:
+    output: moredictionaries
+    tier: 1
+    carbon: add-rectangle
+    phosphor: add-rectangle
+    status: semantic
+  .uno:MultiplePagesPerRow:
+    output: multiplepagesperrow
+    tier: 5
+    carbon: grid-view
+    phosphor: grid-view
+    status: semantic
+  .uno:NavigationBar:
+    output: navigationbar
+    tier: 5
+    carbon: compass
+    phosphor: compass
+    status: semantic
+  .uno:Navigator:
+    output: navigator
+    tier: 5
+    carbon: compass
+    phosphor: compass
+    status: semantic
+  .uno:NewDoc:
+    output: newdoc
+    tier: 0
+    carbon: file-add
+    phosphor: file-add
+    status: semantic
+  .uno:NewGlobalDoc:
+    output: newglobaldoc
+    tier: 2
+    carbon: file-add
+    phosphor: file-add
+    status: semantic
+  .uno:NextTrackedChange:
+    output: nexttrackedchange
+    tier: 5
+    carbon: arrow-right
+    phosphor: arrow-right
+    status: semantic
+  .uno:NumberFormatCurrency:
+    output: numberformatcurrency
+    tier: 4
+    carbon: file-word
+    phosphor: file-word
+    status: semantic
+  .uno:NumberFormatDate:
+    output: numberformatdate
+    tier: 4
+    carbon: calendar
+    phosphor: calendar
+    status: semantic
+  .uno:NumberFormatDecimal:
+    output: numberformatdecimal
+    tier: 4
+    carbon: file-word
+    phosphor: file-word
+    status: semantic
+  .uno:NumberFormatPercent:
+    output: numberformatpercent
+    tier: 4
+    carbon: file-word
+    phosphor: file-word
+    status: semantic
+  .uno:NumberingStart:
+    output: numberingstart
+    tier: 5
+    carbon: list-numbered
+    phosphor: list-numbered
+    status: semantic
+  .uno:NumericField:
+    output: numericfield
+    tier: 5
+    carbon: file-word
+    phosphor: file-word
+    status: semantic
+  .uno:ObjectBackOne:
+    output: objectbackone
+    tier: 4
+    carbon: flip-to-back
+    phosphor: flip-to-back
+    status: semantic
+  .uno:ObjectForwardOne:
+    output: objectforwardone
+    tier: 4
+    carbon: flip-to-front
+    phosphor: flip-to-front
+    status: semantic
+  .uno:ObjectMenue:
+    output: objectmenue
+    tier: 4
+    carbon: object-storage
+    phosphor: object-storage
+    status: semantic
+  .uno:ObjectTitleDescription:
+    output: objecttitledescription
+    tier: 5
+    carbon: info-circle
+    phosphor: info-circle
+    status: semantic
+  .uno:Open:
+    output: open
+    tier: 0
+    carbon: folder-open
+    phosphor: folder-open
+    status: semantic
+  .uno:OpenReadOnly:
+    output: openreadonly
+    tier: 5
+    carbon: file-locked
+    phosphor: file-locked
+    status: semantic
+  .uno:OpenXMLFilterSettings:
+    output: openxmlfiltersettings
+    tier: 5
+    carbon: setting
+    phosphor: setting
+    status: semantic
+  .uno:OptimizeTable:
+    output: optimizetable
+    tier: 4
+    carbon: table
+    phosphor: table
+    status: semantic
+  .uno:OptionsTreeDialog:
+    output: optionstreedialog
+    tier: 5
+    carbon: setting
+    phosphor: setting
+    status: semantic
+  .uno:Orientation:
+    output: orientation
+    tier: 4
+    carbon: rotate
+    phosphor: rotate
+    status: semantic
+  .uno:OutlineBullet:
+    output: outlinebullet
+    tier: 1
+    carbon: order-list
+    phosphor: order-list
+    status: semantic
+  .uno:OutlineFont:
+    output: outlinefont
+    tier: 1
+    carbon: textformat-bold
+    phosphor: textformat-bold
+    status: semantic
+  .uno:Overline:
+    output: overline
+    tier: 1
+    carbon: textformat-underline
+    phosphor: textformat-underline
+    status: semantic
+  .uno:PageColumnDialog:
+    output: pagecolumndialog
+    tier: 4
+    carbon: view-column
+    phosphor: view-column
+    status: semantic
+  .uno:PageColumnType:
+    output: pagecolumntype
+    tier: 4
+    carbon: view-column
+    phosphor: view-column
+    status: semantic
+  .uno:PageDialog:
+    output: pagedialog
+    tier: 4
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:PageDown:
+    output: pagedown
+    tier: 5
+    carbon: arrow-down
+    phosphor: arrow-down
+    status: semantic
+  .uno:PageMargin:
+    output: pagemargin
+    tier: 4
+    carbon: indent-right
+    phosphor: indent-right
+    status: semantic
+  .uno:PageNumberWizard:
+    output: pagenumberwizard
+    tier: 4
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:PageUp:
+    output: pageup
+    tier: 5
+    carbon: arrow-up
+    phosphor: arrow-up
+    status: semantic
+  .uno:ParaLeftToRight:
+    output: paralefttoright
+    tier: 1
+    carbon: arrow-right
+    phosphor: arrow-right
+    status: semantic
+  .uno:ParaRightToLeft:
+    output: pararighttoleft
+    tier: 1
+    carbon: arrow-left
+    phosphor: arrow-left
+    status: semantic
+  .uno:ParagraphDialog:
+    output: paragraphdialog
+    tier: 1
+    carbon: textformat-underline
+    phosphor: textformat-underline
+    status: semantic
+  .uno:ParaspaceDecrease:
+    output: paraspacedecrease
+    tier: 1
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:ParaspaceIncrease:
+    output: paraspaceincrease
+    tier: 1
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:Paste:
+    output: paste
+    tier: 1
+    carbon: paste
+    phosphor: paste
+    status: semantic
+  .uno:PatternField:
+    output: patternfield
+    tier: 5
+    carbon: file-word
+    phosphor: file-word
+    status: semantic
+  .uno:PreviewZoom:
+    output: previewzoom
+    tier: 5
+    carbon: zoom-in
+    phosphor: zoom-in
+    status: semantic
+  .uno:PreviousTrackedChange:
+    output: previoustrackedchange
+    tier: 5
+    carbon: arrow-left
+    phosphor: arrow-left
+    status: semantic
+  .uno:PrintLayout:
+    output: printlayout
+    tier: 2
+    carbon: file-1
+    phosphor: file-1
+    status: semantic
+  .uno:PrintPreview:
+    output: printpreview
+    tier: 0
+    carbon: file-1
+    phosphor: file-1
+    status: semantic
+  .uno:Properties:
+    output: properties
+    tier: 2
+    carbon: info-circle
+    phosphor: info-circle
+    status: semantic
+  .uno:Property:
+    output: property
+    tier: 2
+    carbon: info-circle
+    phosphor: info-circle
+    status: semantic
+  .uno:Protect:
+    output: protect
+    tier: 4
+    carbon: lock-on
+    phosphor: lock-on
+    status: semantic
+  .uno:ProtectTraceChangeMode:
+    output: protecttracechangemode
+    tier: 5
+    carbon: lock-on
+    phosphor: lock-on
+    status: semantic
+  .uno:Pushbutton:
+    output: pushbutton
+    tier: 5
+    carbon: button
+    phosphor: button
+    status: semantic
+  .uno:QuestionAnswers:
+    output: questionanswers
+    tier: 5
+    carbon: chat-bubble
+    phosphor: chat-bubble
+    status: semantic
+  .uno:Quit:
+    output: quit
+    tier: 2
+    carbon: poweroff
+    phosphor: poweroff
+    status: semantic
+  .uno:RadioButton:
+    output: radiobutton
+    tier: 5
+    carbon: check-circle
+    phosphor: check-circle
+    status: semantic
+  .uno:RecentFileList:
+    output: recentfilelist
+    tier: 2
+    carbon: history
+    phosphor: history
+    status: semantic
+  .uno:RedactDoc:
+    output: redactdoc
+    tier: 5
+    carbon: lock-on
+    phosphor: lock-on
+    status: semantic
+  .uno:Redo:
+    output: redo
+    tier: 0
+    carbon: rollfront
+    phosphor: rollfront
+    status: semantic
+  .uno:RejectAllTrackedChanges:
+    output: rejectalltrackedchanges
+    tier: 5
+    carbon: close-circle
+    phosphor: close-circle
+    status: semantic
+  .uno:RejectTrackedChange:
+    output: rejecttrackedchange
+    tier: 5
+    carbon: close
+    phosphor: close
+    status: semantic
+  .uno:RejectTrackedChangeToNext:
+    output: rejecttrackedchangetonext
+    tier: 5
+    carbon: arrow-right
+    phosphor: arrow-right
+    status: semantic
+  .uno:Reload:
+    output: reload
+    tier: 2
+    carbon: refresh
+    phosphor: refresh
+    status: semantic
+  .uno:Repaginate:
+    output: repaginate
+    tier: 5
+    carbon: refresh
+    phosphor: refresh
+    status: semantic
+  .uno:ReplyComment:
+    output: replycomment
+    tier: 5
+    carbon: chat-bubble
+    phosphor: chat-bubble
+    status: semantic
+  .uno:ResetAttributes:
+    output: resetattributes
+    tier: 1
+    carbon: clear-formatting
+    phosphor: clear-formatting
+    status: semantic
+  .uno:RightParaMargin:
+    output: rightparamargin
+    tier: 1
+    carbon: indent-left
+    phosphor: indent-left
+    status: semantic
+  .uno:Robot:
+    output: robot
+    tier: ai
+    status: exact
+    carbon: robot
+    phosphor: robot
+  .uno:Robot1:
+    output: robot1
+    tier: ai
+    status: exact
+    carbon: robot-1
+    phosphor: robot-1
+  .uno:Robot2:
+    output: robot2
+    tier: ai
+    status: exact
+    carbon: robot-2
+    phosphor: robot-2
+  .uno:RotateRight:
+    output: rotateright
+    tier: 4
+    carbon: rotate
+    phosphor: rotate
+    status: semantic
+  .uno:RowSplit:
+    output: rowsplit
+    tier: 4
+    carbon: table-split
+    phosphor: table-split
+    status: semantic
+  .uno:Ruler:
+    output: ruler
+    tier: 5
+    carbon: ruler
+    phosphor: ruler
+    status: semantic
+  .uno:RunMacro:
+    output: runmacro
+    tier: 5
+    carbon: play
+    phosphor: play
+    status: semantic
+  .uno:SafeMode:
+    output: safemode
+    tier: 5
+    carbon: shield-error
+    phosphor: shield-error
+    status: semantic
+  .uno:Save:
+    output: save
+    tier: 0
+    carbon: save
+    phosphor: save
+    status: semantic
+  .uno:SaveACopy:
+    output: saveacopy
+    tier: 2
+    carbon: file-copy
+    phosphor: file-copy
+    status: semantic
+  .uno:SaveAll:
+    output: saveall
+    tier: 2
+    carbon: save
+    phosphor: save
+    status: semantic
+  .uno:SaveAs:
+    output: saveas
+    tier: 2
+    carbon: save
+    phosphor: save
+    status: semantic
+  .uno:SaveAsRemote:
+    output: saveasremote
+    tier: 2
+    carbon: cloud-upload
+    phosphor: cloud-upload
+    status: semantic
+  .uno:SaveGraphic:
+    target: .uno:Save
+  .uno:ScriptOrganizer:
+    output: scriptorganizer
+    tier: 5
+    carbon: code
+    phosphor: code
+    status: semantic
+  .uno:SearchDialog:
+    output: searchdialog
+    tier: 1
+    carbon: search
+    phosphor: search
+    status: semantic
+  .uno:SelectAll:
+    output: selectall
+    tier: 1
+    carbon: check-rectangle
+    phosphor: check-rectangle
+    status: semantic
+  .uno:SelectObject:
+    output: selectobject
+    tier: 4
+    carbon: cursor
+    phosphor: cursor
+    status: semantic
+  .uno:SelectTable:
+    output: selecttable
+    tier: 4
+    carbon: table
+    phosphor: table
+    status: semantic
+  .uno:SelectTextMode:
+    output: selecttextmode
+    tier: 5
+    carbon: cursor
+    phosphor: cursor
+    status: semantic
+  .uno:SelectionModeDefault:
+    output: selectionmodedefault
+    tier: 5
+    carbon: cursor
+    phosphor: cursor
+    status: semantic
+  .uno:SendMail:
+    output: sendmail
+    tier: 2
+    carbon: mail
+    phosphor: mail
+    status: semantic
+  .uno:SendMailDocAsPDF:
+    output: sendmaildocaspdf
+    tier: 2
+    carbon: mail
+    phosphor: mail
+    status: semantic
+  .uno:SendToBack:
+    output: sendtoback
+    tier: 4
+    carbon: flip-to-back
+    phosphor: flip-to-back
+    status: semantic
+  .uno:SendViaBluetooth:
+    output: sendviabluetooth
+    tier: 2
+    carbon: bluetooth
+    phosphor: bluetooth
+    status: semantic
+  .uno:SetBorderStyle:
+    output: setborderstyle
+    tier: 4
+    carbon: table
+    phosphor: table
+    status: semantic
+  .uno:SetColumnWidth:
+    output: setcolumnwidth
+    tier: 4
+    carbon: view-column
+    phosphor: view-column
+    status: semantic
+  .uno:SetDocumentProperties:
+    output: setdocumentproperties
+    tier: 2
+    carbon: file-1
+    phosphor: file-1
+    status: semantic
+  .uno:SetLanguageAllTextMenu:
+    output: setlanguagealltextmenu
+    tier: 1
+    carbon: translate
+    phosphor: translate
+    status: semantic
+  .uno:SetLanguageParagraphMenu:
+    output: setlanguageparagraphmenu
+    tier: 1
+    carbon: translate
+    phosphor: translate
+    status: semantic
+  .uno:SetLanguageSelectionMenu:
+    output: setlanguageselectionmenu
+    tier: 1
+    carbon: translate
+    phosphor: translate
+    status: semantic
+  .uno:SetMinimalColumnWidth:
+    output: setminimalcolumnwidth
+    tier: 4
+    carbon: view-column
+    phosphor: view-column
+    status: semantic
+  .uno:SetMinimalRowHeight:
+    output: setminimalrowheight
+    tier: 4
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:SetOptimalColumnWidth:
+    output: setoptimalcolumnwidth
+    tier: 4
+    carbon: view-column
+    phosphor: view-column
+    status: semantic
+  .uno:SetOptimalRowHeight:
+    output: setoptimalrowheight
+    tier: 4
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:SetOutline:
+    output: setoutline
+    tier: 1
+    carbon: order-list
+    phosphor: order-list
+    status: semantic
+  .uno:SetRowHeight:
+    output: setrowheight
+    tier: 4
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:ShadowCursor:
+    output: shadowcursor
+    tier: 5
+    carbon: cursor
+    phosphor: cursor
+    status: semantic
+  .uno:Shadowed:
+    output: shadowed
+    tier: 1
+    carbon: highlight
+    phosphor: highlight
+    status: semantic
+  .uno:ShowAnnotations:
+    output: showannotations
+    tier: 5
+    carbon: chat-bubble
+    phosphor: chat-bubble
+    status: semantic
+  .uno:ShowBookview:
+    output: showbookview
+    tier: 4
+    carbon: book-open
+    phosphor: book-open
+    status: semantic
+  .uno:ShowFmExplorer:
+    output: showfmexplorer
+    tier: 5
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:ShowGraphics:
+    output: showgraphics
+    tier: 5
+    carbon: image
+    phosphor: image
+    status: semantic
+  .uno:ShowLicense:
+    output: showlicense
+    tier: 5
+    carbon: certificate
+    phosphor: certificate
+    status: semantic
+  .uno:ShowMultiplePages:
+    output: showmultiplepages
+    tier: 4
+    carbon: grid-view
+    phosphor: grid-view
+    status: semantic
+  .uno:ShowResolvedAnnotations:
+    output: showresolvedannotations
+    tier: 5
+    carbon: chat-bubble
+    phosphor: chat-bubble
+    status: semantic
+  .uno:ShowSinglePage:
+    output: showsinglepage
+    tier: 4
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:ShowTrackedChanges:
+    output: showtrackedchanges
+    tier: 5
+    carbon: browse
+    phosphor: browse
+    status: semantic
+  .uno:ShowTwoPages:
+    output: showtwopages
+    tier: 4
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:ShowWhitespace:
+    output: showwhitespace
+    tier: 1
+    carbon: textformat-wrap
+    phosphor: textformat-wrap
+    status: semantic
+  .uno:Shrink:
+    output: shrink
+    tier: 1
+    carbon: textformat-shorter
+    phosphor: textformat-shorter
+    status: semantic
+  .uno:Sidebar:
+    output: sidebar
+    tier: 5
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:SidebarDeck.AIDeck:
+    output: sidebardeck.aideck
+    tier: ai
+    status: exact
+    carbon: ai
+    phosphor: ai
+  .uno:SignPDF:
+    output: signpdf
+    tier: 2
+    carbon: file-safety
+    phosphor: file-safety
+    status: semantic
+  .uno:Signature:
+    output: signature
+    tier: 2
+    carbon: edit-2
+    phosphor: edit-2
+    status: semantic
+  .uno:Spacing:
+    output: spacing
+    tier: 1
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:SpellOnline:
+    output: spellonline
+    tier: 1
+    carbon: translate
+    phosphor: translate
+    status: semantic
+  .uno:SpellingAndGrammarDialog:
+    output: spellingandgrammardialog
+    tier: 1
+    carbon: translate
+    phosphor: translate
+    status: semantic
+  .uno:SplitCell:
+    output: splitcell
+    tier: 4
+    carbon: table-split
+    phosphor: table-split
+    status: semantic
+  .uno:SplitTable:
+    output: splittable
+    tier: 4
+    carbon: table-split
+    phosphor: table-split
+    status: semantic
+  .uno:StarShapes:
+    output: starshapes
+    tier: 5
+    carbon: star
+    phosphor: star
+    status: semantic
+  .uno:StartPara:
+    output: startpara
+    tier: 1
+    carbon: format-vertical-align-left
+    phosphor: format-vertical-align-left
+    status: semantic
+  .uno:StatusBarVisible:
+    output: statusbarvisible
+    tier: 5
+    carbon: view-list
+    phosphor: view-list
+    status: semantic
+  .uno:Strikeout:
+    output: strikeout
+    tier: 1
+    carbon: textformat-strikethrough
+    phosphor: textformat-strikethrough
+    status: semantic
+  .uno:StyleApply:
+    output: styleapply
+    tier: 1
+    carbon: format-vertical-align-center
+    phosphor: format-vertical-align-center
+    status: semantic
+  .uno:SubScript:
+    output: subscript
+    tier: 1
+    carbon: subscript
+    phosphor: subscript
+    status: semantic
+  .uno:SuperScript:
+    output: superscript
+    tier: 1
+    carbon: superscript
+    phosphor: superscript
+    status: semantic
+  .uno:SwitchControlDesignMode:
+    output: switchcontroldesignmode
+    tier: 5
+    carbon: tools
+    phosphor: tools
+    status: semantic
+  .uno:TabDialog:
+    output: tabdialog
+    tier: 5
+    carbon: setting
+    phosphor: setting
+    status: semantic
+  .uno:TableBoundaries:
+    output: tableboundaries
+    tier: 1
+    carbon: table
+    phosphor: table
+    status: semantic
+  .uno:TableCellBackgroundColor:
+    output: tablecellbackgroundcolor
+    tier: 4
+    carbon: font-background
+    phosphor: font-background
+    status: semantic
+  .uno:TableDialog:
+    output: tabledialog
+    tier: 4
+    carbon: table
+    phosphor: table
+    status: semantic
+  .uno:TableNumberFormatDialog:
+    output: tablenumberformatdialog
+    tier: 4
+    carbon: file-word
+    phosphor: file-word
+    status: semantic
+  .uno:TableNumberRecognition:
+    output: tablenumberrecognition
+    tier: 4
+    carbon: file-word
+    phosphor: file-word
+    status: semantic
+  .uno:TableSort:
+    output: tablesort
+    tier: 4
+    carbon: order-ascending
+    phosphor: order-ascending
+    status: semantic
+  .uno:TextWrap:
+    output: textwrap
+    tier: 4
+    carbon: textformat-wrap
+    phosphor: textformat-wrap
+    status: semantic
+  .uno:ThemeDialog:
+    output: themedialog
+    tier: 5
+    carbon: palette
+    phosphor: palette
+    status: semantic
+  .uno:ThesaurusDialog:
+    output: thesaurusdialog
+    tier: 1
+    carbon: book-open
+    phosphor: book-open
+    status: semantic
+  .uno:TimeField:
+    output: timefield
+    tier: 5
+    carbon: time
+    phosphor: time
+    status: semantic
+  .uno:TipOfTheDay:
+    output: tipoftheday
+    tier: 5
+    carbon: lightbulb
+    phosphor: lightbulb
+    status: semantic
+  .uno:TitlePageDialog:
+    output: titlepagedialog
+    tier: 4
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:ToggleObjectBezierMode:
+    output: toggleobjectbeziermode
+    tier: 5
+    carbon: edit-2
+    phosphor: edit-2
+    status: semantic
+  .uno:ToggleObjectRotateMode:
+    output: toggleobjectrotatemode
+    tier: 5
+    carbon: rotate
+    phosphor: rotate
+    status: semantic
+  .uno:TrackChanges:
+    output: trackchanges
+    tier: 5
+    carbon: edit-1
+    phosphor: edit-1
+    status: semantic
+  .uno:TransformDialog:
+    output: transformdialog
+    tier: 5
+    carbon: rotate
+    phosphor: rotate
+    status: semantic
+  .uno:TwainSelect:
+    output: twainselect
+    tier: 5
+    carbon: file-import
+    phosphor: file-import
+    status: semantic
+  .uno:Underline:
+    output: underline
+    tier: 1
+    carbon: textformat-underline
+    phosphor: textformat-underline
+    status: semantic
+  .uno:Undo:
+    output: undo
+    tier: 0
+    carbon: rollback
+    phosphor: rollback
+    status: semantic
+  .uno:UnhainFrames:
+    output: unhainframes
+    tier: 4
+    carbon: link-unlink
+    phosphor: link-unlink
+    status: semantic
+  .uno:UnsetCellsReadOnly:
+    output: unsetcellsreadonly
+    tier: 4
+    carbon: lock-on
+    phosphor: lock-on
+    status: semantic
+  .uno:UpdateAll:
+    output: updateall
+    tier: 5
+    carbon: refresh
+    phosphor: refresh
+    status: semantic
+  .uno:UpdateAllIndexes:
+    output: updateallindexes
+    tier: 5
+    carbon: refresh
+    phosphor: refresh
+    status: semantic
+  .uno:UpdateAllLinks:
+    output: updatealllinks
+    tier: 5
+    carbon: refresh
+    phosphor: refresh
+    status: semantic
+  .uno:UpdateCharts:
+    output: updatecharts
+    tier: 5
+    carbon: refresh
+    phosphor: refresh
+    status: semantic
+  .uno:UpdateCurIndex:
+    output: updatecurindex
+    tier: 5
+    carbon: refresh
+    phosphor: refresh
+    status: semantic
+  .uno:UpdateFields:
+    output: updatefields
+    tier: 5
+    carbon: refresh
+    phosphor: refresh
+    status: semantic
+  .uno:UseHeaderFooterMenu:
+    output: useheaderfootermenu
+    tier: 4
+    carbon: page-first
+    phosphor: page-first
+    status: semantic
+  .uno:VerticalText:
+    output: verticaltext
+    tier: 3
+    carbon: textformat-underline
+    phosphor: textformat-underline
+    status: semantic
+  .uno:ViewDataSourceBrowser:
+    output: viewdatasourcebrowser
+    tier: 5
+    carbon: system-storage
+    phosphor: system-storage
+    status: semantic
+  .uno:Watermark:
+    output: watermark
+    tier: 4
+    carbon: file-1
+    phosphor: file-1
+    status: semantic
+  .uno:WordCountDialog:
+    output: wordcountdialog
+    tier: 1
+    carbon: file-word
+    phosphor: file-word
+    status: semantic
+  .uno:WrapIdeal:
+    output: wrapideal
+    tier: 4
+    carbon: textformat-wrap
+    phosphor: textformat-wrap
+    status: semantic
+  .uno:WrapLeft:
+    output: wrapleft
+    tier: 4
+    carbon: format-vertical-align-left
+    phosphor: format-vertical-align-left
+    status: semantic
+  .uno:WrapOff:
+    output: wrapoff
+    tier: 4
+    carbon: close
+    phosphor: close
+    status: semantic
+  .uno:WrapOn:
+    output: wrapon
+    tier: 4
+    carbon: textformat-wrap
+    phosphor: textformat-wrap
+    status: semantic
+  .uno:WrapRight:
+    output: wrapright
+    tier: 4
+    carbon: format-vertical-align-right
+    phosphor: format-vertical-align-right
+    status: semantic
+  .uno:WrapThrough:
+    output: wrapthrough
+    tier: 4
+    carbon: layers
+    phosphor: layers
+    status: semantic
+  .uno:Writer2027DocumentKit:
+    output: writer2027documentkit
+    tier: 1
+    carbon: ai-tool
+    phosphor: ai-tool
+    status: semantic
+  .uno:Writer2027InsertBlock:
+    output: writer2027insertblock
+    tier: 3
+    carbon: ai-edit
+    phosphor: ai-edit
+    status: semantic
+  .uno:Writer2027PublishWeb:
+    output: writer2027publishweb
+    tier: 2
+    carbon: ai-article
+    phosphor: ai-article
+    status: semantic
+  .uno:Writer2027Story:
+    output: writer2027story
+    tier: 1
+    carbon: ai-book-open
+    phosphor: ai-book-open
+    status: semantic
+  .uno:Writer2027StyleGallery:
+    output: writer2027stylegallery
+    tier: 1
+    carbon: ai-layout
+    phosphor: ai-layout
+    status: semantic
+  .uno:Writer2027TypeSystem:
+    output: writer2027typesystem
+    tier: 1
+    carbon: ai
+    phosphor: ai
+    status: semantic
+  .uno:XLineColor:
+    output: xlinecolor
+    tier: 5
+    carbon: textformat-color
+    phosphor: textformat-color
+    status: semantic
+  .uno:XLineStyle:
+    output: xlinestyle
+    tier: 5
+    carbon: line-height
+    phosphor: line-height
+    status: semantic
+  .uno:Zoom:
+    output: zoom
+    tier: 5
+    carbon: zoom-in
+    phosphor: zoom-in
+    status: semantic
+  .uno:Zoom100Percent:
+    output: zoom100percent
+    tier: 5
+    carbon: zoom-in
+    phosphor: zoom-in
+    status: semantic
+  .uno:ZoomMinus:
+    output: zoomminus
+    tier: 5
+    carbon: zoom-out
+    phosphor: zoom-out
+    status: semantic
+  .uno:ZoomOptimal:
+    output: zoomoptimal
+    tier: 5
+    carbon: fullscreen
+    phosphor: fullscreen
+    status: semantic
+  .uno:ZoomPage:
+    output: zoompage
+    tier: 5
+    carbon: zoom-in
+    phosphor: zoom-in
+    status: semantic
+  .uno:ZoomPageWidth:
+    output: zoompagewidth
+    tier: 5
+    carbon: zoom-in
+    phosphor: zoom-in
+    status: semantic
+  .uno:ZoomPlus:
+    output: zoomplus
+    tier: 5
+    carbon: zoom-in
+    phosphor: zoom-in
+    status: semantic
+  .uno:AutoSum:
+    output: autosum
+    tier: x
+    status: semantic
+    carbon: formula
+    phosphor: formula
+  .uno:BasicShapes:
+    output: basicshapes
+    tier: x
+    status: semantic
+    carbon: add-rectangle
+    phosphor: add-rectangle
+  .uno:CharFontName:
+    output: charfontname
+    tier: x
+    status: semantic
+    carbon: textformat-bold
+    phosphor: textformat-bold
+  .uno:ComboBox:
+    output: combobox
+    tier: x
+    status: semantic
+    carbon: list-numbered
+    phosphor: list-numbered
+  .uno:CompareDocuments:
+    output: comparedocuments
+    tier: x
+    status: semantic
+    carbon: contrast
+    phosphor: contrast
+  .uno:EnterGroup:
+    output: entergroup
+    tier: x
+    status: semantic
+    carbon: usergroup
+    phosphor: usergroup
+  .uno:ExtrusionDepthFloater:
+    output: extrusiondepthfloater
+    tier: x
+    status: semantic
+    carbon: chart-3d
+    phosphor: chart-3d
+  .uno:ExtrusionSurfaceFloater:
+    output: extrusionsurfacefloater
+    tier: x
+    status: semantic
+    carbon: chart-3d
+    phosphor: chart-3d
+  .uno:ExtrusionToggle:
+    output: extrusiontoggle
+    tier: x
+    status: semantic
+    carbon: chart-3d
+    phosphor: chart-3d
+  .uno:FlowChartShapes:
+    output: flowchartshapes
+    tier: x
+    status: semantic
+    carbon: flowchart
+    phosphor: flowchart
+  .uno:FontDialog:
+    output: fontdialog
+    tier: x
+    status: semantic
+    carbon: textformat-bold
+    phosphor: textformat-bold
+  .uno:FontworkGalleryFloater:
+    output: fontworkgalleryfloater
+    tier: x
+    status: semantic
+    carbon: textformat-bold
+    phosphor: textformat-bold
+  .uno:FormatGroup:
+    output: formatgroup
+    tier: x
+    status: semantic
+    carbon: usergroup
+    phosphor: usergroup
+  .uno:GroupBox:
+    output: groupbox
+    tier: x
+    status: semantic
+    carbon: usergroup
+    phosphor: usergroup
+  .uno:InsertFormula:
+    output: insertformula
+    tier: x
+    status: semantic
+    carbon: formula
+    phosphor: formula
+  .uno:InsertObjectStarMath:
+    output: insertobjectstarmath
+    tier: x
+    status: semantic
+    carbon: formula
+    phosphor: formula
+  .uno:LeaveGroup:
+    output: leavegroup
+    tier: x
+    status: semantic
+    carbon: usergroup
+    phosphor: usergroup
+  .uno:ListBox:
+    output: listbox
+    tier: x
+    status: semantic
+    carbon: list-numbered
+    phosphor: list-numbered
+  .uno:MacroRecorder:
+    output: macrorecorder
+    tier: x
+    status: semantic
+    carbon: video-camera
+    phosphor: video-camera
+  .uno:ObjectAlignLeft:
+    output: objectalignleft
+    tier: x
+    status: semantic
+    carbon: format-horizontal-align-top
+    phosphor: format-horizontal-align-top
+  .uno:ObjectAlignRight:
+    output: objectalignright
+    tier: x
+    status: semantic
+    carbon: format-horizontal-align-bottom
+    phosphor: format-horizontal-align-bottom
+  .uno:Print:
+    output: print
+    tier: x
+    status: semantic
+    carbon: print
+    phosphor: print
+  .uno:PrintDefault:
+    output: printdefault
+    tier: x
+    status: semantic
+    carbon: print
+    phosphor: print
+  .uno:PrinterSetup:
+    output: printersetup
+    tier: x
+    status: semantic
+    carbon: print
+    phosphor: print
+  .uno:SelectionModeBlock:
+    output: selectionmodeblock
+    tier: x
+    status: semantic
+    carbon: cursor
+    phosphor: cursor
+  .uno:SymbolShapes:
+    output: symbolshapes
+    tier: x
+    status: semantic
+    carbon: add-rectangle
+    phosphor: add-rectangle
+  .uno:AutoFormat:
+    output: autoformat
+    tier: x
+    status: semantic
+    carbon: clear-formatting
+    phosphor: clear-formatting
+  .uno:AutoFormatApply:
+    output: autoformatapply
+    tier: x
+    status: semantic
+    carbon: clear-formatting
+    phosphor: clear-formatting
+  .uno:AutoFormatMenu:
+    output: autoformatmenu
+    tier: x
+    status: semantic
+    carbon: clear-formatting
+    phosphor: clear-formatting
+  .uno:AutoFormatRedlineApply:
+    output: autoformatredlineapply
+    tier: x
+    status: semantic
+    carbon: clear-formatting
+    phosphor: clear-formatting
+  .uno:OnlineAutoFormat:
+    output: onlineautoformat
+    tier: x
+    status: semantic
+    carbon: clear-formatting
+    phosphor: clear-formatting
+  .uno:BackgroundColor:
+    output: backgroundcolor
+    tier: x
+    status: semantic
+    carbon: font-background
+    phosphor: font-background
+  .uno:BasicShapes.ellipse:
+    output: basicshapes.ellipse
+    tier: x
+    status: semantic
+    carbon: add-circle
+    phosphor: add-circle
+  .uno:BasicShapes.rectangle:
+    output: basicshapes.rectangle
+    tier: x
+    status: semantic
+    carbon: add-rectangle
+    phosphor: add-rectangle
+  .uno:FrameDialog:
+    output: framedialog
+    tier: x
+    status: semantic
+    carbon: add-rectangle
+    phosphor: add-rectangle
+  .uno:MailMergeWizard:
+    output: mailmergewizard
+    tier: x
+    status: semantic
+    carbon: mail
+    phosphor: mail
+  .uno:NameGroup:
+    output: namegroup
+    tier: x
+    status: semantic
+    carbon: tag
+    phosphor: tag
+  .uno:ShowBoundaries:
+    output: showboundaries
+    tier: x
+    status: semantic
+    carbon: map-outline
+    phosphor: map-outline
+  .uno:UseWizards:
+    output: usewizards
+    tier: x
+    status: semantic
+    carbon: automation
+    phosphor: automation

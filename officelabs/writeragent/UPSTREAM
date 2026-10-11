@@ -6,5 +6,4 @@
 #   python bin/update-writeragent-upstream.py <explicit-sha>
 #
 repository=https://github.com/KeithCu/writeragent
-commit=78e03a31b2bef4ffea7b4b7cc112fe559177338d
-commit-timestamp=2026-10-01T01:29:40Z
+commit=e8f630a7c687ffa5b7e4c712bc8be5b1de32966b

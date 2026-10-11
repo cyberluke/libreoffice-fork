@@ -1,9 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<oor:component-data xmlns:oor="http://openoffice.org/2001/registry"
-                    xmlns:xs="http://www.w3.org/2001/XMLSchema"
-                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                    oor:name="Addons" oor:package="org.openoffice.Office">
-  <node oor:name="AddonUI">
+<oor:component-data xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" oor:name="Addons" oor:package="org.openoffice.Office">
+<node oor:name="AddonUI">
     <node oor:name="OfficeMenuBar">
       <node oor:name="com.v271.office.menubar" oor:op="replace">
         <prop oor:name="Title" oor:type="xs:string">
@@ -15,42 +12,42 @@
             <prop oor:name="Title"><value xml:lang="en-US">Sign in…</value></prop>
             <prop oor:name="URL"><value>vnd.v271.office:signin</value></prop>
             <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://com.v271.office.integration/assets/ai-1.svg</value></prop></node>
           <node oor:name="M2" oor:op="replace">
             <prop oor:name="Title"><value xml:lang="en-US">Sign out</value></prop>
             <prop oor:name="URL"><value>vnd.v271.office:signout</value></prop>
             <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://com.v271.office.integration/assets/ai-edit-1.svg</value></prop></node>
           <node oor:name="M3" oor:op="replace">
             <prop oor:name="Title"><value xml:lang="en-US">Status…</value></prop>
             <prop oor:name="URL"><value>vnd.v271.office:status</value></prop>
             <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://com.v271.office.integration/assets/ai-terminal.svg</value></prop></node>
           <node oor:name="M4" oor:op="replace">
             <prop oor:name="Title"><value xml:lang="en-US">Sync now</value></prop>
             <prop oor:name="URL"><value>vnd.v271.office:syncnow</value></prop>
             <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://com.v271.office.integration/assets/ai-git-branch.svg</value></prop></node>
           <node oor:name="M5" oor:op="replace">
             <prop oor:name="Title"><value xml:lang="en-US">Toggle favorite</value></prop>
             <prop oor:name="URL"><value>vnd.v271.office:favorite</value></prop>
             <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://com.v271.office.integration/assets/ai-tool.svg</value></prop></node>
           <node oor:name="M6" oor:op="replace">
             <prop oor:name="Title"><value xml:lang="en-US">Link workspace…</value></prop>
             <prop oor:name="URL"><value>vnd.v271.office:linkworkspace</value></prop>
             <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://com.v271.office.integration/assets/ai-coordinate-system.svg</value></prop></node>
           <node oor:name="M7" oor:op="replace">
             <prop oor:name="Title"><value xml:lang="en-US">Document context…</value></prop>
             <prop oor:name="URL"><value>vnd.v271.office:context</value></prop>
             <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://com.v271.office.integration/assets/ai-article.svg</value></prop></node>
           <node oor:name="M8" oor:op="replace">
             <prop oor:name="Title"><value xml:lang="en-US">Configure…</value></prop>
             <prop oor:name="URL"><value>vnd.v271.office:configure</value></prop>
             <prop oor:name="Target" oor:type="xs:string"><value>_self</value></prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://com.v271.office.integration/assets/ai-edit.svg</value></prop></node>
         </node>
       </node>
     </node>

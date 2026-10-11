@@ -9,12 +9,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
-import os
 import threading
 import uuid
-import weakref
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 from plugin.doc.doc_type import is_calc, is_draw, is_writer
 from plugin.doc.udprops import get_document_property, set_document_property
@@ -42,18 +44,11 @@ def _has_notebook_registry(doc: Any) -> bool:
         return False
     return has_notebook_registry(doc)
 
+
 PYTHON_WORKBOOK_SESSION_PROP = "WriterAgentPythonSessionId"
 _SESSION_MODE_KEY = "scripting.python_session_mode"
-# Headless soffice opens this probe workbook. Recording it next to leftover
-# factory Calc makes recorded=2 / Isolated (leftover 11:31 ids=).
-_OPENCL_PROBE_MARK = "opencl/cl-test.ods"
-
-
-def is_opencl_probe_session_id(session_id: str | None) -> bool:
-    """True for LibreOffice's OpenCL ``cl-test.ods`` probe workbook."""
-    if not session_id:
-        return False
-    return _OPENCL_PROBE_MARK in str(session_id).replace("\\", "/")
+# Desktop component enums. A stuck UNO enum must not spin.
+_ENUM_CAP = 32
 
 
 def python_session_mode(ctx: Any) -> str:
@@ -61,288 +56,127 @@ def python_session_mode(ctx: Any) -> str:
     mode = (get_config_str(_SESSION_MODE_KEY) or "isolated").strip().lower()
     if mode != "shared":
         mode = "isolated"
-    try:
-        from plugin.framework.config import _config_path
-
-        log.debug("python_session_mode=%s config=%s", mode, _config_path())
-    except Exception:
-        log.debug("python_session_mode=%s config=<unresolved>", mode)
     return mode
+
+
+def _doc_url(raw_doc: Any) -> str:
+    """Return the stripped URL string of *raw_doc*, or empty string."""
+    try:
+        return (getattr(raw_doc, "getURL", lambda: "")() or "").strip()
+    except Exception:
+        return ""
+
+
+def _enumeration_should_continue(enum: Any, seen: int, *, label: str) -> bool:
+    """False when *enum* is exhausted or past ``_ENUM_CAP``."""
+    try:
+        has_more = enum.hasMoreElements()
+    except Exception:
+        return False
+    if has_more is not True:
+        return False
+    if seen >= _ENUM_CAP:
+        log.error("%s: desktop enum hit cap=%s; stopping", label, _ENUM_CAP)
+        return False
+    return True
+
+
+def _iter_desktop_models(ctx: Any, *, label: str = "session_manager") -> Generator[Any, None, None]:
+    """Yield all valid open models from desktop component enumeration."""
+    from plugin.framework.errors import check_disposed
+    from plugin.framework.thread_guard import _unwrap_uno
+
+    desktop = get_desktop(ctx)
+    if desktop is None:
+        return
+    comps = desktop.getComponents() if hasattr(desktop, "getComponents") else None
+    if comps is None or not hasattr(comps, "createEnumeration"):
+        return
+    enum = comps.createEnumeration()
+    seen = 0
+    while enum:
+        if not _enumeration_should_continue(enum, seen, label=label):
+            break
+        seen += 1
+        try:
+            elem = enum.nextElement()
+        except Exception:
+            break
+        model = None
+        if hasattr(elem, "getURL") and callable(getattr(elem, "getURL")):
+            model = elem
+        elif hasattr(elem, "getController") and getattr(elem, "getController", lambda: None)():
+            ctrl = elem.getController()
+            model = ctrl.getModel() if hasattr(ctrl, "getModel") else None
+        if model is not None:
+            try:
+                check_disposed(_unwrap_uno(model))
+                getattr(model, "getCurrentController", lambda: None)()
+                yield model
+            except Exception:
+                pass
 
 
 def _find_document_by_predicate(ctx: Any, predicate: Any) -> Any | None:
     """Find active document matching *predicate*, falling back to desktop component enumeration."""
     # Bugfix (#411): In headless mode or when focus is outside the frame, getCurrentComponent()
-    # returns None. Fall back to desktop.getComponents() enumeration so session reset and
-    # shared-kernel workbook_session_id always resolve the document model.
+    # returns None. Fall back to desktop.getComponents() enumeration so UI commands
+    # (session reset) still resolve the document model. =PY() never comes here.
     try:
         from plugin.framework.errors import check_disposed
         from plugin.framework.thread_guard import guard_uno, _unwrap_uno
 
         desktop = get_desktop(ctx)
-        doc = desktop.getCurrentComponent()
+        doc = desktop.getCurrentComponent() if desktop else None
         if doc is not None:
             try:
                 # check_disposed is a None check; get_desktop is already @main_thread_only.
                 # Unwrap so PropertyBag-style None tests see the real object, then re-wrap on return.
                 check_disposed(_unwrap_uno(doc))
                 ctrl = getattr(doc, "getCurrentController", lambda: None)()
-                if ctrl is not None and getattr(ctrl, "getFrame", lambda: None)() is not None:
+                # Headless soffice returns None from getCurrentController().
+                # Requiring a controller skipped the open model, so session reset
+                # and shared-kernel lookup never saw it. A controller with no
+                # frame is an unfocused window — keep searching in that case.
+                if ctrl is None or getattr(ctrl, "getFrame", lambda: None)() is not None:
                     if predicate(doc):
-                        cached_sid = get_cached_calc_session_id()
-                        if not cached_sid or calc_workbook_base_session_id(doc) == cached_sid:
-                            return guard_uno(doc)
+                        return guard_uno(doc)
             except Exception:
                 pass
 
-        comps = desktop.getComponents()
-        if comps is not None and hasattr(comps, "createEnumeration"):
-            enum = comps.createEnumeration()
-            matches = []
-            while enum:
-                try:
-                    has_more = enum.hasMoreElements()
-                except Exception:
-                    break
-                # MagicMock.hasMoreElements() is always truthy; this is a local
-                # enumeration stop, not a general is_mock helper. Skip extracting
-                # to deal_shim unless more call sites grow the same check.
-                if type(has_more).__name__ in ("Mock", "MagicMock") or not has_more:
-                    break
-                elem = enum.nextElement()
-                model = None
-                if hasattr(elem, "getURL") and callable(getattr(elem, "getURL")):
-                    model = elem
-                elif hasattr(elem, "getController") and getattr(elem, "getController", lambda: None)():
-                    ctrl = elem.getController()
-                    model = ctrl.getModel() if hasattr(ctrl, "getModel") else None
-                if model is not None:
-                    try:
-                        check_disposed(_unwrap_uno(model))
-                        ctrl = getattr(model, "getCurrentController", lambda: None)()
-                        if ctrl is not None and predicate(model):
-                            matches.append(model)
-                    except Exception:
-                        pass
+        matches = []
+        for model in _iter_desktop_models(ctx, label="session_manager"):
+            try:
+                if predicate(model):
+                    matches.append(model)
+            except Exception:
+                pass
 
-            if matches:
-                cached_sid = get_cached_calc_session_id()
-                if cached_sid:
-                    for m in reversed(matches):
-                        try:
-                            if calc_workbook_base_session_id(m) == cached_sid:
-                                return guard_uno(m)
-                        except Exception:
-                            pass
-                return guard_uno(matches[-1])
-
+        if matches:
+            return guard_uno(matches[-1])
 
     except Exception:
         log.debug("session_manager: document resolution failed", exc_info=True)
     return None
 
 
-
-_ACTIVE_CALC_SESSION_LOCK = threading.Lock()
-_LAST_ACTIVE_CALC_SESSION_ID: str | None = None
-_LAST_ACTIVE_CALC_INIT_KWARGS: dict[str, Any] = {}
-# Weakref to the last UI-thread Calc model. Off-main finalize may pass this
-# through to deferred spill; do not call UNO on it off-main.
-_LAST_ACTIVE_CALC_DOC: weakref.ReferenceType[Any] | None = None
-# Document folder captured from a file: session id (no UNO). Off-main =PY()
-# injects this as scoped_dir so run_sql file joins do not see None.
-_LAST_ACTIVE_CALC_SCOPED_DIR: str | None = None
-# Session ids recorded while workbooks were on the UI thread. Off-main recalc
-# may use the cache only when exactly one workbook is recorded — two open files
-# would otherwise run doc B in doc A's shared kernel (XAddIn has no calling doc).
-_RECORDED_CALC_SESSION_IDS: set[str] = set()
+# Chat run_venv_python_script pins ctx.doc for one execute. PyUNO models
+# often reject weakref, so this is a strong reference and must be released
+# when the call returns. The token is not a worker namespace id.
+_SCRIPT_DOC_PINS: dict[str, Any] = {}
+_SCRIPT_DOC_PIN_LOCK = threading.Lock()
 
 
-def _system_dir_from_file_url(url: str) -> str | None:
-    """Parent directory of a ``file:`` URL. No UNO — safe off-main."""
-    from urllib.parse import unquote, urlparse
-
-    raw = str(url).strip()
-    if raw.startswith("file:/") and not raw.startswith("file://"):
-        raw = "file://" + raw[len("file:") :]
-    parsed = urlparse(raw)
-    if parsed.scheme != "file":
-        return None
-    path = unquote(parsed.path)
-    if os.name == "nt" and path.startswith("/") and len(path) >= 3 and path[2] == ":":
-        path = path[1:]
-    path = os.path.normpath(path)
-    parent = os.path.dirname(path)
-    return parent if parent and os.path.isdir(parent) else None
-
-
-def scoped_dir_from_calc_session_id(session_id: str | None) -> str | None:
-    """``calc:file:///path/workbook.xlsx`` → ``/path`` when that folder exists."""
-    if not session_id:
-        return None
-    text = str(session_id)
-    if text.startswith("calc:"):
-        text = text[5:]
-    if text.endswith(":init"):
-        text = text[:-5]
-    if not text.startswith("file:"):
-        return None
-    return _system_dir_from_file_url(text)
-
-
-def record_active_calc_scoped_dir(path: str | None) -> None:
-    """Remember the document folder for off-main ``=PY()`` ``scoped_dir`` inject."""
-    global _LAST_ACTIVE_CALC_SCOPED_DIR
-    with _ACTIVE_CALC_SESSION_LOCK:
-        _LAST_ACTIVE_CALC_SCOPED_DIR = path or None
-
-
-def get_cached_calc_scoped_dir() -> str | None:
-    """Cached document folder when at most one workbook session is recorded."""
-    with _ACTIVE_CALC_SESSION_LOCK:
-        if len(_RECORDED_CALC_SESSION_IDS) > 1:
-            return None
-        return _LAST_ACTIVE_CALC_SCOPED_DIR
-
-
-def record_active_calc_document(doc: Any | None) -> None:
-    """Remember the UI-thread Calc model for off-main spill when the session is unambiguous."""
-    global _LAST_ACTIVE_CALC_DOC
-    if doc is None:
-        return
-    raw = doc
+def existing_calc_session_id(doc: Any) -> str | None:
+    """``calc:`` id from a URL or stored prop. Does not mint a new prop."""
     try:
-        from plugin.framework.thread_guard import _unwrap_uno
-
-        raw = _unwrap_uno(doc)
+        key = _existing_workbook_session_key(doc)
     except Exception:
-        raw = doc
-    with _ACTIVE_CALC_SESSION_LOCK:
-        try:
-            _LAST_ACTIVE_CALC_DOC = weakref.ref(raw)
-        except TypeError:
-            _LAST_ACTIVE_CALC_DOC = None
-
-
-def get_cached_calc_document() -> Any | None:
-    """Return the cached Calc model when at most one workbook session is recorded.
-
-    Two recorded sessions: XAddIn has no calling document — do not guess.
-    Zero recorded sessions (Isolated) still returns the last UI-thread model.
-    The object is for *identity / later UI-thread use*. Do not invoke UNO on it
-    from a worker or Yellow thread.
-    """
-    with _ACTIVE_CALC_SESSION_LOCK:
-        if len(_RECORDED_CALC_SESSION_IDS) > 1:
-            return None
-        ref = _LAST_ACTIVE_CALC_DOC
-    if ref is None:
+        log.debug("existing_calc_session_id: lookup failed", exc_info=True)
         return None
-    return ref()
-
-
-def record_active_calc_session(
-    session_id: str | None,
-    init_kwargs: dict[str, Any] | None = None,
-    doc: Any | None = None,
-) -> None:
-    """Cache the active Calc session id and init kwargs on the main thread for off-main formula lookups."""
-    global _LAST_ACTIVE_CALC_SESSION_ID, _LAST_ACTIVE_CALC_INIT_KWARGS
-    global _LAST_ACTIVE_CALC_SCOPED_DIR
-    if doc is not None:
-        record_active_calc_document(doc)
-    with _ACTIVE_CALC_SESSION_LOCK:
-        if session_id is not None:
-            if is_opencl_probe_session_id(session_id):
-                if init_kwargs:
-                    _LAST_ACTIVE_CALC_INIT_KWARGS = dict(init_kwargs)
-                return
-            _LAST_ACTIVE_CALC_SESSION_ID = session_id
-            _RECORDED_CALC_SESSION_IDS.add(session_id)
-            # OnCreate can fall back to ``calc:unsaved:{uuid}`` before the
-            # UDProp sticks; a later OnLoadFinished then records the persisted
-            # id. Two unsaved: keys (UDProp failed twice) or unsaved+durable
-            # both make ``off_main_calc_session_is_unambiguous`` false.
-            sid_text = str(session_id)
-            if sid_text.startswith("calc:unsaved:"):
-                for stale in [
-                    other
-                    for other in _RECORDED_CALC_SESSION_IDS
-                    if other != session_id and str(other).startswith("calc:unsaved:")
-                ]:
-                    _RECORDED_CALC_SESSION_IDS.discard(stale)
-            else:
-                for stale in [
-                    other
-                    for other in _RECORDED_CALC_SESSION_IDS
-                    if str(other).startswith("calc:unsaved:")
-                ]:
-                    _RECORDED_CALC_SESSION_IDS.discard(stale)
-            # File-URL sessions carry the document folder without getURL().
-            _LAST_ACTIVE_CALC_SCOPED_DIR = scoped_dir_from_calc_session_id(session_id)
-        if init_kwargs:
-            _LAST_ACTIVE_CALC_INIT_KWARGS = dict(init_kwargs)
-
-
-def recorded_calc_session_count() -> int:
-    """How many distinct Calc workbook sessions are currently recorded."""
-    with _ACTIVE_CALC_SESSION_LOCK:
-        return len(_RECORDED_CALC_SESSION_IDS)
-
-
-def recorded_calc_session_ids() -> tuple[str, ...]:
-    """Sorted host-side Calc session ids (soffice leftover diag)."""
-    with _ACTIVE_CALC_SESSION_LOCK:
-        return tuple(sorted(_RECORDED_CALC_SESSION_IDS))
-
-
-def off_main_calc_session_is_unambiguous() -> bool:
-    """True when off-main recalc can safely reuse the cached shared kernel."""
-    with _ACTIVE_CALC_SESSION_LOCK:
-        return len(_RECORDED_CALC_SESSION_IDS) == 1
-
-
-
-def get_cached_calc_session_id() -> str | None:
-    """Return the cached active Calc session id without querying the UNO desktop off-main."""
-    with _ACTIVE_CALC_SESSION_LOCK:
-        return _LAST_ACTIVE_CALC_SESSION_ID
-
-
-def get_cached_calc_init_kwargs() -> dict[str, Any]:
-    """Return the cached active Calc init kwargs without querying the UNO desktop off-main."""
-    with _ACTIVE_CALC_SESSION_LOCK:
-        return dict(_LAST_ACTIVE_CALC_INIT_KWARGS)
-
-
-def clear_active_calc_session(session_id: str | None = None) -> None:
-    """Clear cached Calc session on document unload or reset."""
-    global _LAST_ACTIVE_CALC_SESSION_ID, _LAST_ACTIVE_CALC_INIT_KWARGS, _LAST_ACTIVE_CALC_DOC
-    global _LAST_ACTIVE_CALC_SCOPED_DIR
-    with _ACTIVE_CALC_SESSION_LOCK:
-        if session_id is None:
-            _RECORDED_CALC_SESSION_IDS.clear()
-            _LAST_ACTIVE_CALC_SESSION_ID = None
-            _LAST_ACTIVE_CALC_INIT_KWARGS = {}
-            _LAST_ACTIVE_CALC_DOC = None
-            _LAST_ACTIVE_CALC_SCOPED_DIR = None
-        else:
-            _RECORDED_CALC_SESSION_IDS.discard(session_id)
-            if _LAST_ACTIVE_CALC_SESSION_ID == session_id:
-                _LAST_ACTIVE_CALC_SESSION_ID = next(iter(_RECORDED_CALC_SESSION_IDS), None)
-                # Remaining workbook's init is unknown; do not keep the closed file's kwargs.
-                _LAST_ACTIVE_CALC_INIT_KWARGS = {}
-                _LAST_ACTIVE_CALC_DOC = None
-                _LAST_ACTIVE_CALC_SCOPED_DIR = scoped_dir_from_calc_session_id(
-                    _LAST_ACTIVE_CALC_SESSION_ID
-                )
-    try:
-        from plugin.calc.python.function import clear_python_addin_cache
-
-        clear_python_addin_cache()
-    except Exception:
-        pass
-
+    if not key:
+        return None
+    return f"calc:{key}"
 
 
 def _calc_document(ctx: Any) -> Any | None:
@@ -353,15 +187,12 @@ def _writer_document(ctx: Any) -> Any | None:
     return _find_document_by_predicate(ctx, is_writer)
 
 
-def _workbook_session_key(doc: Any) -> str:
+def _existing_workbook_session_key(doc: Any) -> str | None:
+    """URL or already-stored session prop. Does not create a prop."""
     from plugin.framework.thread_guard import _unwrap_uno
 
     raw_doc = _unwrap_uno(doc)
-    url = ""
-    try:
-        url = (getattr(raw_doc, "getURL", lambda: "")() or "").strip()
-    except Exception:
-        pass
+    url = _doc_url(raw_doc)
     if url:
         return url
     try:
@@ -369,13 +200,57 @@ def _workbook_session_key(doc: Any) -> str:
         if existing:
             return str(existing)
     except Exception:
-        pass
-    new_id = str(uuid.uuid4())
+        log.debug("session_manager: reading session property failed", exc_info=True)
+    return None
+
+
+def _workbook_session_key(doc: Any) -> str:
+    from plugin.framework.thread_guard import _unwrap_uno
+
+    raw_doc = _unwrap_uno(doc)
+    url = _doc_url(raw_doc)
+
+    existing = None
+    try:
+        existing = get_document_property(raw_doc, PYTHON_WORKBOOK_SESSION_PROP)
+    except Exception:
+        log.debug("session_manager: reading session property failed", exc_info=True)
+
+    if url:
+        if existing:
+            try:
+                # Remove the property so next Save As continues to follow URL
+                from plugin.doc.udprops import remove_document_property
+
+                remove_document_property(raw_doc, PYTHON_WORKBOOK_SESSION_PROP)
+                # Reset orphaned unsaved worker sessions so old state does not leak
+                if str(existing).startswith("unsaved:"):
+                    from plugin.framework.uno_context import get_ctx
+                    try:
+                        ctx = get_ctx()
+                        reset_python_session(ctx, f"calc:{existing}")
+                        reset_python_session(ctx, f"rps:{existing}")
+                        reset_python_session(ctx, f"notebook:{existing}")
+                    except Exception:
+                        log.debug("session_manager: cleanup of unsaved session failed", exc_info=True)
+            except Exception:
+                log.debug("session_manager: removing session property failed", exc_info=True)
+        return url
+
+    if existing:
+        return str(existing)
+    new_id = f"unsaved:{uuid.uuid4()}"
     try:
         set_document_property(raw_doc, PYTHON_WORKBOOK_SESSION_PROP, new_id)
-        return new_id
+        # set_document_property returns without writing when the document has
+        # no UserDefinedProperties bag, and it does not raise. Returning the
+        # minted id made the next call mint a different key. Read it back;
+        # otherwise use the unsaved:uuid fallback.
+        stored = get_document_property(raw_doc, PYTHON_WORKBOOK_SESSION_PROP)
+        if stored is not None and str(stored) == new_id:
+            return new_id
     except Exception:
-        pass
+        log.debug("session_manager: writing session property failed", exc_info=True)
     # Do not use id(raw_doc): CPython recycles ids after GC, so two unsaved
     # docs opened in sequence could collide on a stale worker session.
     return f"unsaved:{uuid.uuid4()}"
@@ -383,9 +258,7 @@ def _workbook_session_key(doc: Any) -> str:
 
 def calc_workbook_base_session_id(doc: Any) -> str:
     """Worker session id for shared-kernel ``=PY()`` (not the ``:init`` session)."""
-    sid = f"calc:{_workbook_session_key(doc)}"
-    record_active_calc_session(sid, doc=doc)
-    return sid
+    return f"calc:{_workbook_session_key(doc)}"
 
 
 def calc_init_session_id(doc: Any) -> str:
@@ -394,38 +267,28 @@ def calc_init_session_id(doc: Any) -> str:
 
 
 def workbook_session_id(ctx: Any, doc: Any | None = None) -> str | None:
-    """Return ``calc:…`` session id when shared mode and target doc is Calc, else ``None``."""
-    if python_session_mode(ctx) != "shared":
+    """Return ``calc:…`` session id when shared mode and *doc* is Calc, else ``None``.
+
+    *doc* is the caller's document (for ``=PY()``, the add-in caller argument).
+    With no doc there is no session: never guess from the front window.
+    """
+    if python_session_mode(ctx) != "shared" or doc is None:
         return None
 
-    if doc is not None:
-        try:
-            if is_calc(doc):
-                from plugin.framework.thread_guard import guard_uno
-
-                return calc_workbook_base_session_id(guard_uno(doc))
-        except Exception:
-            pass
-        # Fallback to URL/props directly from doc if is_calc check failed or raised
-        try:
-            return calc_workbook_base_session_id(doc)
-        except Exception:
-            pass
-
-    from plugin.framework.thread_guard import on_main_thread
-
-    # Off-main threads without an explicit doc must not query the desktop (Yellow contract #402, #411).
-    # XAddIn never names the recalculating workbook: reuse the cache only when a
-    # single workbook is recorded. Two open files would bleed shared-kernel state.
-    if not on_main_thread():
-        if not off_main_calc_session_is_unambiguous():
+    try:
+        if not is_calc(doc):
             return None
-        return get_cached_calc_session_id()
+        from plugin.framework.thread_guard import guard_uno
 
-    target = _calc_document(ctx)
-    if target is None:
-        return None
-    return calc_workbook_base_session_id(target)
+        return calc_workbook_base_session_id(guard_uno(doc))
+    except Exception:
+        log.debug("workbook_session_id: guarded calc session id lookup failed", exc_info=True)
+
+    try:
+        return calc_workbook_base_session_id(doc)
+    except Exception:
+        log.debug("workbook_session_id: fallback session id lookup failed", exc_info=True)
+    return None
 
 
 def rps_session_id(ctx: Any, doc: Any | None = None) -> str | None:
@@ -437,9 +300,100 @@ def rps_session_id(ctx: Any, doc: Any | None = None) -> str | None:
     """
     if python_session_mode(ctx) != "shared" or doc is None:
         return None
-    if is_calc(doc):
-        return workbook_session_id(ctx, doc)
+    try:
+        if is_calc(doc):
+            return workbook_session_id(ctx, doc)
+    except Exception:
+        log.debug("rps_session_id: is_calc failed", exc_info=True)
     return f"rps:{_workbook_session_key(doc)}"
+
+
+def pin_script_document(doc: Any) -> str | None:
+    """Return a host-only id that :func:`document_for_script_session` resolves to *doc*.
+
+    Chat ``run_venv_python_script`` forwards this so ``wa.draw`` / ``wa.shape``
+    bind to ``ctx.doc`` instead of the focused window. The id is not the
+    worker namespace (Isolated mode still starts a fresh kernel). Call
+    :func:`release_script_document` when the execute returns.
+    """
+    if doc is None:
+        return None
+    token = f"doc:{uuid.uuid4()}"
+    with _SCRIPT_DOC_PIN_LOCK:
+        _SCRIPT_DOC_PINS[token] = doc
+    return token
+
+
+def release_script_document(session_id: str | None) -> None:
+    """Drop a pin from :func:`pin_script_document`. Other session ids are ignored."""
+    if not isinstance(session_id, str) or not session_id.startswith("doc:"):
+        return
+    with _SCRIPT_DOC_PIN_LOCK:
+        _SCRIPT_DOC_PINS.pop(session_id, None)
+
+
+@contextlib.contextmanager
+def pinned_script_document(doc: Any) -> Generator[str | None, None, None]:
+    """Context manager for pinning a document for the duration of a script run."""
+    token = pin_script_document(doc)
+    try:
+        yield token
+    finally:
+        if token:
+            release_script_document(token)
+
+
+def document_for_script_session(ctx: Any, session_id: str | None) -> Any | None:
+    """Open document whose workbook key matches *session_id*.
+
+    ``wa.doc`` used to call ``get_active_document``, so with two files open the
+    focused library was eval'd into whichever executor was running. The host
+    is single-flight and already has the in-flight session id.
+
+    ``ppt_master:{url}`` uses that same URL key. A long PPT-Master turn then
+    exports into the sidebar frame's deck. ``ppt_master:active`` (no URL)
+    does not match and the caller falls back to the focused document.
+
+    ``doc:{uuid}`` is a host pin from :func:`pin_script_document` (chat
+    ``run_venv_python_script``). It returns that object and does not walk
+    the desktop. A pin that was already released does not match.
+    """
+    if isinstance(session_id, str) and session_id.startswith("doc:"):
+        with _SCRIPT_DOC_PIN_LOCK:
+            pinned = _SCRIPT_DOC_PINS.get(session_id)
+        if pinned is None:
+            return None
+        from plugin.framework.thread_guard import guard_uno
+
+        # Same main-thread wrap as the desktop enumeration path below.
+        return guard_uno(pinned)
+    if not isinstance(session_id, str) or ":" not in session_id:
+        return None
+    prefix, key = session_id.split(":", 1)
+    if prefix not in {"calc", "rps", "notebook", "ppt_master"}:
+        return None
+    if prefix == "calc" and key.endswith(":init"):
+        key = key[: -len(":init")]
+    if not key:
+        return None
+    try:
+        for model in _iter_desktop_models(ctx, label="document_for_script_session"):
+            try:
+                # Read-only: _workbook_session_key would mint a UDProp on docs
+                # that have never run Python.
+                if _existing_workbook_session_key(model) == key:
+                    from plugin.framework.thread_guard import guard_uno
+
+                    # Desktop enumeration hands back the component itself. Returning
+                    # it raw let a worker that resolved wa.doc / tool RPC call
+                    # UNO off the main thread. guard_uno asserts on later
+                    # access unless the caller is already on the main thread.
+                    return guard_uno(model)
+            except Exception:
+                log.debug("document_for_script_session: key read failed", exc_info=True)
+    except Exception:
+        log.debug("document_for_script_session: enumeration failed", exc_info=True)
+    return None
 
 
 def notebook_session_id(ctx: Any, doc: Any | None = None) -> str | None:
@@ -454,22 +408,10 @@ def reset_notebook_python_session(ctx: Any, doc: Any | None = None) -> None:
     """Menubar path: reset shared Python namespace for the active Writer notebook document."""
     target = doc if doc is not None else _writer_document(ctx)
     if target is None:
-        _msgbox(
-            ctx,
-            _(
-                "Reset Python Session for notebooks applies to LibreOffice Writer. "
-                "Open a Writer document with an imported Jupyter notebook and try again."
-            ),
-        )
+        _msgbox(ctx, _("Reset Python Session for notebooks applies to LibreOffice Writer. Open a Writer document with an imported Jupyter notebook and try again."))
         return
     if not _has_notebook_registry(target):
-        _msgbox(
-            ctx,
-            _(
-                "This Writer document has no imported notebook registry. "
-                "File → Open a Jupyter notebook (.ipynb) first."
-            ),
-        )
+        _msgbox(ctx, _("This Writer document has no imported notebook registry. File → Open a Jupyter notebook (.ipynb) first."))
         return
 
     session_id = notebook_session_id(ctx, target)
@@ -499,27 +441,27 @@ def reset_notebook_python_session(ctx: Any, doc: Any | None = None) -> None:
 def _reset_calc_python_sessions(ctx: Any, doc: Any | None = None) -> None:
     target = doc if doc is not None else _calc_document(ctx)
     if target is None:
-        _msgbox(
-            ctx,
-            _(
-                "Reset Python Session applies to Calc spreadsheets. "
-                "Open a Calc workbook and try again."
-            ),
-        )
+        _msgbox(ctx, _("Reset Python Session applies to Calc spreadsheets. Open a Calc workbook and try again."))
+        return
+
+    key = _existing_workbook_session_key(target)
+    if not key:
         return
 
     from plugin.scripting.document_scripts import build_python_eval_init_kwargs, get_calc_init_script
 
-    session_id = calc_workbook_base_session_id(target)
+    session_id = f"calc:{key}"
     res = reset_python_session(ctx, session_id)
+    # Also reset the persistent :init session so worker state from previous init script is cleared
+    reset_python_session(ctx, f"{session_id}:init")
     try:
         from plugin.calc.python.function import clear_python_addin_cache
 
         clear_python_addin_cache()
     except Exception:
-        pass
+        # A failed clear used to leave cached =PY() scalars with no traceback.
+        log.debug("session_manager: clear_python_addin_cache failed", exc_info=True)
     if res.get("status") != "ok":
-
         msg = res.get("message") or _("Could not reset Python session.")
         _msgbox(ctx, _("Error: {0}").format(msg))
         return
@@ -527,42 +469,30 @@ def _reset_calc_python_sessions(ctx: Any, doc: Any | None = None) -> None:
     # Re-seed init script immediately after reset (C2.2.3) so helper functions (e.g. def double(x): ...)
     # and init variables are re-populated in the worker for both shared and isolated sessions.
     init_kwargs = build_python_eval_init_kwargs(target)
-    record_active_calc_session(session_id, init_kwargs)
     if init_kwargs:
         from plugin.scripting.venv_worker import run_code_in_user_venv
 
-        run_code_in_user_venv(
-            ctx,
-            "None",
-            session_id=session_id if python_session_mode(ctx) == "shared" else None,
-            **init_kwargs,
-        )
+        seed = run_code_in_user_venv(ctx, "None", session_id=session_id if python_session_mode(ctx) == "shared" else None, **init_kwargs)
+        if seed.get("status") != "ok":
+            msg = seed.get("message") or _("Could not restore the initialization script.")
+            _msgbox(ctx, _("Error: {0}").format(msg))
+            return
 
     has_init = bool((get_calc_init_script(target) or "").strip())
     if python_session_mode(ctx) == "shared":
         _msgbox(ctx, _("Python session reset for this workbook."))
     elif has_init:
-        _msgbox(
-            ctx,
-            _(
-                "Initialization script and any in-memory init state were reset for this workbook. "
-                "Cell variables were already isolated per cell."
-            ),
-        )
+        _msgbox(ctx, _("Initialization script and any in-memory init state were reset for this workbook. Cell variables were already isolated per cell."))
     else:
-        _msgbox(
-            ctx,
-            _(
-                "Python session mode is Isolated (each =PY() cell uses its own variables). "
-                "There is no shared cell session to reset. Add an initialization script if you "
-                "need to clear expensive one-time workbook setup."
-            ),
-        )
+        _msgbox(ctx, _("Python session mode is Isolated (each =PY() cell uses its own variables). There is no shared cell session to reset. Add an initialization script if you need to clear expensive one-time workbook setup."))
 
 
 def _reset_rps_python_session(ctx: Any, doc: Any, *, notify: bool = True) -> None:
     """Drop the Run Python Script shared executor (``rps:`` / Writer-Draw library cache)."""
-    sid = f"rps:{_workbook_session_key(doc)}"
+    key = _existing_workbook_session_key(doc)
+    if not key:
+        return
+    sid = f"rps:{key}"
     res = reset_python_session(ctx, sid)
     if not notify:
         return
@@ -573,23 +503,66 @@ def _reset_rps_python_session(ctx: Any, doc: Any, *, notify: bool = True) -> Non
     _msgbox(ctx, _("Error: {0}").format(msg))
 
 
+def _reset_writer_sessions(ctx: Any, doc: Any) -> None:
+    """Reset notebook session (if notebook registry present) and rps session for Writer doc."""
+    if _has_notebook_registry(doc):
+        reset_notebook_python_session(ctx, doc)
+        _reset_rps_python_session(ctx, doc, notify=False)
+    else:
+        _reset_rps_python_session(ctx, doc)
+
+
 def reset_workbook_python_session(ctx: Any, doc: Any | None = None) -> None:
     """Menubar handler: reset notebook kernel (Writer) or shared Calc workbook session."""
+    from plugin.framework.thread_guard import on_main_thread
+
+    if not on_main_thread():
+        from plugin.framework.queue_executor import execute_on_main_thread
+
+        return execute_on_main_thread(reset_workbook_python_session, ctx, doc)
+
+    # Resetting a session on an unsaved/clean document must not mint a key:
+    # _workbook_session_key wrote a UserDefinedProperties entry when none
+    # existed. Check _existing_workbook_session_key and return when it is
+    # None. A focused Base, Math, or Start Center window is not Writer, Draw,
+    # or Calc; falling through to desktop enumeration cleared a background
+    # Calc document. Tell the user and return.
     if doc is not None:
         if is_writer(doc):
-            if _has_notebook_registry(doc):
-                reset_notebook_python_session(ctx, doc)
-                _reset_rps_python_session(ctx, doc, notify=False)
-            else:
-                _reset_rps_python_session(ctx, doc)
+            if not _has_notebook_registry(doc) and _existing_workbook_session_key(doc) is None:
+                return
+            _reset_writer_sessions(ctx, doc)
             return
         if is_draw(doc):
+            if _existing_workbook_session_key(doc) is None:
+                return
             _reset_rps_python_session(ctx, doc)
             return
-        _reset_calc_python_sessions(ctx, doc)
+        if is_calc(doc):
+            if _existing_workbook_session_key(doc) is None:
+                return
+            _reset_calc_python_sessions(ctx, doc)
+            return
+        _msgbox(ctx, _("Reset Python Session applies to Writer, Calc, and Draw documents."))
         return
 
-    # Prioritize Calc document if one is active/open
+    # The menubar handler is registered with no document. Reset the focused
+    # window. Searching every open component used to clear a background Calc
+    # kernel when the user pressed reset from Writer.
+    try:
+        desktop = get_desktop(ctx)
+        current = desktop.getCurrentComponent() if desktop else None
+    except Exception:
+        current = None
+
+    if current is not None:
+        if not (is_writer(current) or is_draw(current) or is_calc(current)):
+            _msgbox(ctx, _("Reset Python Session applies to Writer, Calc, and Draw documents."))
+            return
+        reset_workbook_python_session(ctx, current)
+        return
+
+    # No current component (headless): keep the open-document search.
     calc_doc = _calc_document(ctx)
     if calc_doc is not None:
         _reset_calc_python_sessions(ctx, calc_doc)
@@ -597,11 +570,9 @@ def reset_workbook_python_session(ctx: Any, doc: Any | None = None) -> None:
 
     writer_doc = _writer_document(ctx)
     if writer_doc is not None:
-        if _has_notebook_registry(writer_doc):
-            reset_notebook_python_session(ctx, writer_doc)
-            _reset_rps_python_session(ctx, writer_doc, notify=False)
-        else:
-            _reset_rps_python_session(ctx, writer_doc)
+        if not _has_notebook_registry(writer_doc) and _existing_workbook_session_key(writer_doc) is None:
+            return
+        _reset_writer_sessions(ctx, writer_doc)
         return
 
     _reset_calc_python_sessions(ctx, None)

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Shared AST edits for expression-statement call sites (release strip + Excel PY).
+"""Shared AST edits for expression-statement call sites (release strip).
 
+No plugin module imports this. ``scripts/strip_code.py`` does, at build time.
 Used by [`scripts/strip_code.py`](../../scripts/strip_code.py) to remove
 ``grammar_obs(...)``, logger ``.debug``/``.info``, and most ``print``/``pprint``
 statements from production bundles.
@@ -90,6 +91,32 @@ def _parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
     return parent_map
 
 
+def _cut_same_line_span(raw: str, start: int, end: int) -> str:
+    """Remove ``raw[start:end]`` and one neighboring ``;`` separator.
+
+    Indent before the cut is kept when the keeper sits only on the right
+    (``    print(1); keep()`` must not lose the suite indent).
+    """
+    prefix = raw[:start]
+    suffix = raw[end:]
+    indent = prefix[: len(prefix) - len(prefix.lstrip(" \t"))]
+    left = prefix.rstrip()
+    if left.endswith(";"):
+        left = left[:-1].rstrip()
+    right = suffix.lstrip(" \t")
+    if right.startswith(";"):
+        right = right[1:].lstrip(" \t")
+    if left.strip() and right.strip():
+        return left + "; " + right
+    if left.strip():
+        return left + right
+    if right.strip():
+        newline = "\n" if right.endswith("\n") else ""
+        body = right[:-1] if newline else right
+        return indent + body.lstrip() + newline
+    return left + right
+
+
 def _get_container(node: ast.AST, parent_map: dict[ast.AST, ast.AST]) -> list[ast.stmt] | None:
     """Suite list (``body`` / ``orelse`` / ``finalbody`` / except body) containing *node*."""
     # crosshair: off  # symbolic AST parent/container walk (cover-all 33451622787: 48580 log lines / 47 examples). Doable later: tiny tree bound.
@@ -131,6 +158,10 @@ def remove_expr_statements(source: str, should_remove: Callable[[ast.Expr], bool
     remove_set = set(nodes_to_remove)
     replacements: dict[int, str] = {}
     to_delete: set[int] = set()
+    # Spans are columns on the original line. Applying the first cut in place
+    # shifted the next Expr's col_offset, so ``print(1); print(2); keep()``
+    # became ``print(2)`` (keep deleted).
+    same_line_spans: dict[int, list[tuple[int, int]]] = {}
 
     for node in nodes_to_remove:
         start_line = node.lineno
@@ -155,30 +186,51 @@ def remove_expr_statements(source: str, should_remove: Callable[[ast.Expr], bool
 
         if needs_pass:
             comment = f"  # {pass_comment}" if pass_comment else ""
-            replacements[first_idx] = f"{indent}pass{comment}\n"
+            start_col = getattr(node, "col_offset", None)
+            # ``if cond: debug()`` shares the header line. Replacing the
+            # whole line with ``pass`` drops the suite header and is invalid
+            # or changes the program. Splice ``pass`` after the colon.
+            if start_line == end_line and start_col is not None and start_col > len(indent):
+                prefix = lines[first_idx][:start_col].rstrip()
+                replacements[first_idx] = f"{prefix} pass{comment}\n"
+            else:
+                replacements[first_idx] = f"{indent}pass{comment}\n"
             for idx in range(first_idx + 1, last_idx + 1):
                 to_delete.add(idx)
         else:
             end_col = getattr(node, "end_col_offset", None)
+            start_col = getattr(node, "col_offset", None)
             # ``print(1); keep()`` shares a line. Deleting the whole line drops keep().
-            if start_line == end_line and end_col is not None and first_idx not in to_delete:
+            if (
+                start_line == end_line
+                and start_col is not None
+                and end_col is not None
+                and first_idx not in to_delete
+                and first_idx not in replacements
+            ):
                 raw = lines[first_idx]
-                prefix = raw[: node.col_offset]
+                prefix = raw[:start_col]
                 suffix = raw[end_col:]
                 if prefix.strip() or suffix.strip():
-                    left = prefix.rstrip()
-                    if left.endswith(";"):
-                        left = left[:-1].rstrip()
-                    right = suffix.lstrip(" \t")
-                    if right.startswith(";"):
-                        right = right[1:].lstrip(" \t")
-                    if left and right.strip():
-                        lines[first_idx] = left + "; " + right
-                    else:
-                        lines[first_idx] = left + right
+                    same_line_spans.setdefault(first_idx, []).append((start_col, end_col))
                     continue
             for idx in range(first_idx, last_idx + 1):
                 to_delete.add(idx)
+
+    # One rewrite per line, rightmost span first, so earlier columns still
+    # address the original text. A line touched by several calls is changed once.
+    for idx, spans in same_line_spans.items():
+        if idx in to_delete or idx in replacements:
+            continue
+        raw = lines[idx]
+        for start, end in sorted(spans, key=lambda span: span[0], reverse=True):
+            if start < 0 or end > len(raw) or start > end:
+                continue
+            raw = _cut_same_line_span(raw, start, end)
+        if raw.strip():
+            lines[idx] = raw
+        else:
+            to_delete.add(idx)
 
     new_lines: list[str] = []
     for i, line in enumerate(lines):

@@ -74,11 +74,12 @@ def column_to_index(col_str: str) -> int:
 
 # A reference may name its sheet: Sheet1.A1, 'Sheet One'.A1:C5, Sheet1!A1.
 # LibreOffice writes the dot form, Excel the bang; both are accepted, and a
-# quoted name may contain spaces and dots.
+# quoted name may contain spaces and dots. An apostrophe inside the name is
+# doubled ('O''Brien'.A1), the same escape Calc and Excel use.
 _SHEET_PREFIX = re.compile(
     r"""^\s*
-        (?:'(?P<quoted>[^']+)'      # 'Sheet One'
-          |(?P<bare>[^.!'\s][^.!']*?))   # Sheet1
+        (?:'(?P<quoted>(?:[^']|'')+)'  # 'Sheet One' or 'O''Brien'
+          |(?P<bare>[^.!'\s][^.!']*?))  # Sheet1
         \s*[.!]\s*
         (?P<rest>.+)$""",
     re.VERBOSE,
@@ -96,6 +97,8 @@ def split_sheet_prefix(ref: str) -> tuple[str | None, str]:
     ('Sheet1', 'A1:C5')
     >>> split_sheet_prefix("'Data Sheet'!B2")
     ('Data Sheet', 'B2')
+    >>> split_sheet_prefix("'O''Brien'.A1")
+    ("O'Brien", 'A1')
     >>> split_sheet_prefix("A1:C5")
     (None, 'A1:C5')
     """
@@ -106,7 +109,14 @@ def split_sheet_prefix(ref: str) -> tuple[str | None, str]:
     match = _SHEET_PREFIX.match(ref)
     if not match:
         return None, ref.strip()
-    name = match.group("quoted") or match.group("bare")
+    # A quoted sheet name can hold a doubled apostrophe. '' is one
+    # apostrophe in Calc/Excel, so unescape after the match. Otherwise
+    # 'O''Brien'.C5:D6 does not match and the sheet is dropped.
+    quoted = match.group("quoted")
+    if quoted is not None:
+        name = quoted.replace("''", "'")
+    else:
+        name = match.group("bare") or ""
     return name.strip(), match.group("rest").strip()
 
 
@@ -191,6 +201,8 @@ def parse_range_string(range_str: str) -> tuple[tuple[int, int], tuple[int, int]
         if end_row_num < 1:
             raise ValueError(f"Invalid row number in end cell address: {end_row_num}")
         end_row = end_row_num - 1
+        if start_col > end_col or start_row > end_row:
+            raise ValueError(f"Invalid cell range: start cell must be top-left and end cell bottom-right: '{range_str}'")
     else:
         end_col = start_col
         end_row = start_row
@@ -214,3 +226,19 @@ def format_address(col: int, row: int) -> str:
         Cell address (e.g. "A1", "AB10").
     """
     return f"{index_to_column(col)}{row + 1}"
+
+
+def parse_output_anchor(output_range: str) -> tuple[str | None, int, int]:
+    """Sheet name (if any), column, and row where a generated report should start.
+
+    ``split_sheet_prefix`` keeps quoted names, dots inside quotes, and both
+    ``.`` and ``!``. A last-dot split would hand ``'Q1.Sales'!B2`` to
+    ``parse_address`` still prefixed, and a range (``Sheet1.A1:Sheet1.C10``
+    or ``$A$1:$C$5``) would resolve to the end cell or a token
+    ``parse_address`` rejects. The write starts at the first cell, with
+    ``$`` locks removed.
+    """
+    sheet_name, cell_part = split_sheet_prefix(output_range)
+    anchor = cell_part.replace("$", "").split(":", 1)[0].strip()
+    col, row = parse_address(anchor)
+    return sheet_name, col, row

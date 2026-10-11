@@ -393,6 +393,8 @@ $(eval $(call gb_UnoApi_add_idlfiles_nohdl,offapi,com/sun/star/task,\
 $(eval $(call gb_UnoApi_add_idlfiles_nohdl,offapi,com/sun/star/text,\
 	AutoTextContainer \
 	DefaultNumberingProvider \
+	Writer2027Semantic \
+	XWriter2027Semantic \
 ))
 $(eval $(call gb_UnoApi_add_idlfiles_nohdl,offapi,com/sun/star/ucb,\
 	AnyCompareFactory \

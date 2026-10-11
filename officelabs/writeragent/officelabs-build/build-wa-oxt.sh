@@ -58,11 +58,12 @@ cp -a "$SRC/vendor" "$STAGE/vendor"
 cp -f "$SRC/officelabs-build/description.xml.tpl" \
       "$STAGE/extension/description.xml.tpl"
 
-# Case-sensitive "WriterAgent" -> "OfficeLabs AI". In these files the only
-# capital-W "WriterAgent" occurrences are user-visible labels; dispatch URLs
-# and node identifiers are lowercase (org.extension.writeragent.*) and are
-# left untouched.
-sed -i 's/WriterAgent/OfficeLabs AI/g' \
+# Case-sensitive "WriterAgent" -> "NAI Assistant". In these files the only
+# capital-W "WriterAgent" occurrences are user-visible assistant labels;
+# dispatch URLs and node identifiers are lowercase (org.extension.writeragent.*)
+# and are left untouched. The assistant itself is "NAI Assistant", part of the
+# "NAI Office" product (org.extension.writeragent.* stays internal).
+sed -i 's/WriterAgent/NAI Assistant/g' \
     "$STAGE/extension/Addons.xcu" \
     "$STAGE/extension/registry/org/openoffice/Office/UI/Sidebar.xcu" \
     "$STAGE/extension/Dialogs/EvalDialog.xdl"
@@ -79,4 +80,4 @@ export PYTHONPATH="$SRC/build-tools"
 #    production code stripped) -> WriterAgent.oxt.
 "$PY" scripts/build_oxt.py --no-tests --output "$OUT"
 
-echo "OfficeLabs AI OXT built: $OUT"
+echo "NAI Office extension OXT built: $OUT"

@@ -15,19 +15,18 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 from plugin.framework.config import (
+    set_configs,
     get_config,
-    set_config,
     get_current_endpoint,
     get_api_key_for_endpoint,
-    set_api_key_for_endpoint,
     get_config_bool,
     get_config_int,
     get_config_float,
     get_config_str,
 )
-from plugin.framework.client.model_fetcher import get_image_model, get_text_model, set_image_model, set_text_model
-from plugin.framework.event_bus import global_event_bus
+from plugin.framework.client.model_fetcher import get_image_model, get_text_model
 from plugin.framework.i18n import _
+from plugin.framework.url_utils import normalize_endpoint_url
 
 from typing import Any, cast
 
@@ -99,9 +98,6 @@ def _get_core_field_specs(ctx: Any, current_endpoint: str) -> list[dict[str, Any
         {"name": "temperature", "value": str(get_config_float("temperature")), "type": "float"},
         {"name": "chat_max_tokens", "value": str(get_config_int("chat_max_tokens")), "type": "int"},
         {"name": "additional_instructions", "value": get_config_str("additional_instructions")},
-        # Text analytics sentiment (JSON overridable; for now only transformers engine with multilingual model).
-        {"name": "text_analytics_sentiment_model", "value": str(get_config("text_analytics_sentiment_model") or "")},
-        {"name": "text_analytics_sentiment_engine", "value": str(get_config("text_analytics_sentiment_engine") or "")},
     ]
 
 
@@ -154,43 +150,129 @@ def _get_module_field_specs(ctx: Any) -> list[dict[str, Any]]:
     return field_specs
 
 
+def effective_api_key(
+    typed_key: str,
+    saved_endpoint: str,
+    target_endpoint: str,
+    saved_key: str,
+    target_key: str,
+    user_edited_key: bool | None = None,
+) -> str:
+    """The key to use for target_endpoint.
+
+    If the user explicitly edited the key for this target_endpoint, use it.
+    If the typed key still equals the saved key for the saved_endpoint,
+    it belongs to the saved_endpoint, so use the target_endpoint's saved key.
+    Otherwise, if the user didn't edit it, it might be a stale custom key from
+    the previous endpoint. The safe thing is to use the target's saved key unless
+    user_edited_key is True.
+    """
+    saved_norm = normalize_endpoint_url(saved_endpoint or "")
+    target_norm = normalize_endpoint_url(target_endpoint or "")
+    typed = str(typed_key)
+
+    if user_edited_key is True:
+        return typed
+
+    if target_norm == saved_norm:
+        return typed
+
+    if user_edited_key is False:
+        if typed == str(target_key or ""):
+            return typed
+        return str(target_key or "")
+
+    if typed == str(saved_key or ""):
+        return str(target_key or "")
+    return typed
+
+
+def endpoint_for_api_key_write(
+    typed_key: str,
+    saved_endpoint: str,
+    target_endpoint: str,
+    saved_key: str,
+    target_key: str,
+    user_edited_key: bool | None = None,
+) -> str | None:
+    """Normalized endpoint to store *typed_key* under, or None for no write.
+
+    A value that still equals the key stored for the endpoint on disk
+    belongs to that endpoint. Return None and leave both slots alone.
+    Comparing only against the key already stored for the URL being saved
+    writes the previous host's key under the new host: typing a URL leaves
+    that key in the field (the box is not rewritten on each keystroke).
+    A different value was typed for the URL this OK saves, including a key
+    pasted and then a one-character URL correction. An unchanged key for
+    the same endpoint is not a write.
+    """
+    eff_key = effective_api_key(typed_key, saved_endpoint, target_endpoint, saved_key, target_key, user_edited_key)
+    if eff_key == str(target_key or ""):
+        return None
+    return normalize_endpoint_url(target_endpoint or "")
+
+
 def apply_settings_result(ctx: Any, result: dict[str, Any]) -> None:
-    """Apply settings dialog result to config. Shared by Writer and Calc."""
-    from plugin.chatbot.config_ui_helpers import update_lru_history
+    """Apply settings dialog result to config. Shared by Writer and Calc.
+
+    Endpoint, text model, API key, voice family, and the other fields go
+    through one ``set_configs``, and only when the value differs from disk
+    or from the schema default of a missing key. LRU lists for those keys
+    are entries in that same dict. A list that already starts with the new
+    value is omitted. A batch that changes nothing does not write and does
+    not emit. Per-field ``set_config`` rewrites ``writeragent.json`` and
+    emits ``config:changed`` once each, and a second emit refreshes the
+    sidebar mode combo.
+    """
+    from plugin.chatbot.config_ui_helpers import endpoint_from_selector_text
+    from plugin.chatbot.settings_fields import stored_select_value
+    from plugin.framework.client.model_fetcher import _sanitize_stored_model_value
 
     field_specs = get_settings_field_specs(ctx)
     field_specs_by_name = {f["name"]: f for f in field_specs}
+    pending: dict[str, Any] = {}
+    # (dialog key, value) for LRU that does not itself write the field.
+    # Recorded before the batch so a value that already matches disk does
+    # not refresh the sidebar. Text and image models match set_text_model /
+    # set_image_model: no LRU when the sanitized id is already stored.
+    ordinary_lru: list[tuple[str, Any, str]] = []
+    text_model_lru: str | None = None
+    image_model_lru: str | None = None
 
-    # Resolve and validate endpoint first
+    # The key field was filled for this endpoint. A newly typed URL does not
+    # rebind the field, so the compare below can tell a stale secret from a
+    # key the user typed for the URL being saved.
+    saved_endpoint = get_current_endpoint()
     if "endpoint" in result:
-        set_config("endpoint", result["endpoint"])
-        normalized_endpoint = get_current_endpoint()
-        if normalized_endpoint:
-            update_lru_history(normalized_endpoint, "endpoint_lru", "")
-    
-    current_endpoint = get_current_endpoint()
+        pending["endpoint"] = result["endpoint"]
+        # Same normalizer validate() applies, so the API-key slot matches the
+        # URL this batch will store. Do not write the endpoint early.
+        current_endpoint = endpoint_from_selector_text(str(result["endpoint"] or ""))
+    else:
+        current_endpoint = saved_endpoint
 
-    # Apply other keys
-    _apply_skip = ("endpoint", "api_key")
     for key, val in result.items():
-        if key in _apply_skip or key not in field_specs_by_name:
+        if key in ("endpoint", "api_key") or key not in field_specs_by_name:
             continue
-            
-        save_key = key.replace("__", ".")
+
+        spec = field_specs_by_name[key]
+        save_key = str(spec.get("config_key") or key.replace("__", "."))
 
         if save_key == "text_model":
-            if val:
-                set_text_model(val, update_lru=True)
+            # set_text_model drops placeholders and writes text_model. Doing
+            # that here would write before the rest of the batch.
+            sanitized = _sanitize_stored_model_value(val)
+            if not sanitized:
+                continue
+            previous = str(get_config("text_model") or "").strip()
+            pending["text_model"] = sanitized
+            if sanitized != previous:
+                text_model_lru = sanitized
             continue
 
-        spec = field_specs_by_name.get(key)
-        opts = spec.get("options") if spec else None
+        opts = spec.get("options")
         if isinstance(opts, list):
-            for opt in opts:
-                if isinstance(opt, dict):
-                    if opt.get("label") == val or opt.get("value") == val:
-                        val = opt.get("value", val)
-                        break
+            val = stored_select_value(val, opts)
 
         if key in ("audio__stt_provider", "audio.stt_provider"):
             from plugin.audio.stt_service import normalize_stt_provider
@@ -199,48 +281,155 @@ def apply_settings_result(ctx: Any, result: dict[str, Any]) -> None:
             from plugin.audio.stt_service import normalize_stt_local_model
             val = normalize_stt_local_model(val)
         elif key in ("audio__tts_provider", "audio.tts_provider"):
-            from plugin.audio.tts_service import clean_provider_name
+            from plugin.audio.tts_voices import clean_provider_name
             val = clean_provider_name(str(val))
         elif key in ("audio__tts_voice", "audio.tts_voice"):
-            from plugin.audio.tts_service import set_scoped_tts_voice, voice_choice_to_id, voice_options_for_provider
+            from plugin.audio.tts_voices import (
+                clean_provider_name,
+                clean_voice_name,
+                get_voice_family,
+                voice_choice_to_id,
+                voice_options_for_provider,
+            )
             # The generic label match above can bind a shared parenthetical
             # (French Female - Siwis) to the provider that was current when
             # the dialog opened. Read the combo text and this result's provider.
+            # set_scoped_tts_voice writes both voice keys via set_config; stage
+            # them in this batch instead.
             prov = result.get("audio__tts_provider") or result.get("audio.tts_provider") or ""
             model = result.get("audio__tts_model") or result.get("tts_model") or ""
             options = voice_options_for_provider(str(prov), str(model))
             val = voice_choice_to_id(str(result.get(key) or ""), options)
-            set_scoped_tts_voice(val, provider=str(prov), model=str(model))
+            clean_v = clean_voice_name(val)
+            if clean_v:
+                prov_clean = clean_provider_name(str(prov))
+                voice_endpoint = current_endpoint if "endpoint" in result else None
+                family = get_voice_family(prov_clean, str(model), voice_endpoint)
+                pending[f"audio.tts_voice_{family}"] = clean_v
+                pending["audio.tts_voice"] = clean_v
+            else:
+                pending["audio.tts_voice"] = val
+            continue
         elif key in ("audio__tts_speed", "audio.tts_speed"):
-            from plugin.audio.tts_service import parse_tts_speed
+            from plugin.audio.tts_voices import parse_tts_speed
             spd = parse_tts_speed(val)
             s_val = str(val).strip()
             val = f"{spd:g}x" if s_val.endswith(("x", "X")) or s_val.startswith("1.0x") else f"{spd:g}"
 
-        set_config(save_key, val)
-        _update_lru_for_key(ctx, key, val, current_endpoint)
+        if save_key in ("image_model", "audio.stt_model", "audio.tts_model"):
+            # Skip empty and placeholder values, and persist the sanitized
+            # id — the same value the LRU path already computed. Storing
+            # "(Enter API Key to load models)" or "(Connection failed)" as
+            # image_model / audio.stt_model / audio.tts_model wipes the
+            # configured model when the catalog cannot be listed.
+            sanitized_model = _sanitize_stored_model_value(val)
+            if not sanitized_model:
+                continue
+            val = sanitized_model
+            if save_key == "image_model":
+                previous_image = str(get_config("image_model") or "").strip()
+                if val != previous_image:
+                    image_model_lru = val
+
+        pending[save_key] = val
+        if val and save_key != "image_model":
+            ordinary_lru.append((key, val, save_key))
 
     if "api_key" in result:
-        set_api_key_for_endpoint(current_endpoint, result["api_key"])
+        # One slot, not a copy of the whole map. set_configs merges that slot
+        # into the map it reads under the config lock. Copying the map here
+        # and replacing it in the batch dropped a key another writer stored
+        # for a different endpoint between this read and that write.
+        typed_key = str(result["api_key"])
+        slot = endpoint_for_api_key_write(
+            typed_key,
+            saved_endpoint,
+            current_endpoint,
+            str(get_api_key_for_endpoint(saved_endpoint) or ""),
+            str(get_api_key_for_endpoint(current_endpoint) or ""),
+        )
+        if slot is not None:
+            pending["api_keys_by_endpoint"] = {slot: typed_key}
 
-    global_event_bus.emit("config:changed", ctx=ctx)
+    from plugin.chatbot.settings_fields import changed_config_values
+
+    # One set_configs, and only keys that differ from disk or from the
+    # schema default of a missing key. Passing the whole dialog made a
+    # one-field edit a rewrite of every settings key.
+    #
+    # The new lists are computed here and stored in the same dict, so
+    # one set_configs writes the file once and emits once. A list that
+    # already has this value at the head is left out. Calling
+    # update_lru_history afterwards writes writeragent.json again for
+    # every LRU list.
+    changed = changed_config_values(pending, get_config)
+    _stage_settings_lru(changed, current_endpoint, text_model_lru, image_model_lru, ordinary_lru)
+    if changed:
+        set_configs(changed)
 
 
-def _update_lru_for_key(ctx: Any, key: str, val: Any, current_endpoint: str) -> None:
-    from plugin.chatbot.config_ui_helpers import update_lru_history
-    
+def _stage_settings_lru(
+    changed: dict[str, Any],
+    current_endpoint: str,
+    text_model_lru: str | None,
+    image_model_lru: str | None,
+    ordinary_lru: list[tuple[str, Any, str]],
+) -> None:
+    """Add LRU list updates for keys already in *changed*. Does not write."""
+    if "endpoint" in changed and current_endpoint:
+        _stage_lru(changed, current_endpoint, "endpoint_lru", "")
+    if text_model_lru and "text_model" in changed:
+        _stage_lru(changed, text_model_lru, "model_lru", current_endpoint)
+    if image_model_lru and "image_model" in changed:
+        _stage_lru(changed, image_model_lru, "image_model_lru", current_endpoint)
+    for key, val, save_key in ordinary_lru:
+        if save_key not in changed:
+            continue
+        for item, lru_key, endpoint in _lru_rows_for_key(key, val, current_endpoint):
+            _stage_lru(changed, item, lru_key, endpoint)
+
+
+def _stage_lru(dest: dict[str, Any], val: Any, lru_key: str, endpoint: str) -> None:
+    """Put the prepended LRU list into *dest* when it differs from disk.
+
+    Reads through this module's ``get_config`` so a test patch of that name
+    is the list this compare sees. A key already staged in *dest* is the
+    current list, so two fields that share a list compose in one dict.
+    """
+    from plugin.chatbot.config_ui_helpers import lru_config_key, next_lru_list
+    from plugin.framework.config import LRU_MAX_ITEMS
+
+    scoped = lru_config_key(lru_key, endpoint)
+    current = dest[scoped] if scoped in dest else get_config(scoped)
+    updated = next_lru_list(current, val, LRU_MAX_ITEMS)
+    if updated is not None:
+        dest[scoped] = updated
+
+
+def _lru_rows_for_key(key: str, val: Any, current_endpoint: str) -> list[tuple[Any, str, str]]:
+    """``(value, lru list name, endpoint)`` for one settings field.
+
+    Empty when this field has no list. Image models are sanitized the same
+    way ``set_image_model`` sanitizes them: the settings batch already stored
+    the id, so this only names the list, it does not write ``image_model`` again.
+    """
     if not val:
-        return
-        
+        return []
     if key in ("audio__stt_model", "stt_model", "audio.stt_model"):
-        update_lru_history(val, "audio_model_lru", current_endpoint)
-    elif key in ("audio__tts_model", "tts_model", "audio.tts_model"):
-        update_lru_history(val, "tts_model_lru", current_endpoint)
-    elif key == "image_model":
-        set_image_model(val)
-    elif key == "additional_instructions":
-        update_lru_history(val, "prompt_lru", "")
-    elif key == "image_base_size":
-        update_lru_history(str(val), "image_base_size_lru", "")
+        return [(val, "audio_model_lru", current_endpoint)]
+    if key in ("audio__tts_model", "tts_model", "audio.tts_model"):
+        return [(val, "tts_model_lru", current_endpoint)]
+    if key == "image_model":
+        from plugin.framework.client.model_fetcher import _sanitize_stored_model_value
+
+        sanitized = _sanitize_stored_model_value(val)
+        if not sanitized:
+            return []
+        return [(sanitized, "image_model_lru", current_endpoint)]
+    if key == "additional_instructions":
+        return [(val, "prompt_lru", "")]
+    if key == "image_base_size":
+        return [(str(val), "image_base_size_lru", "")]
+    return []
 
 

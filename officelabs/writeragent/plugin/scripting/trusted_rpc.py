@@ -48,6 +48,28 @@ def parse_worker_dict_result(
     return result
 
 
+_RESERVED_PAYLOAD_KEYS = frozenset({
+    "domain",
+    "helper",
+    "params",
+    "data_range",
+    "context",
+    "headers",
+    "header_row",
+})
+
+
+def extract_sheet_layout(source: dict[str, Any] | None) -> dict[str, Any]:
+    """Extract ``headers`` and ``header_row`` from a spec or packet dictionary."""
+    layout: dict[str, Any] = {}
+    if isinstance(source, dict):
+        if "headers" in source:
+            layout["headers"] = bool(source["headers"])
+        if "header_row" in source:
+            layout["header_row"] = int(source["header_row"])
+    return layout
+
+
 def run_trusted_worker_action(
     ctx: Any,
     *,
@@ -56,17 +78,26 @@ def run_trusted_worker_action(
     params: dict[str, Any] | None = None,
     data_range: Any = None,
     context: dict[str, Any] | None = None,
-    session_id: str,
+    session_id: str | None = None,
     timeout_sec: int,
     worker_pool: str = WORKER_POOL_DEFAULT,
     additional_data: dict[str, Any] | None = None,
     allow_heartbeat: bool = False,
     heartbeat_grace_sec: int | None = None,
     heartbeat_fn: Callable[[dict[str, Any]], None] | None = None,
+    stop_checker: Callable[[], bool] | None = None,
     error_code: str = "TRUSTED_ACTION_ERROR",
     error_label: str = "Trusted action",
+    headers: bool | None = None,
+    header_row: int | None = None,
+    cancellation_scope: Any | None = None,
 ) -> dict[str, Any]:
     """Execute a trusted action in the warm venv worker without user code strings."""
+    if stop_checker is None and ctx is not None:
+        stop_checker = getattr(ctx, "stop_checker", None)
+    if cancellation_scope is None and ctx is not None:
+        cancellation_scope = getattr(ctx, "send_cancellation", None)
+
     payload: dict[str, Any] = {
         "domain": domain,
         "helper": helper,
@@ -75,7 +106,18 @@ def run_trusted_worker_action(
         "context": context or {},
     }
     if additional_data:
+        # additional_data is merged after the routing keys. Reject reserved
+        # keys so it cannot overwrite domain, params, or context.
+        colliding = _RESERVED_PAYLOAD_KEYS.intersection(additional_data)
+        if colliding:
+            raise ValueError(f"additional_data cannot override reserved keys: {sorted(colliding)}")
         payload.update(additional_data)
+    # Spec fields, not helper params. Omitting them made the worker default
+    # headers=True after the client had already stripped them off the spec.
+    if headers is not None:
+        payload["headers"] = bool(headers)
+    if header_row is not None:
+        payload["header_row"] = int(header_row)
 
     def _on_heartbeat(hb: dict[str, Any]) -> None:
         if heartbeat_fn:
@@ -93,5 +135,7 @@ def run_trusted_worker_action(
         allow_heartbeat=allow_heartbeat,
         heartbeat_grace_sec=heartbeat_grace_sec if heartbeat_grace_sec is not None else EMBEDDINGS_HEARTBEAT_GRACE_S,
         on_heartbeat=_on_heartbeat if allow_heartbeat else None,
+        stop_checker=stop_checker,
+        cancellation_scope=cancellation_scope,
     )
     return parse_worker_dict_result(response, error_code=error_code, error_label=error_label)

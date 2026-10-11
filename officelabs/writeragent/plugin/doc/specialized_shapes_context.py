@@ -136,15 +136,18 @@ def _format_calc_canvas(doc: Any) -> str:
         sheets = doc.getSheets()
         n_sheets = int(sheets.getCount())
         sheet_idx = 0
+        # The active sheet index follows the sheet. Leaving it at 0 while
+        # the name is correct (e.g. "index 0 ... name 'Sheet2'") sends
+        # inner shapes+sheets work at sheet 0. getByIndex and
+        # getActiveSheet often return distinct PyUNO wrappers for one
+        # sheet, so bare ``is`` / ``==`` both miss. uno_same is the same
+        # identity ladder DrawBridge.get_active_page_index already uses
+        # (``is`` → ``==`` → ``uno.isSame``).
+        from plugin.framework.uno_context import uno_same
+
         for i in range(n_sheets):
             try:
-                if sheets.getByIndex(i) is sheet:
-                    sheet_idx = i
-                    break
-            except Exception:
-                pass
-            try:
-                if sheets.getByIndex(i) == sheet:
+                if uno_same(sheets.getByIndex(i), sheet):
                     sheet_idx = i
                     break
             except Exception:

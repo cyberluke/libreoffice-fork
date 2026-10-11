@@ -1,0 +1,16 @@
+{
+  "generator": "tools/writer2027-icons/build_themes.py",
+  "generator_version": 1,
+  "source": "carbon",
+  "source_commit": "47ab67155b185d56bf147b33cd9536e479ab0203",
+  "source_license": "Apache-2.0",
+  "mapping_sha256": "8f321f681f442e2b8e60d4dafb47b24411e262874c268516111d87ee672fbd0c",
+  "icon_count": 433,
+  "counts": {
+    "sc": 433,
+    "lc": 433,
+    "32": 433,
+    "custom": 6,
+    "alias": 3
+  }
+}

@@ -58,10 +58,13 @@ def flatten_result_values(result: Any) -> list[Any]:
         return [result]
     if not result:
         return []
-    if isinstance(result[0], (list, tuple)):
+    if any(isinstance(row, (list, tuple)) for row in result):
         flat: list[Any] = []
         for row in result:
-            flat.extend(row)
+            if isinstance(row, (list, tuple)):
+                flat.extend(row)
+            else:
+                flat.append(row)
         return flat
     return list(result)
 
@@ -70,7 +73,10 @@ def is_scalar_index_arg(py_data: list[Any] | list[list[Any]] | None) -> bool:
     """True when arg 1 is one number (matrix index), not a data range."""
     if py_data is None:
         return False
-    return count_cells(py_data) == 1
+    if count_cells(py_data) != 1:
+        return False
+    val = _unwrap_single_cell(py_data)
+    return isinstance(val, (int, float)) and not isinstance(val, bool) and not math.isnan(val)
 
 
 def _unwrap_single_cell(py_data: Any) -> Any:
@@ -81,16 +87,48 @@ def _unwrap_single_cell(py_data: Any) -> Any:
     return val
 
 
+def _host_ndarray_as_list(value: Any) -> list[Any] | None:
+    """Turn a NumPy array into a nested list without importing NumPy on the host.
+
+    ``tolist`` is the array method. A small numeric result that stays an
+    ndarray across the pipe fails ``float()`` when the array has more than
+    one cell, and ``to_calc_compatible`` then returns the array's text.
+    Pandas objects are left alone (their module is not ``numpy``).
+    """
+    if isinstance(value, (str, bytes, bytearray, list, tuple, dict)) or value is None:
+        return None
+    module = getattr(type(value), "__module__", "")
+    if not (isinstance(module, str) and (module == "numpy" or module.startswith("numpy."))):
+        return None
+    tolist = getattr(value, "tolist", None)
+    if not callable(tolist):
+        return None
+    try:
+        listed = tolist()
+    except Exception:
+        log.debug("result_to_calc_grid: ndarray tolist failed", exc_info=True)
+        return None
+    if isinstance(listed, list):
+        return listed
+    return None
+
+
 def result_to_calc_grid(result: Any, *, include_dataframe_header: bool = True) -> Any:
     """Normalize worker results for Calc consumers.
 
     DataFrame envelopes become a labeled 2D grid (header row + body) by default.
-    Lists/ndarrays (already unpacked on host) pass through unchanged.
+    Lists pass through. A leftover ndarray body is converted with ``tolist``.
     """
     if is_dataframe_payload(result):
         cols = list(result.get("columns") or [])
         data = result.get("data")
-        return dataframe_to_labeled_grid(cols, data if isinstance(data, list) else [], include_header=include_dataframe_header)
+        if not isinstance(data, list):
+            listed = _host_ndarray_as_list(data)
+            data = listed if listed is not None else []
+        return dataframe_to_labeled_grid(cols, data, include_header=include_dataframe_header)
+    listed = _host_ndarray_as_list(result)
+    if listed is not None:
+        return listed
     return result
 
 
@@ -147,8 +185,6 @@ def to_calc_compatible(val: Any) -> float | str | tuple[Any, ...]:
         # The Calc add-in bridge renders a raw NaN double as a cascading error (#NUM! or #VALUE!).
         # Python None is mapped to "" (empty cell). We intentionally do NOT collapse NaN here.
         # ±inf passes through (may also error in formulas). Do not collapse inf to empty.
-        if math.isnan(val):
-            return val
         return val
     if isinstance(val, str):
         return val
@@ -196,8 +232,6 @@ def to_calc_compatible(val: Any) -> float | str | tuple[Any, ...]:
     if hasattr(val, "__float__") and not isinstance(val, (bytes, list, tuple, dict, set)):
         try:
             f = float(val)  # type: ignore[arg-type]
-            if math.isnan(f):
-                return f
             return f
         except (ValueError, TypeError, OverflowError):
             pass
@@ -247,7 +281,7 @@ def _get_calc_doc(ctx: Any) -> Any | None:
                 if model and hasattr(model, "getSheets"):
                     return guard_uno(model)
     except Exception:
-        pass
+        log.debug("_get_calc_doc lookup failed", exc_info=True)
     return None
 
 
@@ -257,19 +291,23 @@ def session_key(ctx: Any, code: str, doc: Any | None = None) -> tuple[str, ...]:
     # Do not use getActiveSheet(): full recalc's active sheet is not the formula cell
     # (XAddIn has no calling cell). Unique locate fills sheet+origin; otherwise
     # callers must not share WorkerResultSession.
+    from plugin.framework.thread_guard import on_main_thread
+
+    # Skip UNO off the main thread. Off-main finalize hands
+    # scalar_for_list_result the cached spill model (the object a deferred
+    # write posts to the UI thread). Running the guard only when doc is
+    # None lets getURL and locate_formula_cell_in_doc touch that model from
+    # a Yellow thread. The key stays ambiguous, and WorkerResultSession is
+    # not shared, until the UI thread locates the cell.
+    if not on_main_thread():
+        return ("", "", "", code, "")
     doc_url = ""
     sheet_name = ""
     sid = ""
     origin = ""
     try:
+        # The calling document comes only from the add-in caller argument.
         target = doc
-        if target is None:
-            from plugin.framework.thread_guard import on_main_thread
-
-            # AST lint only treats a bare ``if on_main_thread():`` as a guard.
-            if on_main_thread():
-                if hasattr(ctx, "ServiceManager") or hasattr(ctx, "getServiceManager"):
-                    target = _get_calc_doc(ctx)
         if target is not None:
             url_val = getattr(target, "getURL", lambda: "")()
             doc_url = url_val if isinstance(url_val, str) else ""
@@ -291,15 +329,17 @@ def session_key(ctx: Any, code: str, doc: Any | None = None) -> tuple[str, ...]:
 class WorkerResultSession:
     """Caches one worker list result across multiple =PY() calls in a recalc pass."""
 
-    __slots__: ClassVar[tuple[str, ...]] = ("raw", "flat", "next_index")
+    __slots__: ClassVar[tuple[str, ...]] = ("raw", "flat", "next_index", "timestamp")
     raw: Any
     flat: tuple[Any, ...]
     next_index: int
+    timestamp: float
 
-    def __init__(self, raw: Any, flat: list[Any]) -> None:
+    def __init__(self, raw: Any, flat: list[Any], timestamp: float | None = None) -> None:
         self.raw = raw
         self.flat = tuple(flat)
         self.next_index = 0
+        self.timestamp = time.monotonic() if timestamp is None else timestamp
 
 
 def scalar_for_list_result(ctx: Any, code: str, result: Any, *, worker_data: Any = None, doc: Any | None = None) -> float | str | bool:
@@ -309,15 +349,21 @@ def scalar_for_list_result(ctx: Any, code: str, result: Any, *, worker_data: Any
         return ""
     tid = threading.get_ident()
     sk = session_key(ctx, code, doc=doc)
-    if len(sk) < 5 or not sk[4]:
+    if not sk[4]:
         # Ambiguous formula identity: do not share next_index across duplicate =PY() cells.
         return flat[0] if flat else ""
     key = (tid, sk, repr(worker_data))
+    now = time.monotonic()
     with _MATRIX_SCALAR_SESSIONS_LOCK:
         state = _MATRIX_SCALAR_SESSIONS.get(key)
-        if not isinstance(state, WorkerResultSession) or state.flat != tuple(flat):
-            state = WorkerResultSession(result, flat)
+        if (
+            not isinstance(state, WorkerResultSession)
+            or state.flat != tuple(flat)
+            or (now - state.timestamp) > _PY_PASS_GAP_SEC
+        ):
+            state = WorkerResultSession(result, flat, timestamp=now)
             _MATRIX_SCALAR_SESSIONS[key] = state
+        state.timestamp = now
         idx = state.next_index
         state.next_index = idx + 1
         if state.next_index >= len(state.flat):
@@ -328,10 +374,14 @@ def scalar_for_list_result(ctx: Any, code: str, result: Any, *, worker_data: Any
 
 
 # The spill registry tracks coordinates that were spilled by each formula cell.
-# Key: (doc_url, sheet_name, formula_row, formula_col)
+# Key: (doc identity, sheet_name, formula_row, formula_col)
+# Identity is the file URL when the workbook has one. Every unsaved book
+# reports getURL()==""; those use workbook_lifecycle._lifecycle_key
+# (RuntimeUID), never "". LOADED_DOCUMENTS uses the same identity.
 # Value: list of (spilled_row, spilled_col) coordinates
 SPILL_REGISTRY: dict[tuple[str, str, int, int], list[tuple[int, int]]] = {}
 LOADED_DOCUMENTS: set[str] = set()
+_SPILL_REGISTRY_LOCK = threading.Lock()
 _PENDING_SPILL_LOCK = threading.Lock()
 _PENDING_SPILL_TIMERS: list[tuple[str, threading.Timer]] = []
 
@@ -340,6 +390,8 @@ from com.sun.star.util import XModifyListener
 
 # One listener per sheet — SheetModifyDispatcher (Phase 3) or the legacy
 # CalcSpillModifyListener when a test constructs it directly.
+# First element is the workbook lifecycle id (RuntimeUID). Legacy spill
+# listeners still pop a file-URL key from ``disposing``.
 SHEET_MODIFY_LISTENERS: dict[tuple[str, str], Any] = {}
 
 
@@ -424,16 +476,36 @@ class CalcSpillModifyListener(unohelper.Base, XModifyListener):
             if sheet is None:
                 return
 
-            doc = _get_calc_doc(self.ctx)
+            # Walk to the spreadsheet that owns the sheet. Orphan cleanup
+            # locks undo and saves WriterAgentSpillRegistry on whichever
+            # workbook is focused. The cells it clears belong to the sheet
+            # that fired, which may be a background file. _get_calc_doc is
+            # desktop.getCurrentComponent(). A parent-less MagicMock still
+            # falls back to the active model so direct tests keep their stub.
+            from plugin.calc.python.sheet_modify import _owning_calc_doc
+
+            doc = _owning_calc_doc(sheet)
+            if doc is None:
+                doc = _get_calc_doc(self.ctx)
+            # is_py_formula_text is the =PY( / =PYTHON( check, including a
+            # qualified add-in name. "PY" in formula is true for =PYMT and
+            # for any text that merely contains those letters, so replacing
+            # =PY() with an unrelated formula left the spilled block.
+            from plugin.calc.python.cell_discovery import is_py_formula_text
+
             with _undo_lock(doc):
                 to_remove = []
                 for key, value in list(SPILL_REGISTRY.items()):
                     doc_url, sheet_name, frow, fcol = key
-                    if doc_url == self.doc_url and sheet_name == self.sheet_name:
+                    # Callers pass the file URL or the lifecycle id. An empty
+                    # string is not an identity: it matches every unsaved
+                    # workbook, so a modify on one untitled book cleared the
+                    # other's spill cells when the sheet names matched.
+                    if self.doc_url and doc_url == self.doc_url and sheet_name == self.sheet_name:
                         try:
                             cell = sheet.getCellByPosition(fcol, frow)
                             formula = cell.getFormula()
-                            if not formula or not ("PYTHON" in formula or "PY" in formula):
+                            if not formula or not is_py_formula_text(str(formula)):
                                 # Clear previously spilled cells
                                 for r, c in value:
                                     if (r, c) != (frow, fcol):
@@ -458,6 +530,53 @@ class CalcSpillModifyListener(unohelper.Base, XModifyListener):
         SHEET_MODIFY_LISTENERS.pop((self.doc_url, self.sheet_name), None)
 
 
+def _spill_registry_doc_key(doc: Any) -> str:
+    """Key the spill registry and LOADED_DOCUMENTS by RuntimeUID, not URL.
+
+    Migrate existing URL keys when the uid is read.
+    """
+    if doc is None:
+        return ""
+    uid = ""
+    try:
+        if hasattr(doc, "getPropertyValue"):
+            val = doc.getPropertyValue("RuntimeUID")
+            if val:
+                uid = str(val)
+    except Exception:
+        uid = ""
+
+    url = ""
+    try:
+        url_raw = getattr(doc, "getURL", lambda: "")()
+        url = str(url_raw) if isinstance(url_raw, str) else ""
+    except Exception:
+        url = ""
+
+    if uid:
+        key = uid
+        if url and url != key:
+            if url in LOADED_DOCUMENTS:
+                LOADED_DOCUMENTS.discard(url)
+                LOADED_DOCUMENTS.add(key)
+            with _SPILL_REGISTRY_LOCK:
+                for k in list(SPILL_REGISTRY.keys()):
+                    if k[0] == url:
+                        SPILL_REGISTRY[(key, k[1], k[2], k[3])] = SPILL_REGISTRY.pop(k)
+        return key
+
+    if url:
+        return url
+
+    try:
+        from plugin.calc.python.workbook_lifecycle import _lifecycle_key
+
+        return str(_lifecycle_key(doc) or "")
+    except Exception:
+        log.debug("spill registry identity failed", exc_info=True)
+        return ""
+
+
 def load_spill_registry_for_doc(doc: Any) -> None:
     """Load the document's spill registry from its UserDefinedProperties."""
     try:
@@ -468,7 +587,11 @@ def load_spill_registry_for_doc(doc: Any) -> None:
         if not isinstance(raw, str) or not raw.strip():
             return
         data = json.loads(raw)
-        doc_url = getattr(doc, "getURL", lambda: "")() or ""
+        doc_key = _spill_registry_doc_key(doc)
+        # UD JSON stays ``sheet:row,col`` inside this document. The in-memory
+        # key is per workbook. Do not file those rows under "" (every untitled book).
+        if not doc_key:
+            return
         for key, value in data.items():
             parts = key.split(":")
             if len(parts) == 2:
@@ -477,7 +600,7 @@ def load_spill_registry_for_doc(doc: Any) -> None:
                 if len(row_col) == 2:
                     frow, fcol = int(row_col[0]), int(row_col[1])
                     spill_coords = [(int(r), int(c)) for r, c in value]
-                    SPILL_REGISTRY[(doc_url, sheet_name, frow, fcol)] = spill_coords
+                    SPILL_REGISTRY[(doc_key, sheet_name, frow, fcol)] = spill_coords
     except Exception:
         log.exception("Failed to load spill registry from document property")
 
@@ -485,16 +608,22 @@ def load_spill_registry_for_doc(doc: Any) -> None:
 def save_spill_registry_for_doc(doc: Any) -> None:
     """Save the document's spill registry to its UserDefinedProperties."""
     try:
-        from plugin.doc.udprops import set_document_property
+        from plugin.doc.udprops import set_document_property, get_document_property
         import json
 
-        doc_url = getattr(doc, "getURL", lambda: "")() or ""
+        doc_key = _spill_registry_doc_key(doc)
+        if not doc_key:
+            return
         doc_spills = {}
         for key, value in SPILL_REGISTRY.items():
             k_url, sheet_name, frow, fcol = key
-            if k_url == doc_url:
+            if k_url == doc_key:
                 doc_spills[f"{sheet_name}:{frow},{fcol}"] = value
-        set_document_property(doc, "WriterAgentSpillRegistry", json.dumps(doc_spills))
+        new_val = json.dumps(doc_spills)
+        set_document_property(doc, "WriterAgentSpillRegistry", new_val)
+        actual = get_document_property(doc, "WriterAgentSpillRegistry", "")
+        if actual != new_val:
+            log.warning("Spill registry write back mismatch: expected %r, got %r", new_val, actual)
     except Exception:
         log.exception("Failed to save spill registry to document property")
 
@@ -602,16 +731,28 @@ def perform_deferred_spill(ctx: Any, doc_url: str, sheet_name: str, formula_row:
         if not on_main_thread():
             return
         if doc is None:
-            if not (hasattr(ctx, "ServiceManager") or hasattr(ctx, "getServiceManager")):
-                return
-            doc = _get_calc_doc(ctx)
-        if doc is None:
             return
 
         with _undo_lock(doc):
-            current_url = getattr(doc, "getURL", lambda: "")() or ""
-            if current_url != doc_url:
-                return
+            # The scheduled token is the file URL, or the lifecycle id
+            # captured when the URL was empty. current_url != doc_url is
+            # false when both are empty, so two unsaved books shared one
+            # spill write. A blank token is the legacy getURL() of an
+            # untitled book (UNO callers). The registry still uses this
+            # document's lifecycle id, and a saved book rejects the blank.
+            live_key = _spill_registry_doc_key(doc)
+            scheduled = doc_url or ""
+            if scheduled:
+                if scheduled != live_key:
+                    return
+            else:
+                current_url = ""
+                try:
+                    current_url = getattr(doc, "getURL", lambda: "")() or ""
+                except Exception:
+                    current_url = ""
+                if current_url or not live_key:
+                    return
             if lifecycle_key:
                 try:
                     from plugin.calc.python.workbook_lifecycle import _lifecycle_key
@@ -637,9 +778,10 @@ def perform_deferred_spill(ctx: Any, doc_url: str, sheet_name: str, formula_row:
                     log.debug("perform_deferred_spill: origin formula check failed", exc_info=True)
                     return
 
-            reg_key = (doc_url, sheet_name, formula_row, formula_col)
+            reg_key = (live_key, sheet_name, formula_row, formula_col)
 
             # 1. Clear previously spilled cells
+            # We overwrite previously spilled cells, not #SPILL! on user edits, because the registry stores coordinates only, not the values we wrote.
             previous_spills = SPILL_REGISTRY.get(reg_key, [])
             for r, c in previous_spills:
                 if (r, c) != (formula_row, formula_col):
@@ -688,6 +830,7 @@ def perform_deferred_spill(ctx: Any, doc_url: str, sheet_name: str, formula_row:
                 cell_metas.append(meta_row)
 
             # 4. Spill new values using setDataArray to avoid O(N) individual cell writes
+            # We write with setDataArray, not setFormulaArray, so result strings starting with '=' stay text.
             if num_cols > 1:
                 first_row_range = sheet.getCellRangeByPosition(formula_col + 1, formula_row, formula_col + num_cols - 1, formula_row)
                 first_row_range.setDataArray((tuple(coerced_grid[0][1:]),))
@@ -787,10 +930,25 @@ def perform_deferred_spill(ctx: Any, doc_url: str, sheet_name: str, formula_row:
 
 def _result_as_spill_grid(result: list[Any] | tuple[Any, ...]) -> list[list[Any]]:
     """Normalize a 1D list or 2D list-of-lists into a rectangular spill grid."""
-    first_elem = result[0]
-    if isinstance(first_elem, (list, tuple)):
-        return [list(row) for row in result]
+    if not result:
+        return []
+    if any(isinstance(row, (list, tuple)) for row in result):
+        return [list(row) if isinstance(row, (list, tuple)) else [row] for row in result]
     return [[x] for x in result]
+
+
+def _cell_is_matrix(sheet: Any, cell: Any) -> bool:
+    """True when the located formula cell is part of a multi-cell array formula block."""
+    try:
+        if hasattr(sheet, "createCursorByRange") and cell is not None:
+            cursor = sheet.createCursorByRange(cell)
+            if hasattr(cursor, "collapseToCurrentArray"):
+                cursor.collapseToCurrentArray()
+                addr = cursor.getRangeAddress()
+                return (addr.EndColumn > addr.StartColumn) or (addr.EndRow > addr.StartRow)
+    except Exception:
+        log.debug("_cell_is_matrix check failed", exc_info=True)
+    return False
 
 
 def _selection_is_multi_cell(target_doc: Any) -> bool:
@@ -805,48 +963,19 @@ def _selection_is_multi_cell(target_doc: Any) -> bool:
     return (addr.EndColumn - addr.StartColumn > 0) or (addr.EndRow - addr.StartRow > 0)
 
 
-def _spill_target_doc(ctx: Any, doc: Any | None) -> Any | None:
-    """Document to use for auto-spill. Off-main: cached model when unambiguous.
-
-    Do not query the desktop off-main (Yellow / #402). The cached object is
-    passed through to a UI-thread callback — do not invoke UNO on it here.
-    """
-    if doc is not None:
-        return doc
-    from plugin.framework.thread_guard import on_main_thread
-    from plugin.scripting.session_manager import get_cached_calc_document, record_active_calc_document
-
-    if on_main_thread():
-        resolved = _get_calc_doc(ctx)
-        if resolved is not None:
-            record_active_calc_document(resolved)
-        return resolved
-    return get_cached_calc_document()
-
-
-def _off_main_may_auto_spill(doc: Any | None) -> bool:
-    """Off-main spill is safe when the caller named a doc or at most one session is recorded.
-
-    Two recorded workbooks: XAddIn has no calling document, so do not guess.
-    Zero recorded sessions (Isolated) still defers — ``_get_calc_doc`` on the UI
-    thread uses the current component, same as the on-main path.
-    """
-    if doc is not None:
-        return True
-    from plugin.scripting.session_manager import recorded_calc_session_count
-
-    return recorded_calc_session_count() <= 1
-
-
 def _prepare_auto_spill(ctx: Any, code: str, grid_to_spill: list[list[Any]], target_doc: Any) -> str | tuple[str, str, int, int] | None:
     """Locate the unique formula origin and check spill collisions (UNO / UI thread).
 
-    Returns ``"#SPILL!"`` on collision, ``(doc_url, sheet_name, row, col)`` when the
+    Returns ``"#SPILL!"`` on collision, ``(doc identity, sheet_name, row, col)`` when the
     neighbor write should proceed, or ``None`` when the origin is not unique.
+    The identity is the file URL, or the lifecycle id when ``getURL()`` is empty.
     """
-    doc_url = getattr(target_doc, "getURL", lambda: "")() or ""
     located = locate_formula_cell_in_doc(ctx, target_doc, code)
     if located is None:
+        return None
+    doc_key = _spill_registry_doc_key(target_doc)
+    if not doc_key:
+        # No file URL and no lifecycle id: refuse the shared "" key.
         return None
     sheet = located[0]
     formula_coord = located[2]
@@ -854,9 +983,9 @@ def _prepare_auto_spill(ctx: Any, code: str, grid_to_spill: list[list[Any]], tar
     log.debug("Spill: located formula cell at %r on sheet %r for code %r", formula_coord, sheet_name, code)
     formula_row, formula_col = formula_coord
 
-    if doc_url not in LOADED_DOCUMENTS:
+    if doc_key not in LOADED_DOCUMENTS:
         load_spill_registry_for_doc(target_doc)
-        LOADED_DOCUMENTS.add(doc_url)
+        LOADED_DOCUMENTS.add(doc_key)
 
     try:
         from plugin.calc.python.sheet_modify import ensure_sheet_modify_listener
@@ -867,7 +996,7 @@ def _prepare_auto_spill(ctx: Any, code: str, grid_to_spill: list[list[Any]], tar
 
     num_rows = len(grid_to_spill)
     num_cols = max(len(row) for row in grid_to_spill) if num_rows > 0 else 0
-    reg_key = (doc_url, sheet_name, formula_row, formula_col)
+    reg_key = (doc_key, sheet_name, formula_row, formula_col)
     previous_spills = SPILL_REGISTRY.get(reg_key, [])
     prev_spill_set = set(previous_spills)
 
@@ -878,13 +1007,27 @@ def _prepare_auto_spill(ctx: Any, code: str, grid_to_spill: list[list[Any]], tar
     except ImportError:
         EMPTY = cast("Any", 0)
 
+    max_cols = 1024
+    max_rows = 1048576
+    try:
+        if hasattr(sheet, "getColumns"):
+            cols_obj = sheet.getColumns()
+            if hasattr(cols_obj, "getCount"):
+                max_cols = int(cols_obj.getCount())
+        if hasattr(sheet, "getRows"):
+            rows_obj = sheet.getRows()
+            if hasattr(rows_obj, "getCount"):
+                max_rows = int(rows_obj.getCount())
+    except Exception:
+        pass
+
     for r_idx in range(num_rows):
         for c_idx in range(num_cols):
             if r_idx == 0 and c_idx == 0:
                 continue
             target_r = formula_row + r_idx
             target_c = formula_col + c_idx
-            if target_r >= 1048576 or target_c >= 1024:
+            if target_r >= max_rows or target_c >= max_cols:
                 log.debug("Spill: collision: target coordinate %r is out of bounds", (target_r, target_c))
                 return "#SPILL!"
             if (target_r, target_c) == (formula_row, formula_col):
@@ -896,7 +1039,7 @@ def _prepare_auto_spill(ctx: Any, code: str, grid_to_spill: list[list[Any]], tar
             if cell_type != EMPTY:
                 log.debug("Spill: collision: cell at %r (type=%s, val=%r, formula=%r) is not empty", (target_r, target_c), cell_type, cell.getValue() or cell.getString(), cell.getFormula())
                 return "#SPILL!"
-    return (doc_url, sheet_name, formula_row, formula_col)
+    return (doc_key, sheet_name, formula_row, formula_col)
 
 
 def _queue_deferred_spill_write(ctx: Any, code: str, grid_to_spill: list[list[Any]], target_doc: Any, prepared: tuple[str, str, int, int]) -> None:
@@ -910,33 +1053,24 @@ def _queue_deferred_spill_write(ctx: Any, code: str, grid_to_spill: list[list[An
     def _deferred_spill_on_main() -> None:
         post_to_main_thread(lambda: perform_deferred_spill(ctx, doc_url, sheet_name, formula_row, formula_col, grid_to_spill, doc=target_doc, code=code, lifecycle_key=spill_lifecycle))
 
-    t = threading.Timer(0.1, _deferred_spill_on_main)
+    t = _new_spill_timer(0.1, _deferred_spill_on_main)
     _register_spill_timer(spill_lifecycle, t)
     t.start()
 
 
-def _queue_off_main_auto_spill(ctx: Any, code: str, grid_to_spill: list[list[Any]], doc: Any | None) -> None:
-    """Resolve the document on the UI thread, then locate and write the spill.
+def _queue_off_main_auto_spill(ctx: Any, code: str, grid_to_spill: list[list[Any]], doc: Any) -> None:
+    """Locate and write the spill on the UI thread in the calling document.
 
-    Yellow/off-main finalize must not touch UNO. Collision ``#SPILL!`` is too
+    Yellow/off-main finalize must not touch UNO: *doc* (the add-in caller) is
+    only passed through to the UI-thread callback. Collision ``#SPILL!`` is too
     late to change the add-in return; the deferred path just skips the write.
     """
     from plugin.framework.queue_executor import post_to_main_thread
-    from plugin.scripting.session_manager import off_main_calc_session_is_unambiguous, recorded_calc_session_count
 
-    log.debug("Spill: scheduling off-main deferred locate code=%r has_doc=%s recorded=%s unambiguous=%s", code, doc is not None, recorded_calc_session_count(), off_main_calc_session_is_unambiguous())
+    log.debug("Spill: scheduling off-main deferred locate code=%r", code)
 
     def _on_main() -> None:
-        from plugin.framework.thread_guard import on_main_thread
-
         target_doc = doc
-        if target_doc is None:
-            # AST lint only treats a bare ``if on_main_thread():`` as a guard.
-            if on_main_thread():
-                target_doc = _get_calc_doc(ctx)
-        if target_doc is None:
-            log.debug("Spill: off-main deferred locate found no Calc document")
-            return
         try:
             prepared = _prepare_auto_spill(ctx, code, grid_to_spill, target_doc)
         except Exception:
@@ -952,8 +1086,15 @@ def _queue_off_main_auto_spill(ctx: Any, code: str, grid_to_spill: list[list[Any
     def _deferred() -> None:
         post_to_main_thread(_on_main)
 
-    t = threading.Timer(0.1, _deferred)
-    _register_spill_timer("", t)
+    # The key was cached on the UI thread; do not call _lifecycle_key here.
+    # Registering under an empty string means unload's cancel (keyed by
+    # RuntimeUID or the workbook session id) never sees this timer, so the
+    # closure keeps ctx, the code, the grid, and the cached document after
+    # the book closes.
+    lkey = _off_main_spill_lifecycle_key(doc)
+    t = _new_spill_timer(0.1, _deferred)
+    if lkey:
+        _register_spill_timer(lkey, t)
     t.start()
 
 
@@ -965,15 +1106,14 @@ def finalize_python_return(ctx: Any, code: str, result: Any, *, index_arg: Any =
     result = result_to_calc_grid(result)
 
     # Auto-spill: list/tuple, no index_arg, and not a matrix selection.
-    # Bugfix: off-main =PY() (Calc multithreaded recalc / Yellow dispatch) cannot
-    # inspect the UI selection or resolve a UNO document. The old path treated
-    # ``target_doc is None and not on_main`` as a matrix formula and returned
-    # only grid[0][0], so DataFrames and 2D lists painted a single corner with
-    # no Spill: logs. Matrix is only when we actually see a multi-cell selection.
-    # Off-main, locate + collision + write are posted to the UI thread when the
-    # target document/session is unambiguous (caller passed *doc*, or at most
-    # one recorded Calc session). Two recorded workbooks stay corner-only —
-    # XAddIn has no calling document.
+    # A matrix is only a selection we actually see covering more than one
+    # cell. Off-main =PY() (Calc's multithreaded recalc, or a Yellow
+    # dispatch) cannot inspect the UI selection or resolve a UNO document.
+    # Treating "no document and not on main" as a matrix returns only
+    # grid[0][0], so a DataFrame or a 2D list paints a single corner and
+    # never logs Spill:. Off-main, locate, collision, and write are posted
+    # to the UI thread with the calling document (doc is only passed
+    # through there). No doc means no spill: the corner value is returned.
     is_matrix = False
     if isinstance(result, (list, tuple)) and index_arg is None and len(result) > 0:
         from plugin.framework.config import get_config_bool
@@ -984,11 +1124,14 @@ def finalize_python_return(ctx: Any, code: str, result: Any, *, index_arg: Any =
             if on_main_thread():
                 try:
                     target_doc = doc
-                    if target_doc is None:
-                        if on_main_thread():
-                            target_doc = _get_calc_doc(ctx)
                     if target_doc is not None:
+                        # We check the selection first, not the locator, because the locator scans every formula cell.
                         is_matrix = _selection_is_multi_cell(target_doc)
+                        if not is_matrix:
+                            located = locate_formula_cell_in_doc(ctx, target_doc, code)
+                            if located is not None:
+                                sheet, cell, _coord = located
+                                is_matrix = _cell_is_matrix(sheet, cell)
                 except Exception:
                     pass
         else:
@@ -998,18 +1141,19 @@ def finalize_python_return(ctx: Any, code: str, result: Any, *, index_arg: Any =
             grid_to_spill = _result_as_spill_grid(result)
             try:
                 if not on_main_thread():
-                    spill_doc = _spill_target_doc(ctx, doc)
-                    if _off_main_may_auto_spill(spill_doc):
-                        _queue_off_main_auto_spill(ctx, code, grid_to_spill, spill_doc)
+                    if doc is not None:
+                        _queue_off_main_auto_spill(ctx, code, grid_to_spill, doc)
+                    # We return the corner as to_calc_compatible (ISO text for dates), not a date serial, because an add-in return cannot carry a number format.
                     return to_calc_compatible(grid_to_spill[0][0])
 
-                target_doc = _spill_target_doc(ctx, doc)
+                target_doc = doc
                 if target_doc is not None:
                     prepared = _prepare_auto_spill(ctx, code, grid_to_spill, target_doc)
                     if prepared == "#SPILL!":
                         return "#SPILL!"
                     if isinstance(prepared, tuple):
                         _queue_deferred_spill_write(ctx, code, grid_to_spill, target_doc, prepared)
+                        # We return the corner as to_calc_compatible (ISO text for dates), not a date serial, because an add-in return cannot carry a number format.
                         return to_calc_compatible(grid_to_spill[0][0])
             except Exception:
                 log.exception("Error checking spill collision or locating formula cell")
@@ -1022,7 +1166,12 @@ def finalize_python_return(ctx: Any, code: str, result: Any, *, index_arg: Any =
                 return f"Error: index {idx} out of range (result length {len(flat)})"
             return to_calc_compatible(flat[idx])
 
-        return scalar_for_list_result(ctx, code, result, worker_data=worker_data, doc=doc)
+        from plugin.framework.thread_guard import on_main_thread
+
+        # Cached spill model is for the deferred UI write only. Passing it
+        # into session_key off-main calls getURL / locate (see session_key).
+        scalar_doc = doc if on_main_thread() else None
+        return scalar_for_list_result(ctx, code, result, worker_data=worker_data, doc=scalar_doc)
 
     return to_calc_compatible(result)
 
@@ -1062,14 +1211,12 @@ def _code_uses_indexed_multi_data(code: str) -> bool:
 def _py_scoped_dir_bindings(doc: Any | None) -> dict[str, Any]:
     """Document folder for in-cell folder SQL.
 
-    On-main with a model: ``get_document_directory`` (UNO ``getURL()``).
-    Off-main / missing doc: reuse the folder cached from a ``calc:file:``
-    session id — do not call ``getURL()`` on a cached model (Yellow / #402).
-    Bind ``scoped_dir`` as ``None`` only when no folder is known so join
+    On-main with the calling document: ``get_document_directory`` (UNO
+    ``getURL()``). Off-main the doc is only passed through, so no folder is
+    read. Bind ``scoped_dir`` as ``None`` when no folder is known so join
     formulas do not ``NameError`` (file joins then fail loud).
     """
     from plugin.framework.thread_guard import on_main_thread
-    from plugin.scripting.session_manager import get_cached_calc_scoped_dir, get_cached_calc_session_id, record_active_calc_scoped_dir, scoped_dir_from_calc_session_id
 
     if doc is not None and on_main_thread():
         try:
@@ -1080,49 +1227,31 @@ def _py_scoped_dir_bindings(doc: Any | None) -> dict[str, Any]:
             log.debug("scoped_dir binding failed", exc_info=True)
             folder = None
         if folder:
-            record_active_calc_scoped_dir(folder)
             return {"scoped_dir": folder}
-
-    folder = get_cached_calc_scoped_dir()
-    if folder:
-        return {"scoped_dir": folder}
-    folder = scoped_dir_from_calc_session_id(get_cached_calc_session_id())
-    if folder:
-        record_active_calc_scoped_dir(folder)
-        return {"scoped_dir": folder}
     return {"scoped_dir": None}
 
 
 def get_python_init_kwargs(ctx: Any, doc: Any | None = None) -> dict[str, Any]:
+    """Init-script kwargs for the calling document, read on the UI thread.
+
+    Off-main the doc is only passed through (its document scripts are UNO),
+    and with no doc there is nothing to read: both return ``{}``.
+    """
     try:
         from plugin.framework.thread_guard import on_main_thread
-        from plugin.scripting.document_scripts import build_python_eval_init_kwargs, get_calc_document_from_ctx
-        from plugin.scripting.session_manager import get_cached_calc_init_kwargs, record_active_calc_session
 
-        target = doc
-        if target is None:
-            if on_main_thread():
-                target = get_calc_document_from_ctx(ctx)
-            else:
-                from plugin.scripting.session_manager import off_main_calc_session_is_unambiguous
+        if doc is None or not on_main_thread():
+            return {}
 
-                # Two open workbooks: cached init belongs to the last focused file, not
-                # the one Calc is recalculating (add-in has no calling document).
-                if not off_main_calc_session_is_unambiguous():
-                    return {}
-                return get_cached_calc_init_kwargs()
-        if target is not None:
-            try:
-                from plugin.calc.python.workbook_lifecycle import ensure_calc_workbook_unload_resets_python
+        from plugin.scripting.document_scripts import build_python_eval_init_kwargs
 
-                ensure_calc_workbook_unload_resets_python(ctx, target)
-            except Exception:
-                log.debug("python workbook unload listener install failed", exc_info=True)
-            kwargs = build_python_eval_init_kwargs(target)
-            if kwargs and on_main_thread():
-                record_active_calc_session(None, kwargs, doc=target)
-            return kwargs
-        return get_cached_calc_init_kwargs()
+        try:
+            from plugin.calc.python.workbook_lifecycle import ensure_calc_workbook_unload_resets_python
+
+            ensure_calc_workbook_unload_resets_python(ctx, doc)
+        except Exception:
+            log.debug("python workbook unload listener install failed", exc_info=True)
+        return build_python_eval_init_kwargs(doc)
     except Exception:
         log.debug("get_python_init_kwargs failed", exc_info=True)
     return {}
@@ -1150,8 +1279,74 @@ def clear_python_addin_cache() -> None:
         _MATRIX_SCALAR_SESSIONS.clear()
 
 
+def _spill_timer_finished(timer: Any) -> bool:
+    """True once a ``threading.Timer`` has fired or been cancelled.
+
+    Test doubles omit ``finished``; those stay until fire/cancel drops them
+    by identity.
+    """
+    finished = getattr(timer, "finished", None)
+    is_set = getattr(finished, "is_set", None)
+    if not callable(is_set):
+        return False
+    try:
+        return bool(is_set())
+    except Exception:
+        return False
+
+
+def _prune_finished_spill_timers_locked() -> None:
+    """Drop fired/cancelled timers. Caller holds ``_PENDING_SPILL_LOCK``."""
+    _PENDING_SPILL_TIMERS[:] = [(key, timer) for key, timer in _PENDING_SPILL_TIMERS if not _spill_timer_finished(timer)]
+
+
+def _forget_spill_timer(timer: threading.Timer) -> None:
+    """Remove *timer* when its callback starts so the closure can be collected."""
+    with _PENDING_SPILL_LOCK:
+        _PENDING_SPILL_TIMERS[:] = [(key, existing) for key, existing in _PENDING_SPILL_TIMERS if existing is not timer and not _spill_timer_finished(existing)]
+
+
+def _new_spill_timer(delay_sec: float, callback: Any) -> threading.Timer:
+    """Timer that leaves ``_PENDING_SPILL_TIMERS`` as soon as it fires.
+
+    After ``run()`` the Timer, its callback, and everything that callback
+    closed over (ctx, code, grid, UNO document) must drop out of the
+    registry. An append-only list keeps them until process exit.
+    """
+    pending: list[threading.Timer] = []
+
+    def _fire(*args: Any, **kwargs: Any) -> None:
+        from plugin.framework.thread_guard import set_background_task
+
+        set_background_task("spill_timer")
+        try:
+            _forget_spill_timer(pending[0])
+            callback(*args, **kwargs)
+        finally:
+            set_background_task(None)
+
+    timer = threading.Timer(delay_sec, _fire)
+    pending.append(timer)
+    return timer
+
+
+def _off_main_spill_lifecycle_key(doc: Any | None) -> str:
+    """Workbook key for an off-main spill timer, without UNO off the UI thread."""
+    from plugin.framework.thread_guard import on_main_thread
+    from plugin.calc.python.workbook_lifecycle import _lifecycle_key, lifecycle_key_if_known
+
+    if doc is not None and on_main_thread():
+        try:
+            return _lifecycle_key(doc) or ""
+        except Exception:
+            log.debug("off-main spill lifecycle key failed", exc_info=True)
+    return lifecycle_key_if_known(doc)
+
+
 def _register_spill_timer(lifecycle_key: str, timer: threading.Timer) -> None:
     with _PENDING_SPILL_LOCK:
+        _prune_finished_spill_timers_locked()
+        _PENDING_SPILL_TIMERS[:] = [(key, existing) for key, existing in _PENDING_SPILL_TIMERS if existing is not timer]
         _PENDING_SPILL_TIMERS.append((lifecycle_key, timer))
 
 
@@ -1162,7 +1357,7 @@ def start_deferred_sheet_timer(delay_sec: float, callback: Any, *, lifecycle_key
     ``perform_deferred_spill``. The timer thread only ``post_to_main_thread``;
     UNO writes run on the UI thread.
     """
-    timer = threading.Timer(delay_sec, callback)
+    timer = _new_spill_timer(delay_sec, callback)
     if lifecycle_key:
         _register_spill_timer(lifecycle_key, timer)
     timer.start()
@@ -1170,24 +1365,41 @@ def start_deferred_sheet_timer(delay_sec: float, callback: Any, *, lifecycle_key
 
 
 def cancel_pending_spill_timers(lifecycle_key: str) -> None:
-    """Cancel deferred spill timers for a workbook that is unloading."""
+    """Cancel deferred spill timers for a workbook that is unloading.
+
+    Also drops timers that already fired or were cancelled under some other
+    key. Those entries kept their closures after the callback returned.
+    """
     with _PENDING_SPILL_LOCK:
         keep: list[tuple[str, threading.Timer]] = []
         for key, timer in _PENDING_SPILL_TIMERS:
-            if key == lifecycle_key:
-                try:
-                    timer.cancel()
-                except Exception:
-                    pass
-            else:
-                keep.append((key, timer))
+            finished = _spill_timer_finished(timer)
+            if key == lifecycle_key or finished:
+                if key == lifecycle_key and not finished:
+                    try:
+                        timer.cancel()
+                    except Exception:
+                        pass
+                continue
+            keep.append((key, timer))
         _PENDING_SPILL_TIMERS[:] = keep
 
 
 def clear_in_memory_spill_state(*, doc_url: str = "", lifecycle_key: str = "") -> None:
     """Drop instance-scoped spill maps. UD property is left for a later open of the same file."""
+    cancel_pending_spill_timers(lifecycle_key)
     if lifecycle_key:
-        cancel_pending_spill_timers(lifecycle_key)
+        # Sheet listeners are keyed by lifecycle id, not the file URL, so an
+        # unload that only matched doc_url left the dispatcher registered.
+        for skey in [k for k in SHEET_MODIFY_LISTENERS if k[0] == lifecycle_key]:
+            SHEET_MODIFY_LISTENERS.pop(skey, None)
+        # Unsaved spill rows are keyed by lifecycle id because getURL() is
+        # empty. Sweep this lifecycle id only. Skipping the sweep when
+        # doc_url is empty leaves the row behind, and sweeping on an empty
+        # URL would drop every other untitled book.
+        LOADED_DOCUMENTS.discard(lifecycle_key)
+        for key in [k for k in SPILL_REGISTRY if k[0] == lifecycle_key]:
+            SPILL_REGISTRY.pop(key, None)
     if doc_url:
         LOADED_DOCUMENTS.discard(doc_url)
         for key in [k for k in SPILL_REGISTRY if k[0] == doc_url]:
@@ -1217,6 +1429,7 @@ def _execute_python_addin_impl(ctx: Any, code: str, data: Any = None, true_strin
     ipc_ms = 0
     image_ms = 0
     used_cache = False
+    target_doc: Any = doc
     try:
         t_pack = time.perf_counter() if timings else 0.0
         args = split_python_addin_data_args(data)
@@ -1227,26 +1440,14 @@ def _execute_python_addin_impl(ctx: Any, code: str, data: Any = None, true_strin
         # Geometric predecessor is a Calc-only DAG token. Strip it before
         # calc_addin_args_from_split (1 vs N flips `data` to a list) and
         # before the matrix-index peel (a leftover 1×1 pred becomes index_arg).
-        target_doc = doc
-        if target_doc is None:
-            from plugin.framework.thread_guard import on_main_thread
-
-            if on_main_thread():
-                from plugin.scripting.session_manager import _calc_document, record_active_calc_document
-
-                target_doc = _calc_document(ctx)
-                if target_doc is not None:
-                    record_active_calc_document(target_doc)
-            # Off-main: do not query the desktop (Yellow / #402). A cached
-            # model is only for spill finalize — session_key / init_kwargs
-            # must not call UNO on it from this thread.
-        spill_doc = target_doc if target_doc is not None else _spill_target_doc(ctx, None)
+        # *doc* is the add-in caller argument (the calling document). There is
+        # no other source: no front window, open-documents search, or cache.
         from plugin.calc.python.geometric_recalc import ensure_geometric_strip_index_for_eval, maybe_strip_geometric_eval_args
 
         # Same-process hydrate: client/URP attach cannot fill soffice's map.
         ensure_geometric_strip_index_for_eval(target_doc, ctx)
-        # UI-thread target_doc is a real workbook_key even when two Calc
-        # files are open; off-main still needs the len==1 session gate.
+        # UI-thread target_doc is a real workbook_key. Off-main never strips
+        # (the doc is only passed through there, so no key is read).
         args = maybe_strip_geometric_eval_args(code, args, doc=target_doc)
         py_data = calc_addin_args_from_split(args, true_strings, false_strings)
         log.debug("PYTHON parsed py_data: %r", py_data)
@@ -1271,7 +1472,7 @@ def _execute_python_addin_impl(ctx: Any, code: str, data: Any = None, true_strin
             elif is_scalar_index_arg(py_data) and not is_split_grid(py_data):
                 # Single cell may be a matrix index and/or the data value itself.
                 index_arg = _unwrap_single_cell(py_data)
-        max_cells = configured_python_max_data_cells(ctx)
+        max_cells = configured_python_max_data_cells()
         if py_data is not None:
             if is_multi:
                 size_err = check_python_multi_data_size(py_data, max_cells=max_cells)
@@ -1280,7 +1481,7 @@ def _execute_python_addin_impl(ctx: Any, code: str, data: Any = None, true_strin
             if size_err:
                 ret = f"Error: {size_err}"
                 log.debug("PYTHON returning size error: %r", ret)
-                _record_py_diagnostic(ctx, code, None, status="error", message=ret)
+                _record_py_diagnostic(ctx, code, None, status="error", message=ret, doc=target_doc)
                 return ret
             worker_data = pack_calc_multi_data_for_wire(py_data) if is_multi else pack_calc_data_for_wire(py_data)
         else:
@@ -1289,32 +1490,35 @@ def _execute_python_addin_impl(ctx: Any, code: str, data: Any = None, true_strin
             pack_ms = int(round((time.perf_counter() - t_pack) * 1000))
         # Synchronous: =PY() runs during Calc recalc; UI event pumping from
         # run_blocking_in_thread can re-enter the formula engine and yield #VALUE!.
-        # target_doc was resolved above (strip hydrate + worker session).
+        # target_doc is the add-in caller argument (strip hydrate + worker session).
 
         tid = threading.get_ident()
         sk = session_key(ctx, code, doc=target_doc)
-        unique_origin = bool(sk[4]) if len(sk) > 4 else False
+        unique_origin = bool(sk[4])
         cache_key = (tid, sk, repr(worker_data))
+        now = time.monotonic()
         with _MATRIX_SCALAR_SESSIONS_LOCK:
             cached = _MATRIX_SCALAR_SESSIONS.get(cache_key) if unique_origin else None
+            if cached is not None and (now - cached.timestamp) > _PY_PASS_GAP_SEC:
+                _MATRIX_SCALAR_SESSIONS.pop(cache_key, None)
+                cached = None
         if isinstance(cached, WorkerResultSession) and cached.next_index < len(cached.flat):
             used_cache = True
             res = {"status": "ok", "result": cached.raw}
         else:
-            session_id = workbook_session_id(ctx, doc=target_doc)
+            from plugin.framework.thread_guard import in_sync_host_dispatch, on_main_thread
+
+            # Off-main the caller doc is only passed through: reading its URL or
+            # init script is UNO. Such a call runs with no shared session id and
+            # no init kwargs rather than borrowing another workbook's.
+            on_main = on_main_thread()
+            session_id = workbook_session_id(ctx, doc=target_doc) if on_main else None
             init_kwargs = get_python_init_kwargs(ctx, doc=target_doc)
 
-            from plugin.framework.thread_guard import in_sync_host_dispatch, on_main_thread
-            from plugin.scripting.session_manager import off_main_calc_session_is_unambiguous, recorded_calc_session_count, recorded_calc_session_ids
-
             log.debug(
-                "PYTHON eval: target_doc=%s spill_doc=%s session_id=%r recorded=%s ids=%s unambiguous=%s has_init=%s on_main=%s in_sync_host=%s",
+                "PYTHON eval: target_doc=%s session_id=%r has_init=%s on_main=%s in_sync_host=%s",
                 target_doc is not None,
-                spill_doc is not None,
                 session_id,
-                recorded_calc_session_count(),
-                recorded_calc_session_ids(),
-                off_main_calc_session_is_unambiguous(),
                 bool(init_kwargs),
                 on_main_thread(),
                 in_sync_host_dispatch(),
@@ -1335,7 +1539,7 @@ def _execute_python_addin_impl(ctx: Any, code: str, data: Any = None, true_strin
                 ipc_ms = int(round((time.perf_counter() - t_ipc) * 1000))
         log.debug("PYTHON res from worker: %r", res)
         if res.get("status") == "ok":
-            _record_py_diagnostic(ctx, code, res, status="ok")
+            _record_py_diagnostic(ctx, code, res, status="ok", doc=target_doc)
             result = res.get("result")
             log.debug("PYTHON raw result: %r (type: %s)", result, type(result).__name__)
             images = find_image_payloads(result)
@@ -1346,18 +1550,18 @@ def _execute_python_addin_impl(ctx: Any, code: str, data: Any = None, true_strin
                 if timings:
                     image_ms = int(round((time.perf_counter() - t_img) * 1000))
                 return _("Image inserted") if len(images) == 1 else _("Images inserted")
-            final_ret = finalize_python_return(ctx, code, result, index_arg=index_arg, worker_data=worker_data, doc=spill_doc)
+            final_ret = finalize_python_return(ctx, code, result, index_arg=index_arg, worker_data=worker_data, doc=target_doc)
             log.debug("PYTHON returning scalar: %r (type: %s)", final_ret, type(final_ret).__name__)
             return final_ret
 
         err_msg = _format_python_addin_worker_error(str(res.get("message") or res.get("error") or ""))
-        _record_py_diagnostic(ctx, code, res, status="error", message=err_msg)
+        _record_py_diagnostic(ctx, code, res, status="error", message=err_msg, doc=target_doc)
         log.debug("PYTHON returning worker error: %r", err_msg)
         return err_msg
     except Exception as e:
         log.exception("PYTHON unexpected error during execution")
         err_msg = _format_error_for_display(e)
-        _record_py_diagnostic(ctx, code, None, status="error", message=err_msg, traceback=str(e))
+        _record_py_diagnostic(ctx, code, None, status="error", message=err_msg, traceback=str(e), doc=target_doc)
         log.debug("PYTHON returning exception wrapper: %r", err_msg)
         return err_msg
     finally:
@@ -1369,25 +1573,28 @@ def _execute_python_addin_impl(ctx: Any, code: str, data: Any = None, true_strin
             _emit_py_timing(code=code, total_ms=total_ms, pack_ms=pack_ms, ipc_ms=ipc_ms, image_ms=image_ms, cached=used_cache, pass_start=getattr(_PY_PASS_STATS, "pass_start", t_enter), n=_PY_PASS_STATS.n, pass_sum_ms=int(_PY_PASS_STATS.sum_ms), last_end=_PY_PASS_STATS.last_end)
 
 
-def _diagnostics_workbook_key(ctx: Any) -> str:
-    """Stable workbook key for the diagnostics store (UNO-light best effort)."""
+def _diagnostics_workbook_key(ctx: Any, doc: Any | None = None) -> str:
+    """Stable workbook key for the diagnostics store (UNO-light best effort).
+
+    Uses the calling document only, and only reads an existing session id
+    (``existing_calc_session_id`` does not mint a UDProp).
+    """
     try:
         from plugin.framework.thread_guard import on_main_thread
 
-        if not on_main_thread():
+        if doc is None or not on_main_thread():
             return "unknown"
-        from plugin.scripting.document_scripts import get_calc_document_from_ctx
-        from plugin.scripting.session_manager import calc_workbook_base_session_id
+        from plugin.scripting.session_manager import existing_calc_session_id
 
-        doc = get_calc_document_from_ctx(ctx)
-        if doc is not None:
-            return calc_workbook_base_session_id(doc)
+        existing = existing_calc_session_id(doc)
+        if existing:
+            return existing
     except Exception:
         log.debug("diagnostics workbook key failed", exc_info=True)
     return "unknown"
 
 
-def _record_py_diagnostic(ctx: Any, code: str, res: dict[str, Any] | None, *, status: str, message: str = "", traceback: str = "") -> None:
+def _record_py_diagnostic(ctx: Any, code: str, res: dict[str, Any] | None, *, status: str, message: str = "", traceback: str = "", doc: Any | None = None) -> None:
     """Record stdout/errors for the LibrePy sidebar without extra UNO work.
 
     Skips successful evaluations with empty stdout so the log stays actionable.
@@ -1407,7 +1614,7 @@ def _record_py_diagnostic(ctx: Any, code: str, res: dict[str, Any] | None, *, st
                 tb = str(raw_tb) if raw_tb else ""
         if status == "ok" and not (stdout or "").strip():
             return
-        record_python_eval(workbook_key=_diagnostics_workbook_key(ctx), code=code or "", status=status, message=msg, stdout=stdout, traceback=tb)
+        record_python_eval(workbook_key=_diagnostics_workbook_key(ctx, doc=doc), code=code or "", status=status, message=msg, stdout=stdout, traceback=tb)
     except Exception:
         # Never break formula evaluation for diagnostics UI.
         log.debug("record_python_eval failed", exc_info=True)

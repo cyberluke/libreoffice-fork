@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <oor:component-data xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" oor:name="Addons" oor:package="org.openoffice.Office">
-  <node oor:name="AddonUI">
+<node oor:name="AddonUI">
     <node oor:name="OfficeMenuBar">
       <node oor:name="org.extension.writeragent.menubar" oor:op="replace">
         <prop oor:name="Title" oor:type="xs:string">
@@ -24,7 +24,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai.svg</value></prop></node>
           <node oor:name="M02" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Edit Selection</value>
@@ -38,7 +38,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-edit.svg</value></prop></node>
           <node oor:name="M03" oor:op="replace">
             <prop oor:name="URL">
               <value>private:separator</value>
@@ -60,7 +60,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-terminal.svg</value></prop></node>
           <node oor:name="M05" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Edit Python in Cell...</value>
@@ -74,7 +74,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-terminal-1.svg</value></prop></node>
           <node oor:name="M06" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Convert Sheet to Python...</value>
@@ -88,7 +88,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-coordinate-system.svg</value></prop></node>
           <node oor:name="M07" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Search Nearby Files...</value>
@@ -102,7 +102,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-search.svg</value></prop></node>
           <node oor:name="M08" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Insert LaTeX Math...</value>
@@ -116,7 +116,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-article.svg</value></prop></node>
           <node oor:name="M09" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Text Analytics...</value>
@@ -130,7 +130,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-chart-bar.svg</value></prop></node>
           <node oor:name="M11" oor:op="replace">
             <prop oor:name="URL">
               <value>private:separator</value>
@@ -152,7 +152,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-tool.svg</value></prop></node>
           <node oor:name="M13" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Vision OCR Settings...</value>
@@ -166,7 +166,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-screenshot.svg</value></prop></node>
           <node oor:name="M14" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Toggle MCP Server</value>
@@ -180,7 +180,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-git-branch.svg</value></prop></node>
           <node oor:name="M15" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">MCP Server Status</value>
@@ -195,7 +195,7 @@
               <value>_self</value>
             </prop>
             <prop oor:name="ImageIdentifier" oor:type="xs:string">
-              <value />
+              <value/>
             </prop>
           </node>
           <node oor:name="M16" oor:op="replace">
@@ -211,7 +211,7 @@
             <prop oor:name="Target" oor:type="xs:string">
               <value>_self</value>
             </prop>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-edit-1.svg</value></prop></node>
           <node oor:name="M17" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Debug</value>
@@ -297,7 +297,7 @@
                 </prop>
               </node>
             </node>
-          </node>
+          <prop oor:name="ImageIdentifier" oor:type="xs:string"><value>vnd.sun.star.extension://org.extension.writeragent/assets/ai-book-open.svg</value></prop></node>
           <node oor:name="M18" oor:op="replace">
             <prop oor:name="Title">
               <value xml:lang="en-US">Report bug...</value>
@@ -331,7 +331,7 @@
             <value>_self</value>
           </prop>
           <prop oor:name="ImageIdentifier" oor:type="xs:string">
-            <value />
+            <value/>
           </prop>
         </node>
         <node oor:name="t2" oor:op="replace">
@@ -348,7 +348,7 @@
             <value>_self</value>
           </prop>
           <prop oor:name="ImageIdentifier" oor:type="xs:string">
-            <value />
+            <value/>
           </prop>
         </node>
         <node oor:name="sep1" oor:op="replace">
@@ -370,7 +370,7 @@
             <value>_self</value>
           </prop>
           <prop oor:name="ImageIdentifier" oor:type="xs:string">
-            <value />
+            <value/>
           </prop>
         </node>
         <node oor:name="t4" oor:op="replace">
@@ -387,7 +387,7 @@
             <value>_self</value>
           </prop>
           <prop oor:name="ImageIdentifier" oor:type="xs:string">
-            <value />
+            <value/>
           </prop>
         </node>
       </node>
@@ -471,4 +471,3 @@
     </node>
   </node>
 </oor:component-data>
-

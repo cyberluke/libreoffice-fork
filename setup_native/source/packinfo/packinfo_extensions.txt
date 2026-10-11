@@ -70,10 +70,10 @@ solarisrequires =  "%BASISPACKAGEPREFIX%WITHOUTDOTPRODUCTVERSION-core (Name="Cor
 packagename = "%BASISPACKAGEPREFIX%PRODUCTVERSION-officelabs-ai"
 requires = "%BASISPACKAGEPREFIX%PRODUCTVERSION-core %PACKAGEVERSION %PACKAGEVERSION-%PACKAGEREVISION"
 linuxpatchrequires = ""
-copyright = "2026 OfficeLabs"
+copyright = "2026 NAI Office"
 solariscopyright = "solariscopyrightfile"
-vendor = "OfficeLabs"
-description = "OfficeLabs AI assistant for %PRODUCTNAME %PRODUCTVERSION (bundled WriterAgent, see officelabs/writeragent/UPSTREAM)"
+vendor = "NAI Office"
+description = "NAI Office AI assistant for %PRODUCTNAME %PRODUCTVERSION (bundled WriterAgent, see officelabs/writeragent/UPSTREAM)"
 destpath = "/opt"
 packageversion = "%PACKAGEVERSION"
 End

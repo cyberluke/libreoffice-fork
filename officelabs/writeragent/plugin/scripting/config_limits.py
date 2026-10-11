@@ -9,7 +9,10 @@
 
 from __future__ import annotations
 
+import functools
 from typing import Any
+
+from plugin.framework.deal_shim import DEAL_MAX_ARGV, DEAL_MAX_TOKEN, UNDER_CROSSHAIR, str_bounded, deal
 
 _TIMEOUT_CONFIG_KEY = "scripting.python_exec_timeout"
 # Fallbacks duplicate module.yaml so an OXT can import without plugin._manifest.
@@ -45,9 +48,8 @@ LANGUAGETOOL_WORKER_TIMEOUT_SEC = 15
 VALE_WORKER_TIMEOUT_SEC = 25
 
 
-def long_trusted_worker_timeout_sec(_ctx: Any | None = None) -> int:
+def long_trusted_worker_timeout_sec() -> int:
     """Single long budget for the list of known long-running trusted helpers."""
-    del _ctx
     return LONG_TRUSTED_WORKER_TIMEOUT_SEC
 
 # Settings → Python Test: per-package sandbox import probe (independent of scripting.python_exec_timeout).
@@ -63,16 +65,12 @@ VECTOR_SEARCH_PROBE_TIMEOUT_SEC = 30
 _DATA_CELLS_CONFIG_KEY = "scripting.python_max_data_cells"
 
 
+@functools.cache
 def _scripting_schema_field(field_name: str, *, required: bool = False) -> dict[str, Any] | None:
     try:
         from plugin._manifest import MODULES
     except ImportError:
-        if required:
-            raise RuntimeError(
-                f"{field_name} missing from manifest; run make manifest "
-                "(plugin/scripting/module.yaml must define the field)."
-            ) from None
-        return None
+        MODULES = []
     for m in MODULES:
         if not isinstance(m, dict):
             continue
@@ -91,6 +89,7 @@ def _scripting_schema_field(field_name: str, *, required: bool = False) -> dict[
     return None
 
 
+@functools.cache
 def _schema_int(field_name: str, name: str, *, fallback: int | None = None, required: bool = False) -> int:
     field = _scripting_schema_field(field_name, required=required)
     if not field:
@@ -106,9 +105,6 @@ def _schema_int(field_name: str, name: str, *, fallback: int | None = None, requ
 
 
 # --- python_exec_timeout ---
-
-
-from plugin.framework.deal_shim import DEAL_MAX_ARGV, DEAL_MAX_TOKEN, str_bounded, deal
 
 
 def python_exec_timeout_default() -> int:
@@ -128,8 +124,18 @@ def python_exec_timeout_max() -> int:
 # symbolic ints (check-all deep 32900105768: resolve(..., configured=33) then
 # nested _clamp_timeout). ``type(x) is int`` rejects bools the same way for
 # real values and is CrossHair-friendly.
-def _timeout_int_ok(value: object) -> bool:
+def _timeout_int_ok_pytest(value: object) -> bool:
+    # A hand-edited timeout past DEAL_MAX_ARGV (86400 is one day; the schema
+    # max is 600) raised PreContractError before _clamp_timeout could clamp.
+    # bool stays out: type(True) is not int. CrossHair keeps the abs cap.
+    return type(value) is int
+
+
+def _timeout_int_ok_crosshair(value: object) -> bool:
     return type(value) is int and abs(value) <= DEAL_MAX_ARGV
+
+
+_timeout_int_ok = _timeout_int_ok_crosshair if UNDER_CROSSHAIR else _timeout_int_ok_pytest
 
 
 def _timeout_sec_ok(timeout_sec: object) -> bool:
@@ -187,20 +193,17 @@ def resolve_python_exec_timeout(
     return _clamp_timeout(parsed)
 
 
-def configured_python_exec_timeout(ctx: Any) -> int:
+# get_config_int_safe reads from global config storage and does not take a UNO
+# context. Dropping ctx removes misleading parameter coupling across callers.
+def configured_python_exec_timeout() -> int:
     """Read Settings value for scripting.python_exec_timeout and clamp to schema bounds."""
-    from plugin.framework.config import get_config_int
+    from plugin.framework.config import get_config_int_safe
 
-    try:
-        val = get_config_int(_TIMEOUT_CONFIG_KEY)
-    except Exception:
-        val = python_exec_timeout_default()
-    return _clamp_timeout(val)
+    return _clamp_timeout(get_config_int_safe(_TIMEOUT_CONFIG_KEY))
 
 
-def embeddings_worker_timeout_sec(_ctx: Any | None = None) -> int:
+def embeddings_worker_timeout_sec() -> int:
     """Wall-clock budget for trusted embeddings RPC (uses the single long trusted budget)."""
-    del _ctx
     return long_trusted_worker_timeout_sec()
 
 
@@ -225,8 +228,8 @@ def _clamp_max_data_cells(value: int) -> int:
     return max(lo, min(hi, value))
 
 
-def configured_python_max_data_cells(ctx: Any) -> int:
+def configured_python_max_data_cells() -> int:
     """Read Settings value for scripting.python_max_data_cells and clamp to schema bounds."""
-    from plugin.framework.config import get_config_int
+    from plugin.framework.config import get_config_int_safe
 
-    return _clamp_max_data_cells(get_config_int(_DATA_CELLS_CONFIG_KEY))
+    return _clamp_max_data_cells(get_config_int_safe(_DATA_CELLS_CONFIG_KEY))

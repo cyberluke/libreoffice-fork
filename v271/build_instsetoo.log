@@ -1,0 +1,11 @@
+cd D:/_SATIN_AI/LibreOffice/instsetoo_native && make -j 24 -rs
+[build ECH] CustomTarget/instsetoo_native/setup/setup.ini
+[build ECH] CustomTarget/instsetoo_native/setup/version.ini
+[build LOC] top level modules: instsetoo_native
+[build CUS] instsetoo_native/setup
+[build PKG] instsetoo_native_setup
+[build BIN] instsetoo_native
+[build MOD] instsetoo_native
+[build BIN] top level modules: instsetoo_native
+[build ALL] top level modules: build-non-l10n-only build-l10n-only
+INSTSETOO_EXIT=0

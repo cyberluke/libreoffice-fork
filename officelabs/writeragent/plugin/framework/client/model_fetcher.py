@@ -13,6 +13,10 @@ harmless (same endpoint, same models). Do not add a mutex just to
 serialize identical fetches. When a UNO ``ctx`` is passed, the cache key
 includes a hash of the API key so two keys on the same host do not share a
 list and a dump of the dict does not contain the key.
+
+Settings treats a successful OpenRouter or Together catalog as once per
+process. ``settings_catalog_is_warm`` is that check. **Test Connection**
+clears the memo with ``clear_settings_catalog_cache``.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ from typing import Any
 from plugin.framework.constants import ModelCapability
 from plugin.framework.default_models import DEFAULT_MODELS, get_provider_defaults, resolve_model_id
 from plugin.framework.url_utils import normalize_endpoint_url, get_api_version_suffix
-from plugin.framework.client.provider_detection import get_provider_from_endpoint, is_openrouter_endpoint
+from plugin.framework.client.provider_detection import get_provider_from_endpoint, is_openrouter_endpoint, is_openwebui_endpoint
 from plugin.framework.errors import NetworkError
 from plugin.framework.openrouter_model_id import openrouter_model_ids_equivalent
 from plugin.framework.config import get_api_key_for_endpoint, get_config_bool_safe, get_config, get_current_endpoint, set_config
@@ -64,7 +68,10 @@ ENDPOINT_PRESETS = [
 # keys must not share cache; the raw key is not stored). Value is model id list or None after failure.
 _model_fetch_cache: dict[str, list[str] | None] = {}
 _model_fetch_image_cache: dict[str, list[str] | None] = {}
-_model_fetch_vision_cache: dict[str, list[str] | None] = {}
+# Successful /v1/models vision memo. A dict is id -> accepts image, and only
+# ids whose row listed input_modalities are present. A list is positive ids
+# only (tests). None is not stored: a failed GET must be retried.
+_model_fetch_vision_cache: dict[str, list[str] | dict[str, bool] | None] = {}
 # OpenRouter GET /v1/models?output_modalities=speech|transcription. Separate from
 # the unfiltered catalog: that list does not mark TTS, and output_modalities=audio
 # is music / gpt-audio, not the Speech-tab TTS combo.
@@ -102,9 +109,10 @@ _OLLAMA_NUM_CTX_LINE = re.compile(r"(?im)^\s*(?:PARAMETER\s+)?num_ctx\s+(\d+)\s*
 # - OpenRouter (openrouter.ai): {data: [...]}; image rows use architecture.output_modalities (not slug names).
 #   TTS is GET /v1/models?output_modalities=speech (not audio). STT is output_modalities=transcription.
 # - OpenAI-compatible (Ollama, LM Studio, most hosted chat APIs): {data: [{id}, ...]}; image models
-#   are not typed — local discovery uses slug keywords in _filter_fetched_models (flux, sdxl, …).
-# Image-output IDs are extracted at fetch time into _model_fetch_image_cache; see
-# fetch_available_image_models for which providers trust metadata vs slug fallback.
+#   are not typed — the image memo for those hosts is the slug keyword filter
+#   (flux, sdxl, …), the same list fetch_available_image_models returns.
+# Image-output IDs are stored at fetch time in _model_fetch_image_cache. Settings
+# reads that memo (once per startup). Test Connection clears it.
 
 
 def _v1_models_entries_from_body(data: Any) -> list[Any] | None:
@@ -118,9 +126,6 @@ def _v1_models_entries_from_body(data: Any) -> list[Any] | None:
     return None
 
 
-_model_output_modalities: dict[str, list[str]] = {}
-
-
 def _image_output_model_ids_from_v1_entries(entries: list[Any]) -> list[str]:
     """Collect model IDs that generate images (not vision-input-only chat models)."""
     out: list[str] = []
@@ -132,8 +137,6 @@ def _image_output_model_ids_from_v1_entries(entries: list[Any]) -> list[str]:
             continue
         arch = m.get("architecture") or {}
         modalities = arch.get("output_modalities")
-        if isinstance(modalities, list):
-            _model_output_modalities[str(mid)] = [str(x) for x in modalities]
         # OpenRouter: google/gemini-2.5-flash-image, openai/gpt-5-image, etc.
         if isinstance(modalities, list) and "image" in modalities:
             out.append(str(mid))
@@ -156,6 +159,49 @@ def _vision_input_model_ids_from_v1_entries(entries: list[Any]) -> list[str]:
         input_mods = m.get("input_modalities") or arch.get("input_modalities") or []
         if isinstance(input_mods, list) and "image" in input_mods:
             out.append(str(mid))
+    return out
+
+
+def _stated_input_modalities(row: dict[str, Any]) -> list[Any] | None:
+    """input_modalities when this row states a list. None when the field is absent.
+
+    An empty list is a statement (no image). A missing field is not.
+    ``top or nested`` matches ``_vision_input_model_ids_from_v1_entries``.
+    A non-dict architecture still raises on ``.get``.
+    """
+    arch = row.get("architecture") or {}
+    top = row.get("input_modalities") if "input_modalities" in row else None
+    # Non-dict architecture: ``in`` is not enough (a string can contain the
+    # name). Call ``.get`` so the parse still aborts, same as the id collector.
+    if not isinstance(arch, dict) or "input_modalities" in arch:
+        nested = arch.get("input_modalities")
+    else:
+        nested = None
+    chosen = top if top else nested
+    if isinstance(chosen, list):
+        return chosen
+    if isinstance(top, list):
+        return top
+    return None
+
+
+def _vision_declarations_from_v1_entries(entries: list[Any]) -> dict[str, bool]:
+    """id -> image input, only for rows that listed input_modalities.
+
+    Omitted input_modalities is not an entry. Callers must not treat a missing
+    id as an explicit no.
+    """
+    out: dict[str, bool] = {}
+    for row in entries:
+        if not isinstance(row, dict):
+            continue
+        mid = row.get("id")
+        if not mid:
+            continue
+        stated = _stated_input_modalities(row)
+        if stated is None:
+            continue
+        out[str(mid)] = "image" in stated
     return out
 
 
@@ -190,8 +236,13 @@ def _context_tokens_from_v1_entries(entries: list[Any]) -> dict[str, int]:
     return out
 
 
-def _parse_v1_models_response(data: Any) -> tuple[list[str], list[str], list[str]] | None:
-    """Return (all_ids, image_output_ids, vision_input_ids) from a /v1/models JSON body."""
+def _parse_v1_models_response(data: Any) -> tuple[list[str], list[str], dict[str, bool]] | None:
+    """Return (all_ids, image_output_ids, vision_declarations) from a /v1/models body.
+
+    Vision declarations are id -> accepts image, only when the row listed
+    input_modalities. The positive-id walk still runs so a non-dict
+    architecture aborts this parse the same way it did before.
+    """
     entries = _v1_models_entries_from_body(data)
     if entries is None:
         return None
@@ -202,17 +253,22 @@ def _parse_v1_models_response(data: Any) -> tuple[list[str], list[str], list[str
             if mid:
                 models.append(str(mid))
     image_models = _image_output_model_ids_from_v1_entries(entries)
-    vision_models = _vision_input_model_ids_from_v1_entries(entries)
-    return models, image_models, vision_models
+    # The positive-id walk is what aborts on a non-dict architecture. Keep it
+    # even though the memo now stores declarations, not that id list.
+    _vision_input_model_ids_from_v1_entries(entries)
+    return models, image_models, _vision_declarations_from_v1_entries(entries)
 
 
-def _store_model_fetch_caches(cache_key: str, models: list[str] | None, image_models: list[str] | None, vision_models: list[str] | None = None, context_tokens: dict[str, int] | None = None) -> None:
+def _store_model_fetch_caches(cache_key: str, models: list[str] | None, image_models: list[str] | None, vision_models: list[str] | dict[str, bool] | None = None, context_tokens: dict[str, int] | None = None) -> None:
     # A failed fetch must not stick for the process lifetime. The next caller retries.
     if models is None:
         return
     _model_fetch_cache[cache_key] = models
     _model_fetch_image_cache[cache_key] = image_models
-    _model_fetch_vision_cache[cache_key] = vision_models
+    if isinstance(vision_models, dict):
+        _model_fetch_vision_cache[cache_key] = dict(vision_models)
+    else:
+        _model_fetch_vision_cache[cache_key] = vision_models
     _model_context_cache[cache_key] = dict(context_tokens) if context_tokens else {}
 
 
@@ -225,6 +281,50 @@ def _model_fetch_cache_key(url: str, base: str, api_key_override: str | None = N
     # in diagnostics. Two keys on one URL must still miss each other.
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
     return f"{url}\x1f{digest}"
+
+
+def _api_suffix(base: str) -> str:
+    return get_api_version_suffix(base, is_openwebui=get_config_bool_safe("is_openwebui"))
+
+
+def _models_list_url(base: str) -> str:
+    """Same URL ``fetch_available_models`` caches under."""
+    return f"{base}{_api_suffix(base)}/models"
+
+
+def _openrouter_image_models_url(base: str) -> str:
+    """OpenRouter image catalog. Not the architecture slice of ``/v1/models``."""
+    return f"{base}{_api_suffix(base)}/images/models"
+
+
+def _openrouter_modality_models_url(base: str, modality: str) -> str:
+    query = urllib.parse.urlencode({"output_modalities": modality})
+    return f"{_models_list_url(base)}?{query}"
+
+
+def _together_voices_url(base: str, model_id: str = "") -> str:
+    root = f"{base}{_api_suffix(base)}/voices"
+    requested = str(model_id or "").strip()
+    if not requested:
+        return root
+    return f"{root}?{urllib.parse.urlencode({'model': requested})}"
+
+
+def _catalog_base(endpoint: str) -> str:
+    if not endpoint:
+        return ""
+    base = normalize_endpoint_url(endpoint)
+    if not base or not endpoint_url_suitable_for_v1_models_fetch(base):
+        return ""
+    return base
+
+
+def _cached_id_list(cache: dict[str, list[str] | None], key: str) -> list[str] | None:
+    """A stored list is success, including empty. Missing or a failed ``None`` is a miss."""
+    found = cache.get(key)
+    if isinstance(found, list):
+        return list(found)
+    return None
 
 
 def endpoint_url_suitable_for_v1_models_fetch(endpoint: str) -> bool:
@@ -282,8 +382,9 @@ def fetch_available_models(endpoint: str, api_key_override: str | None = None) -
     ``get_api_key_for_endpoint(base)``. Pass ``api_key_override`` (including ``""``)
     to use a key not yet saved to config (e.g. Settings dialog typing order: URL then API key).
 
-    Successful responses are cached in `_model_fetch_cache` for the process
+    Successful responses are cached in ``_model_fetch_cache`` for the process
     lifetime. Failed lookups are not cached, so the next Settings open retries.
+    Settings skips the request when ``settings_catalog_is_warm`` is already true.
     """
     if not endpoint:
         return None
@@ -292,14 +393,12 @@ def fetch_available_models(endpoint: str, api_key_override: str | None = None) -
         return None
     if not endpoint_url_suitable_for_v1_models_fetch(base):
         return None
-    is_owu = get_config_bool_safe("is_openwebui")
-    suffix = get_api_version_suffix(base, is_openwebui=is_owu)
-    url = f"{base}{suffix}/models"
+    url = _models_list_url(base)
     cache_key = _model_fetch_cache_key(url, base, api_key_override)
     if cache_key in _model_fetch_cache:
         return _model_fetch_cache[cache_key]
 
-    is_openwebui = as_bool(get_config("is_openwebui")) or "open-webui" in base.lower() or "openwebui" in base.lower()
+    is_openwebui = is_openwebui_endpoint(base, explicit_is_openwebui=as_bool(get_config("is_openwebui")))
     # Hostname equality, same rule as get_provider_from_endpoint. A path that
     # merely contains "openrouter.ai" is not this provider.
     is_openrouter = is_openrouter_endpoint(base, explicit_is_openrouter=as_bool(get_config("is_openrouter")))
@@ -313,10 +412,19 @@ def fetch_available_models(endpoint: str, api_key_override: str | None = None) -
         data = sync_request(url, parse_json=True, headers=req_headers, timeout=_MODEL_FETCH_TIMEOUT)
         parsed = _parse_v1_models_response(data)
         if parsed is not None:
-            models, image_models, vision_models = parsed
+            models, image_models, vision_declared = parsed
             entries = _v1_models_entries_from_body(data) or []
-            _store_model_fetch_caches(cache_key, models, image_models, vision_models, _context_tokens_from_v1_entries(entries))
             provider = get_provider_from_endpoint(base)
+            # Ollama, LM Studio, and other non-Together hosts usually omit
+            # architecture/type image ids, so a memo of only those ids is []
+            # while keyword matching finds flux/sdxl/…. Settings reads the
+            # memo, and the startup worker does not do a second image GET for
+            # those hosts. Store the keyword list the image fetch returns.
+            # Together keeps type=image. OpenRouter Settings uses
+            # /v1/images/models, not this slice.
+            if provider not in ("together", "openrouter"):
+                image_models = _filter_fetched_models(models, "image")
+            _store_model_fetch_caches(cache_key, models, image_models, vision_declared, _context_tokens_from_v1_entries(entries))
             if provider == "zai":
                 preview = models[:5] if models else []
                 log.debug("fetch_available_models z.ai ok url=%s count=%s preview=%r", url, len(models), preview)
@@ -334,12 +442,13 @@ def fetch_available_models(endpoint: str, api_key_override: str | None = None) -
 
 
 def fetch_available_image_models(endpoint: str, api_key_override: str | None = None) -> list[str] | None:
-    """Image-output model IDs from /v1/models (architecture.output_modalities or type=image).
+    """Image-output model IDs. Same list ``cached_image_models`` returns. No extra GET.
 
-    Provider policy after shared fetch (see module comment above):
+    Provider policy (see module comment above):
     - openrouter: queries /v1/images/models.
-    - together: metadata only (_model_fetch_image_cache) from standard /v1/models.
-    - ollama / lm studio / custom: keyword filter on id strings when metadata is empty.
+    - together: metadata only (type=image) from the standard /v1/models memo.
+    - ollama / lm studio / custom: keyword filter (flux, sdxl, …) stored with
+      that same /v1/models memo. The catalog is not fetched again here.
     """
     if not endpoint:
         return None
@@ -351,10 +460,9 @@ def fetch_available_image_models(endpoint: str, api_key_override: str | None = N
 
     provider = get_provider_from_endpoint(base)
     is_owu = get_config_bool_safe("is_openwebui")
-    suffix = get_api_version_suffix(base, is_openwebui=is_owu)
 
     if provider == "openrouter":
-        url = f"{base}{suffix}/images/models"
+        url = _openrouter_image_models_url(base)
         cache_key = _model_fetch_cache_key(url, base, api_key_override)
         if cache_key in _model_fetch_image_cache:
             return _model_fetch_image_cache[cache_key]
@@ -382,14 +490,16 @@ def fetch_available_image_models(endpoint: str, api_key_override: str | None = N
     all_models = fetch_available_models(endpoint, api_key_override=api_key_override)
     if all_models is None:
         return None
-    url = f"{base}{suffix}/models"
+    url = _models_list_url(base)
     cache_key = _model_fetch_cache_key(url, base, api_key_override)
-    arch_ids = _model_fetch_image_cache.get(cache_key) or []
-    # Hosted catalogs declare image models in API metadata; slug heuristics mis-classify
-    # (e.g. OpenRouter gemini-*-image names, Together google/flash-image-2.5 without "flux" in id).
+    stored = _model_fetch_image_cache.get(cache_key)
+    # Together declares image models with type=image. A slug heuristic would
+    # mis-classify (google/flash-image-2.5 has no "flux"; a chat FLUX row is not
+    # an image model). Other hosts' memo is the keyword list written above.
+    if isinstance(stored, list):
+        return list(stored)
     if provider == "together":
-        return list(arch_ids)
-    # Ollama / LM Studio: /v1/models rows lack type/architecture; match flux, sdxl, etc. on id.
+        return []
     return _filter_fetched_models(all_models, "image")
 
 
@@ -459,9 +569,7 @@ def _fetch_openrouter_modality_models(endpoint: str, modality: str, cache: dict[
         return None
 
     is_owu = get_config_bool_safe("is_openwebui")
-    suffix = get_api_version_suffix(base, is_openwebui=is_owu)
-    query = urllib.parse.urlencode({"output_modalities": modality})
-    url = f"{base}{suffix}/models?{query}"
+    url = _openrouter_modality_models_url(base, modality)
     cache_key = _model_fetch_cache_key(url, base, api_key_override)
     if cache_key in cache:
         return cache[cache_key]
@@ -498,6 +606,139 @@ def fetch_available_tts_models(endpoint: str, api_key_override: str | None = Non
 def fetch_available_stt_models(endpoint: str, api_key_override: str | None = None) -> list[str] | None:
     """OpenRouter STT model ids: ``GET /v1/models?output_modalities=transcription``."""
     return _fetch_openrouter_modality_models(endpoint, "transcription", _model_fetch_stt_cache, api_key_override)
+
+
+def cached_text_models(endpoint: str, api_key_override: str | None = None) -> list[str] | None:
+    """Memoized ``/v1/models`` ids, or None. Does not HTTP."""
+    base = _catalog_base(endpoint)
+    if not base:
+        return None
+    key = _model_fetch_cache_key(_models_list_url(base), base, api_key_override)
+    return _cached_id_list(_model_fetch_cache, key)
+
+
+def cached_image_models(endpoint: str, api_key_override: str | None = None) -> list[str] | None:
+    """Memoized image-output ids, or None. Does not HTTP.
+
+    OpenRouter is ``GET /v1/images/models``. Together is the ``type=image`` slice
+    stored with ``/v1/models``. Other hosts are the keyword filter (flux, sdxl, …)
+    stored with that same response — the list ``fetch_available_image_models``
+    returns. Settings reads this. It does not fetch the catalog again.
+    """
+    base = _catalog_base(endpoint)
+    if not base:
+        return None
+    if get_provider_from_endpoint(base) == "openrouter":
+        url = _openrouter_image_models_url(base)
+    else:
+        url = _models_list_url(base)
+    return _cached_id_list(_model_fetch_image_cache, _model_fetch_cache_key(url, base, api_key_override))
+
+
+def cached_tts_models(endpoint: str, api_key_override: str | None = None) -> list[str] | None:
+    """Memoized OpenRouter speech ids, or None. Does not HTTP."""
+    base = _catalog_base(endpoint)
+    if not base or get_provider_from_endpoint(base) != "openrouter":
+        return None
+    key = _model_fetch_cache_key(_openrouter_modality_models_url(base, "speech"), base, api_key_override)
+    return _cached_id_list(_model_fetch_tts_cache, key)
+
+
+def cached_stt_models(endpoint: str, api_key_override: str | None = None) -> list[str] | None:
+    """Memoized OpenRouter transcription ids, or None. Does not HTTP."""
+    base = _catalog_base(endpoint)
+    if not base or get_provider_from_endpoint(base) != "openrouter":
+        return None
+    key = _model_fetch_cache_key(_openrouter_modality_models_url(base, "transcription"), base, api_key_override)
+    return _cached_id_list(_model_fetch_stt_cache, key)
+
+
+def _together_voices_cache_keys(base: str, api_key_override: str | None) -> list[str]:
+    """List-all and ``?model=`` memo keys for this endpoint+key."""
+    root = _together_voices_url(base)
+    sample = _model_fetch_cache_key(root, base, api_key_override)
+    digest = sample.split("\x1f", 1)[1]
+    found: list[str] = []
+    for key in _together_voices_fetch_cache:
+        url, sep, key_digest = key.partition("\x1f")
+        if sep and key_digest == digest and (url == root or url.startswith(root + "?")):
+            found.append(key)
+    return found
+
+
+def _together_voices_list_cached(endpoint: str, api_key_override: str | None) -> bool:
+    """True after a successful ``GET /v1/voices`` for this endpoint+key.
+
+    List-all and ``?model=`` are different URLs. Either memo means the Speech
+    tab has something to read. A stored dict is success, including empty.
+    A failure is not stored.
+    """
+    base = _catalog_base(endpoint)
+    if not base:
+        return False
+    for key in _together_voices_cache_keys(base, api_key_override):
+        if isinstance(_together_voices_fetch_cache.get(key), dict):
+            return True
+    return False
+
+
+def settings_catalog_is_warm(endpoint: str, api_key_override: str | None = None) -> bool:
+    """True when this process already has the catalogs Settings would show.
+
+    OpenRouter needs text, ``/v1/images/models``, speech, and transcription.
+    Together has no modality model list; it needs the text list, the image ids
+    harvested from that body, and a successful ``/v1/voices`` memo (list-all
+    or ``?model=``). The Speech tab only reads ``cached_tts_supported_voices``.
+    Other hosts need the text list and the image ids stored with that body.
+    A missing or failed entry is cold. Empty lists count as success.
+    """
+    base = _catalog_base(endpoint)
+    if not base:
+        return False
+    provider = get_provider_from_endpoint(base)
+    if cached_text_models(endpoint, api_key_override) is None:
+        return False
+    if cached_image_models(endpoint, api_key_override) is None:
+        return False
+    if provider == "openrouter":
+        if cached_tts_models(endpoint, api_key_override) is None:
+            return False
+        return cached_stt_models(endpoint, api_key_override) is not None
+    if provider == "together":
+        return _together_voices_list_cached(endpoint, api_key_override)
+    # Ollama, Groq, and custom hosts keep text ids and the keyword image ids
+    # (flux, sdxl, …) in the one /v1/models memo checked above. That memo is
+    # the catalog Settings shows. A warm memo must not look cold, or opening
+    # Settings refetches.
+    return True
+
+
+def clear_settings_catalog_cache(endpoint: str, api_key_override: str | None = None) -> None:
+    """Drop this endpoint+key's memo so the next fetch hits the network.
+
+    Test Connection uses this. Other endpoints and keys stay cached.
+    """
+    base = _catalog_base(endpoint)
+    if not base:
+        return
+    text_key = _model_fetch_cache_key(_models_list_url(base), base, api_key_override)
+    for cache in (
+        _model_fetch_cache,
+        _model_fetch_image_cache,
+        _model_fetch_vision_cache,
+        _model_context_cache,
+    ):
+        cache.pop(text_key, None)
+    image_key = _model_fetch_cache_key(_openrouter_image_models_url(base), base, api_key_override)
+    _model_fetch_image_cache.pop(image_key, None)
+    tts_key = _model_fetch_cache_key(_openrouter_modality_models_url(base, "speech"), base, api_key_override)
+    stt_key = _model_fetch_cache_key(_openrouter_modality_models_url(base, "transcription"), base, api_key_override)
+    _model_fetch_tts_cache.pop(tts_key, None)
+    _model_fetch_stt_cache.pop(stt_key, None)
+    # ?model= is a different memo from list-all. Test Connection must drop both
+    # or the next Speech fetch returns the stale scoped body without HTTP.
+    for voices_key in _together_voices_cache_keys(base, api_key_override):
+        _together_voices_fetch_cache.pop(voices_key, None)
 
 
 def cached_tts_supported_voices(model_id: str) -> list[str]:
@@ -672,12 +913,7 @@ def fetch_together_tts_voices(endpoint: str, model_id: str | None = None, api_ke
 
     requested = str(model_id or "").strip()
     is_owu = get_config_bool_safe("is_openwebui")
-    suffix = get_api_version_suffix(base, is_openwebui=is_owu)
-    if requested:
-        query = urllib.parse.urlencode({"model": requested})
-        url = f"{base}{suffix}/voices?{query}"
-    else:
-        url = f"{base}{suffix}/voices"
+    url = _together_voices_url(base, requested)
     cache_key = _model_fetch_cache_key(url, base, api_key_override)
     if cache_key in _together_voices_fetch_cache:
         return _together_voices_fetch_cache[cache_key]
@@ -728,7 +964,9 @@ def _filter_fetched_models(models: list[str], req_cap: str) -> list[str]:
     out = []
     if req_cap == "text":
         # Exclude known non-chat models (mirrors LibreAI C++ logic)
-        exclude = {"embedding", "embed", "aqa", "attribution", "retrieval", "vision", "rerank", "classifier", "moderation", "whisper", "speech", "audio", "llava", "stable-diffusion", "sdxl", "dall", "aurora", "imagen", "codellama", "codegemma", "starcoder", "deepseek-coder", "coder"}
+        # vision / llava / coder used to hide chat models (Gemini vision, Qwen coder).
+        # Specific non-chat names stay: codellama, whisper, dall-e, and the rest.
+        exclude = {"embedding", "embed", "aqa", "attribution", "retrieval", "rerank", "classifier", "moderation", "whisper", "speech", "audio", "stable-diffusion", "sdxl", "dall", "aurora", "imagen", "codellama", "codegemma", "starcoder", "deepseek-coder"}
         for m in models:
             m_lower = m.lower()
             if any(kw in m_lower for kw in exclude):
@@ -810,8 +1048,17 @@ def has_native_audio(model_id: Any, endpoint: Any) -> bool | None:
 
     # 2. Catalog check — native audio input is via chat completions; STT-only models (AUDIO, no CHAT) use /audio/transcriptions.
     caps = get_model_capability(model_id, endpoint)
-    if isinstance(caps, int) and (caps & ModelCapability.AUDIO) and (caps & ModelCapability.CHAT):
-        return True
+    if isinstance(caps, int) and caps != ModelCapability.NONE:
+        has_audio = bool(caps & ModelCapability.AUDIO)
+        has_chat = bool(caps & ModelCapability.CHAT)
+        if has_audio and has_chat:
+            return True
+        if has_audio and not has_chat:
+            # AUDIO-without-CHAT (Whisper, Voxtral) is not "unknown".
+            # transcribe_audio treats None as "try chat", so those ids were
+            # posted as input_audio and could sit until request_timeout.
+            # False selects POST /audio/transcriptions. None stays unknown.
+            return False
 
     # 3. Heuristics (Regex/Keywords) for known audio-native families
     # Gemini (Flash/Pro 1.5+)
@@ -820,8 +1067,31 @@ def has_native_audio(model_id: Any, endpoint: Any) -> bool | None:
     # Explicit audio models
     if "audio-preview" in model_id or "multimodal" in model_id:
         return True
+    # Catalog miss: dedicated STT names are not chat-audio. Unknown other ids
+    # stay None so uncatalogued Gemini-like models still try chat.
+    if "whisper" in model_id or "parakeet" in model_id:
+        return False
 
     return None  # Unknown, allow trying native audio
+
+
+def _update_support_map(config_key: str, map_key: str, supported: bool) -> None:
+    """Read-modify-write one support map under the config write lock.
+
+    Uses this module's ``get_config`` / ``set_config`` names so tests that
+    patch them still see the write. The lock is the same one ``set_config``
+    takes, so a second writer cannot replace the map with a stale copy.
+    """
+    from plugin.framework.config import _config_write_lock
+
+    with _config_write_lock:
+        cache = get_config(config_key)
+        if not isinstance(cache, dict):
+            cache = {}
+        else:
+            cache = dict(cache)
+        cache[map_key] = bool(supported)
+        set_config(config_key, cache)
 
 
 def set_native_audio_support(model_id: Any, endpoint: Any, supported: bool) -> None:
@@ -829,13 +1099,7 @@ def set_native_audio_support(model_id: Any, endpoint: Any, supported: bool) -> N
     model_id = str(model_id).lower()
     endpoint = normalize_endpoint_url(endpoint)
     key = f"{endpoint}@{model_id}"
-
-    cache = get_config("audio_support_map")
-    if not isinstance(cache, dict):
-        cache = {}
-
-    cache[key] = bool(supported)
-    set_config("audio_support_map", cache)
+    _update_support_map("audio_support_map", key, supported)
 
 
 # --- Resolved model getters (text / STT / grammar / image) ---
@@ -848,15 +1112,20 @@ def _sanitize_stored_model_value(val: Any) -> str:
     return _sanitize_model_combobox_value(str(val or ""))
 
 
-def get_text_model() -> str:
-    """Return the text/chat model (stored as ``text_model``)."""
-    val = _sanitize_stored_model_value(get_config("text_model"))
+def _stored_or_default(config_key: str, default_field: str) -> str:
+    """Stored model id, or the current endpoint's provider default."""
+    val = _sanitize_stored_model_value(get_config(config_key))
     if val:
         return val
     current_endpoint = get_current_endpoint()
     provider = get_provider_from_endpoint(current_endpoint)
     defaults = get_provider_defaults(provider)
-    return str(defaults.get("text_model", "")).strip()
+    return str(defaults.get(default_field, "") or "").strip()
+
+
+def get_text_model() -> str:
+    """Return the text/chat model (stored as ``text_model``)."""
+    return _stored_or_default("text_model", "text_model")
 
 
 def get_stt_model() -> str:
@@ -874,21 +1143,12 @@ def get_stt_model() -> str:
     legacy = _sanitize_stored_model_value(get_config("stt_model"))
     if legacy:
         return legacy
-    current_endpoint = get_current_endpoint()
-    provider = get_provider_from_endpoint(current_endpoint)
-    defaults = get_provider_defaults(provider)
-    return str(defaults.get("stt_model", "") or "").strip()
+    return _stored_or_default("audio.stt_model", "stt_model")
 
 
 def get_tts_model() -> str:
     """Return the configured TTS model, or default for the current endpoint's provider."""
-    val = _sanitize_stored_model_value(get_config("audio.tts_model"))
-    if val:
-        return val
-    current_endpoint = get_current_endpoint()
-    provider = get_provider_from_endpoint(current_endpoint)
-    defaults = get_provider_defaults(provider)
-    return str(defaults.get("tts_model", "") or "").strip()
+    return _stored_or_default("audio.tts_model", "tts_model")
 
 
 def set_tts_model(val: Any, update_lru: bool = True) -> None:
@@ -920,13 +1180,7 @@ def get_grammar_model() -> str:
 
 def get_image_model() -> str:
     """Return current image model for endpoint-based generation."""
-    val = _sanitize_stored_model_value(get_config("image_model"))
-    if val:
-        return val
-    current_endpoint = get_current_endpoint()
-    provider = get_provider_from_endpoint(current_endpoint)
-    defaults = get_provider_defaults(provider)
-    return str(defaults.get("image_model", "")).strip()
+    return _stored_or_default("image_model", "image_model")
 
 
 def set_text_model(val: Any, update_lru: bool = True, *, event_key: str | None = None) -> None:
@@ -976,6 +1230,32 @@ def _model_in_vision_list(provider: str, vision_list: list[str], model_id: str) 
     return model_id in vision_list
 
 
+def _declared_vision_flag(provider: str | None, declared: dict[str, bool], model_id: str) -> bool | None:
+    """True/False when this id's row listed input_modalities. None if it did not."""
+    if provider == "openrouter":
+        for declared_id, flag in declared.items():
+            if openrouter_model_ids_equivalent(declared_id, model_id):
+                return bool(flag)
+        return None
+    if model_id in declared:
+        return bool(declared[model_id])
+    return None
+
+
+def _vision_memo_answer(provider: str | None, memo: list[str] | dict[str, bool] | None, model_id: str) -> bool | None:
+    """Answer to persist, or None when the catalog did not say.
+
+    A dict is the parse: only ids whose row listed input_modalities. A list is
+    positive ids only. A hit on that list is yes. A miss is not a no — the
+    list does not record an omitted field.
+    """
+    if isinstance(memo, dict):
+        return _declared_vision_flag(provider, memo, model_id)
+    if isinstance(memo, list) and _model_in_vision_list(provider or "", memo, model_id):
+        return True
+    return None
+
+
 def _remember_vision_support(model_id: str, endpoint: str, supported: bool) -> None:
     """Persist a modalities answer. A write failure must not change the answer."""
     try:
@@ -984,7 +1264,7 @@ def _remember_vision_support(model_id: str, endpoint: str, supported: bool) -> N
         log.debug("has_native_vision persist failed: %s", e)
 
 
-def has_native_vision(model_id: Any, endpoint: Any) -> bool:
+def has_native_vision(model_id: Any, endpoint: Any, *, allow_fetch: bool = True, unknown_is_vision: bool = False) -> bool:
     """Check if the model supports native multimodal vision input.
 
     Priority order:
@@ -994,8 +1274,15 @@ def has_native_vision(model_id: Any, endpoint: Any) -> bool:
     3. Provider metadata:
        - OpenRouter/Together: ``input_modalities`` contains ``image``. The sidebar
          does not GET ``/v1/models`` for these hosts (the lists are huge). On a
-         process-cache miss this function fetches once, then remembers the answer.
+         process-cache miss this function fetches once, then remembers an
+         explicit yes or no. A row that omitted ``input_modalities`` is not stored.
        - Ollama: ``POST /api/show`` capabilities list.
+
+    ``allow_fetch=False`` reads only those caches. Chat Send runs on the UI
+    thread; a cold catalog GET (10s, up to 3 attempts) would freeze LibreOffice.
+    ``unknown_is_vision`` is only for that UI gate: a model with no static row
+    and no stored answer stays True so ``get_image`` is not hidden. Callers
+    that attach an image keep the default False (do not attach when unknown).
     """
     if not model_id:
         return False
@@ -1031,25 +1318,44 @@ def has_native_vision(model_id: Any, endpoint: Any) -> bool:
         suffix = get_api_version_suffix(endpoint_str, is_openwebui=is_owu)
         url = f"{endpoint_str}{suffix}/models"
         cache_key = _model_fetch_cache_key(url, endpoint_str)
-        vision_list = _model_fetch_vision_cache.get(cache_key)
-        if vision_list is None:
+        vision_memo = _model_fetch_vision_cache.get(cache_key)
+        if vision_memo is None and allow_fetch:
             fetch_available_models(endpoint_str)
-            vision_list = _model_fetch_vision_cache.get(cache_key)
-        if vision_list is not None:
-            supported = _model_in_vision_list(provider, vision_list, model_id_str)
-            _remember_vision_support(model_id_str, endpoint_str, supported)
-            log.debug("has_native_vision: modalities model=%r vision=%s", model_id_str, supported)
-            return supported
+            vision_memo = _model_fetch_vision_cache.get(cache_key)
+        # Persist vision only when the row listed input_modalities. A
+        # successful catalog that omitted the field is not a "no": the config
+        # map is checked first, so storing False would skip later lookups for
+        # the rest of the process and the next one. An explicit list without
+        # image is still a no. A missing field falls through and is not written.
+        if vision_memo is not None:
+            supported = _vision_memo_answer(provider, vision_memo, model_id_str)
+            if supported is not None:
+                _remember_vision_support(model_id_str, endpoint_str, supported)
+                log.debug("has_native_vision: modalities model=%r vision=%s", model_id_str, supported)
+                return supported
 
     # 3b. Ollama (query POST /api/show). None means the probe did not answer.
+    # allow_fetch=False still honors a process cache hit from an earlier probe.
     if provider == "ollama":
-        try:
-            res = query_ollama_model_capabilities(endpoint_str, model_id_str)
-            if res is not None:
-                return res
-        except Exception as e:
-            log.debug("Ollama /api/show capability query failed: %s", e)
+        if not allow_fetch:
+            cached_show = _ollama_show_cache.get(f"{endpoint_str}@{model_id_str}")
+            if isinstance(cached_show, dict):
+                show_caps = cached_show.get("capabilities") or []
+                return "vision" in show_caps if isinstance(show_caps, list) else False
+        else:
+            try:
+                res = query_ollama_model_capabilities(endpoint_str, model_id_str)
+                if res is not None:
+                    return res
+            except Exception as e:
+                log.debug("Ollama /api/show capability query failed: %s", e)
 
+    # A static row without VISION is a real "no" (caps != NONE). No row and
+    # no modalities/map answer above is "not looked up". The UI tool gate
+    # must not treat that as text-only or it hides get_image from uncatalogued
+    # vision models it refused to fetch.
+    if unknown_is_vision and caps == ModelCapability.NONE:
+        return True
     return False
 
 
@@ -1058,13 +1364,7 @@ def set_native_vision_support(model_id: Any, endpoint: Any, supported: bool) -> 
     model_id_str = str(model_id).strip().lower()
     endpoint_str = normalize_endpoint_url(endpoint or "")
     key = f"{endpoint_str}@{model_id_str}"
-
-    cache = get_config("vision_support_map")
-    if not isinstance(cache, dict):
-        cache = {}
-
-    cache[key] = bool(supported)
-    set_config("vision_support_map", cache)
+    _update_support_map("vision_support_map", key, supported)
 
 
 def parse_ollama_runtime_num_ctx(show_body: Any) -> int | None:
@@ -1205,18 +1505,21 @@ def cached_v1_context_tokens(endpoint: str, model_id: str, provider: str | None 
 
 
 def is_image_only_model(endpoint: Any, model_id: Any) -> bool:
-    """Check if the model outputs image but not text (dedicated image generator)."""
+    """Check if the model outputs image but not text (dedicated image generator).
+
+    The image-id list the fetch already returns is the catalog. A side map
+    the catalog never filled made a real image id fall through to the name
+    heuristic (a ``gemini`` image model looked like chat). ``None`` means the
+    catalog did not answer; then the name heuristic still applies.
+    """
     if not endpoint or not model_id:
         return False
-    # Ensure cache is populated
-    fetch_available_image_models(endpoint)
-
-    if model_id in _model_output_modalities:
-        mods = _model_output_modalities[model_id]
-        return "image" in mods and "text" not in mods
+    image_ids = fetch_available_image_models(str(endpoint))
+    if image_ids is not None:
+        return str(model_id) in image_ids
 
     # Fallback to name-based heuristic if metadata is not present (e.g. Ollama or custom local endpoints)
-    lower_model = model_id.lower()
+    lower_model = str(model_id).lower()
     is_chat = any(x in lower_model for x in ("gemini", "gpt", "claude", "llama", "mixtral", "qwen", "deepseek"))
     if is_chat:
         return False

@@ -15,31 +15,75 @@ from __future__ import annotations
 
 from typing import Any
 
-from plugin.draw.transitions import _LAYOUTS
 from plugin.framework.json_utils import safe_json_loads
 
 # Upstream source for TRANSFORM_PARAM_DESCRIPTION and layout name tables.
 COLLABORA_TRANSFORM_DSL_URL = "https://github.com/CollaboraOnline/online/blob/master/wsd/DocumentToolDescriptions.hpp"
 
-# Collabora AUTOLAYOUT_* names → Impress page.Layout id (DocumentToolDescriptions.hpp).
-AUTOLAYOUT_BY_NAME: dict[str, int] = {
+# Impress ``page.Layout`` ids from include/xmloff/autolayout.hxx.
+# Deprecated names (CHART, TAB, TEXTOBJ, …) keep their historic numbers.
+# The header notes that enum/text/chart/org/clip were merged into content
+# placeholders; those ids still round-trip, but several no longer grow a
+# chart, table, or clip shape. Notes and handout ids are not slide layouts.
+AUTOLAYOUT_ID: dict[str, int] = {
     "AUTOLAYOUT_TITLE": 0,
     "AUTOLAYOUT_TITLE_CONTENT": 1,
+    "AUTOLAYOUT_CHART": 2,
     "AUTOLAYOUT_TITLE_2CONTENT": 3,
+    "AUTOLAYOUT_TEXTCHART": 4,
+    "AUTOLAYOUT_ORG": 5,
+    "AUTOLAYOUT_TEXTCLIP": 6,
+    "AUTOLAYOUT_CHARTTEXT": 7,
+    "AUTOLAYOUT_TAB": 8,
+    "AUTOLAYOUT_CLIPTEXT": 9,
+    "AUTOLAYOUT_TEXTOBJ": 10,
+    "AUTOLAYOUT_OBJ": 11,
     "AUTOLAYOUT_TITLE_CONTENT_2CONTENT": 12,
+    "AUTOLAYOUT_OBJTEXT": 13,
     "AUTOLAYOUT_TITLE_CONTENT_OVER_CONTENT": 14,
     "AUTOLAYOUT_TITLE_2CONTENT_CONTENT": 15,
     "AUTOLAYOUT_TITLE_2CONTENT_OVER_CONTENT": 16,
+    "AUTOLAYOUT_TEXTOVEROBJ": 17,
     "AUTOLAYOUT_TITLE_4CONTENT": 18,
     "AUTOLAYOUT_TITLE_ONLY": 19,
     "AUTOLAYOUT_NONE": 20,
-    "AUTOLAYOUT_ONLY_TEXT": 32,
-    "AUTOLAYOUT_TITLE_6CONTENT": 34,
-    "AUTOLAYOUT_VTITLE_VCONTENT": 28,
+    "AUTOLAYOUT_NOTES": 21,
+    "AUTOLAYOUT_HANDOUT1": 22,
+    "AUTOLAYOUT_HANDOUT2": 23,
+    "AUTOLAYOUT_HANDOUT3": 24,
+    "AUTOLAYOUT_HANDOUT4": 25,
+    "AUTOLAYOUT_HANDOUT6": 26,
     "AUTOLAYOUT_VTITLE_VCONTENT_OVER_VCONTENT": 27,
+    "AUTOLAYOUT_VTITLE_VCONTENT": 28,
     "AUTOLAYOUT_TITLE_VCONTENT": 29,
     "AUTOLAYOUT_TITLE_2VTEXT": 30,
+    "AUTOLAYOUT_HANDOUT9": 31,
+    "AUTOLAYOUT_ONLY_TEXT": 32,
+    "AUTOLAYOUT_4CLIPART": 33,
+    "AUTOLAYOUT_TITLE_6CONTENT": 34,
 }
+
+# Collabora AUTOLAYOUT_* names the transform DSL documents
+# (DocumentToolDescriptions.hpp). Values are the shared AutoLayout ids above.
+_COLLABORA_AUTOLAYOUT_NAMES = (
+    "AUTOLAYOUT_TITLE",
+    "AUTOLAYOUT_TITLE_CONTENT",
+    "AUTOLAYOUT_TITLE_2CONTENT",
+    "AUTOLAYOUT_TITLE_CONTENT_2CONTENT",
+    "AUTOLAYOUT_TITLE_CONTENT_OVER_CONTENT",
+    "AUTOLAYOUT_TITLE_2CONTENT_CONTENT",
+    "AUTOLAYOUT_TITLE_2CONTENT_OVER_CONTENT",
+    "AUTOLAYOUT_TITLE_4CONTENT",
+    "AUTOLAYOUT_TITLE_ONLY",
+    "AUTOLAYOUT_NONE",
+    "AUTOLAYOUT_ONLY_TEXT",
+    "AUTOLAYOUT_TITLE_6CONTENT",
+    "AUTOLAYOUT_VTITLE_VCONTENT",
+    "AUTOLAYOUT_VTITLE_VCONTENT_OVER_VCONTENT",
+    "AUTOLAYOUT_TITLE_VCONTENT",
+    "AUTOLAYOUT_TITLE_2VTEXT",
+)
+AUTOLAYOUT_BY_NAME: dict[str, int] = {name: AUTOLAYOUT_ID[name] for name in _COLLABORA_AUTOLAYOUT_NAMES}
 
 # Embedded for the LLM tool description (from Collabora TRANSFORM_PARAM_DESCRIPTION).
 TRANSFORM_PARAM_DESCRIPTION = (
@@ -102,7 +146,12 @@ _DEFERRED_EXACT = frozenset({"MarkObject", "UnMarkObject"})
 
 
 def resolve_layout_id(name_or_id: Any) -> int | None:
-    """Resolve Collabora AUTOLAYOUT name, WriterAgent layout alias, or numeric id."""
+    """Resolve a Collabora AUTOLAYOUT name or a numeric Impress page.Layout id.
+
+    Friendly names (``blank``, ``title_only``, …) are resolved by
+    ``plugin.draw.transitions.layout_id``, which reads ``AUTOLAYOUT_ID``.
+    This helper stays on the transform vocabulary (``AUTOLAYOUT_*`` or a raw id).
+    """
     if isinstance(name_or_id, bool):
         return None
     if isinstance(name_or_id, int):
@@ -116,11 +165,6 @@ def resolve_layout_id(name_or_id: Any) -> int | None:
         return None
     upper = key.upper()
     if upper in AUTOLAYOUT_BY_NAME:
-        return AUTOLAYOUT_BY_NAME[upper]
-    lower = key.lower()
-    if lower in _LAYOUTS:
-        return _LAYOUTS[lower]
-    if upper.startswith("AUTOLAYOUT_") and upper in AUTOLAYOUT_BY_NAME:
         return AUTOLAYOUT_BY_NAME[upper]
     try:
         return int(key)

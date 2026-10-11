@@ -22,15 +22,27 @@ IS_WORKER = os.environ.get("WRITERAGENT_IS_WORKER") == "1"
 
 
 def _rpc_call(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-    """Send a tool call to the LibreOffice host and block for the result."""
+    """Send a tool call to the LibreOffice host and block for the result.
+    Strips None kwargs so tool defaults apply.
+    """
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    # Compute workers set this before importing plugin code. They have no
+    # office and no host pipe. The branch below would call get_ctx();
+    # exchange_tool_call would write a tool frame onto the pool stdio pipe.
+    if os.environ.get("WRITERAGENT_COMPUTE_WORKER") == "1":
+        raise RuntimeError("WriterAgent document tools are not available in the Python compute service.")
     if not IS_WORKER:
         try:
             from plugin.scripting.host_rpc import execute_tool
 
             return execute_tool(tool_name, kwargs, caller="script")
         except Exception as e:
-            raise RuntimeError(f"Failed to execute tool in-process: {e}")
+            # Keep error .code from the RPC exception instead of dropping it
+            code = getattr(e, "code", None)
+            err = RuntimeError(f"Failed to execute tool in-process: {e}")
+            if code is not None:
+                setattr(err, "code", code)
+            raise err from e
 
     from plugin.scripting.ipc import exchange_tool_call
 
@@ -39,13 +51,10 @@ def _rpc_call(tool_name: str, **kwargs: Any) -> dict[str, Any]:
 
 def get_active_document_type() -> str:
     """Return the active document's type ('writer', 'calc', 'draw', or 'unknown')."""
-    try:
-        res = _rpc_call("list_open_documents")
-        for doc in res.get("documents", []):
-            if doc.get("is_active"):
-                return doc.get("doc_type", "unknown")
-    except Exception:
-        pass
+    res = _rpc_call("list_open_documents")
+    for doc in res.get("documents", []):
+        if doc.get("is_active"):
+            return doc.get("doc_type", "unknown")
     return "unknown"
 
 
@@ -61,7 +70,6 @@ DOMAIN_TOOLS = {   'bookmark': [   'bookmark_cleanup',
                 'insert_cell_html',
                 'list_calc_functions',
                 'merge_cells',
-                'query_folder_sql',
                 'read_cell_range',
                 'set_style',
                 'write_formula_range'],
@@ -116,7 +124,8 @@ DOMAIN_TOOLS = {   'bookmark': [   'bookmark_cleanup',
                  'form_generate',
                  'form_list_controls'],
     'headers_footer': ['get_headers_footers', 'set_headers_footers'],
-    'images': [   'image_delete',
+    'images': [   'image_crop_and_highlight',
+                  'image_delete',
                   'image_download',
                   'image_generate',
                   'image_get_info',
@@ -131,6 +140,7 @@ DOMAIN_TOOLS = {   'bookmark': [   'bookmark_cleanup',
                  'indexes_insert_toc_entry',
                  'indexes_list',
                  'indexes_list_cites',
+                 'indexes_list_toc_entries',
                  'indexes_refresh_toc_entry',
                  'indexes_update_all'],
     'mail_merge': [   'mail_merge_insert_field',
@@ -147,7 +157,8 @@ DOMAIN_TOOLS = {   'bookmark': [   'bookmark_cleanup',
                 'page_set_header_footer_text',
                 'page_set_style_properties'],
     'pivot_table': ['create_pivot_table', 'list_pivot_tables', 'refresh_pivot_table'],
-    'python': ['run_venv_python_script', 'symbolic_math'],
+    'python': ['symbolic_math'],
+    'python/sql': ['query_folder_sql'],
     'range': [   'named_range_add',
                  'named_range_create_from_titles',
                  'named_range_delete',
@@ -206,6 +217,228 @@ DOMAIN_TOOLS = {   'bookmark': [   'bookmark_cleanup',
                   'get_page_objects',
                   'search_in_document',
                   'set_selection']}
+
+TOOL_METHODS = {   'add_cell_comment': ('comment', 'add_cell_comment'),
+    'add_comment': ('writer', 'add_comment'),
+    'add_conditional_format': ('conditional_formatting', 'add_conditional_format'),
+    'add_slide': ('draw', 'add_slide'),
+    'align_shapes': ('shape', 'align_shapes'),
+    'apply_design': ('draw', 'apply_design'),
+    'apply_document_content': ('writer', 'apply_document_content'),
+    'apply_sheet_filter': ('sheet', 'apply_sheet_filter'),
+    'apply_style': ('writer', 'apply_style'),
+    'bookmark_cleanup': ('bookmark', 'cleanup'),
+    'bookmark_create': ('bookmark', 'create'),
+    'bookmark_delete': ('bookmark', 'delete'),
+    'bookmark_get': ('bookmark', 'get'),
+    'bookmark_list': ('bookmark', 'list'),
+    'bookmark_rename': ('bookmark', 'rename'),
+    'bookmark_resolve': ('bookmark', 'resolve'),
+    'clear_sheet_filter': ('sheet', 'clear_sheet_filter'),
+    'comment_check_stop': ('comment', 'check_stop'),
+    'comment_delete': ('comment', 'delete'),
+    'comment_list': ('comment', 'list'),
+    'comment_resolve': ('comment', 'resolve'),
+    'comment_scan_tasks': ('comment', 'scan_tasks'),
+    'comment_workflow_get': ('comment', 'workflow_get'),
+    'comment_workflow_set': ('comment', 'workflow_set'),
+    'create_diagram': ('shape', 'create_diagram'),
+    'create_pivot_table': ('pivot_table', 'create_pivot_table'),
+    'create_sheet': ('sheet', 'create_sheet'),
+    'delete_cell_comment': ('comment', 'delete_cell_comment'),
+    'delete_sheet': ('sheet', 'delete_sheet'),
+    'delete_slide': ('draw', 'delete_slide'),
+    'delete_structure': ('calc', 'delete_structure'),
+    'detect_and_explain_errors': ('error', 'detect_and_explain_errors'),
+    'distribute_shapes': ('shape', 'distribute_shapes'),
+    'duplicate_slide': ('draw', 'duplicate_slide'),
+    'embedded_edit': ('embedded', 'edit'),
+    'embedded_insert': ('embedded', 'insert'),
+    'evaluate_formula': ('error', 'evaluate_formula'),
+    'extract_structure_from_image': ('vision', 'extract_structure_from_image'),
+    'fields_delete': ('field', 'delete'),
+    'fields_insert': ('field', 'insert'),
+    'fields_list': ('field', 'list'),
+    'fields_update_all': ('field', 'update_all'),
+    'fill_draw_fields': ('shape', 'fill_draw_fields'),
+    'find_tools': ('core', 'find_tools'),
+    'footnotes_delete': ('footnote', 'delete'),
+    'footnotes_edit': ('footnote', 'edit'),
+    'footnotes_insert': ('footnote', 'insert'),
+    'footnotes_list': ('footnote', 'list'),
+    'footnotes_settings_get': ('footnote', 'settings_get'),
+    'footnotes_settings_update': ('footnote', 'settings_update'),
+    'form_create': ('forms', 'create'),
+    'form_create_control': ('forms', 'create_control'),
+    'form_delete_control': ('forms', 'delete_control'),
+    'form_edit_control': ('forms', 'edit_control'),
+    'form_generate': ('forms', 'generate'),
+    'form_list_controls': ('forms', 'list_controls'),
+    'frame_get_info': ('textframe', 'frame_get_info'),
+    'frame_list': ('textframe', 'frame_list'),
+    'frame_set_properties': ('textframe', 'frame_set_properties'),
+    'get_document_content': ('writer', 'get_document_content'),
+    'get_document_tree': ('writer', 'get_document_tree'),
+    'get_draw_tree': ('draw', 'get_draw_tree'),
+    'get_guidance': ('core', 'get_guidance'),
+    'get_headers_footers': ('headers_footer', 'get_headers_footers'),
+    'get_image': ('core', 'get_image'),
+    'get_page_objects': ('writer', 'get_page_objects'),
+    'get_placeholder_text': ('draw', 'get_placeholder_text'),
+    'get_presentation_info': ('draw', 'get_presentation_info'),
+    'get_sheet_filter': ('sheet', 'get_sheet_filter'),
+    'get_sheet_summary': ('calc', 'get_sheet_summary'),
+    'get_slide_layout': ('slide_layout', 'get_slide_layout'),
+    'get_slide_master': ('slide_master', 'get_slide_master'),
+    'get_slide_transition': ('slide_transition', 'get_slide_transition'),
+    'get_speaker_notes': ('speaker_note', 'get_speaker_notes'),
+    'image_crop_and_highlight': ('images', 'crop_and_highlight'),
+    'image_delete': ('images', 'delete'),
+    'image_download': ('images', 'download'),
+    'image_generate': ('images', 'generate'),
+    'image_get_info': ('images', 'get_info'),
+    'image_insert': ('images', 'insert'),
+    'image_list': ('images', 'list'),
+    'image_list_nearby_files': ('images', 'list_nearby_files'),
+    'image_replace': ('images', 'replace'),
+    'image_set_properties': ('images', 'set_properties'),
+    'indexes_add_mark': ('index', 'add_mark'),
+    'indexes_create': ('index', 'create'),
+    'indexes_delete_toc_entry': ('index', 'delete_toc_entry'),
+    'indexes_insert_toc_entry': ('index', 'insert_toc_entry'),
+    'indexes_list': ('index', 'list'),
+    'indexes_list_cites': ('index', 'list_cites'),
+    'indexes_list_toc_entries': ('index', 'list_toc_entries'),
+    'indexes_refresh_toc_entry': ('index', 'refresh_toc_entry'),
+    'indexes_update_all': ('index', 'update_all'),
+    'insert_cell_html': ('calc', 'insert_cell_html'),
+    'insert_math': ('math', 'insert_math'),
+    'list_calc_functions': ('calc', 'list_calc_functions'),
+    'list_cell_comments': ('comment', 'list_cell_comments'),
+    'list_conditional_formats': ('conditional_formatting', 'list_conditional_formats'),
+    'list_designs': ('draw', 'list_designs'),
+    'list_master_slides': ('slide_master', 'list_master_slides'),
+    'list_open_documents': ('core', 'list_open_documents'),
+    'list_pages': ('draw', 'list_pages'),
+    'list_pivot_tables': ('pivot_table', 'list_pivot_tables'),
+    'list_placeholders': ('draw', 'list_placeholders'),
+    'list_sheets': ('sheet', 'list_sheets'),
+    'mail_merge_insert_field': ('mail_merge', 'insert_field'),
+    'mail_merge_list_fields': ('mail_merge', 'list_fields'),
+    'mail_merge_list_sources': ('mail_merge', 'list_sources'),
+    'mail_merge_register_source': ('mail_merge', 'register_source'),
+    'mail_merge_run': ('mail_merge', 'run'),
+    'manage_charts': ('chart', 'manage_charts'),
+    'manage_table_structure': ('table', 'manage_table_structure'),
+    'manage_tracked_changes': ('tracking', 'manage_tracked_changes'),
+    'merge_cells': ('calc', 'merge_cells'),
+    'move_slide': ('draw', 'move_slide'),
+    'named_range_add': ('range', 'named_range_add'),
+    'named_range_create_from_titles': ('range', 'named_range_create_from_titles'),
+    'named_range_delete': ('range', 'named_range_delete'),
+    'named_range_edit': ('range', 'named_range_edit'),
+    'named_range_get_info': ('range', 'named_range_get_info'),
+    'named_range_list': ('range', 'named_range_list'),
+    'nav_goto_page': ('structural', 'nav_goto_page'),
+    'nav_heading': ('structural', 'nav_heading'),
+    'nav_heading_children': ('structural', 'nav_heading_children'),
+    'nav_surroundings': ('structural', 'nav_surroundings'),
+    'page_get_columns': ('page', 'get_columns'),
+    'page_get_header_footer_text': ('page', 'get_header_footer_text'),
+    'page_get_style_properties': ('page', 'get_style_properties'),
+    'page_insert_break': ('page', 'insert_break'),
+    'page_set_columns': ('page', 'set_columns'),
+    'page_set_header_footer_text': ('page', 'set_header_footer_text'),
+    'page_set_style_properties': ('page', 'set_style_properties'),
+    'protect_sheet': ('sheet', 'protect_sheet'),
+    'query_folder_sql': ('python/sql', 'query_folder_sql'),
+    'read_cell_range': ('calc', 'read_cell_range'),
+    'read_slide_text': ('draw', 'read_slide_text'),
+    'redo': ('core', 'redo'),
+    'refresh_pivot_table': ('pivot_table', 'refresh_pivot_table'),
+    'remove_conditional_formats': ('conditional_formatting', 'remove_conditional_formats'),
+    'rename_sheet': ('sheet', 'rename_sheet'),
+    'rename_slide': ('draw', 'rename_slide'),
+    'replace_in_spreadsheet': ('search', 'replace_in_spreadsheet'),
+    'search_in_document': ('writer', 'search_in_document'),
+    'search_in_spreadsheet': ('search', 'in_spreadsheet'),
+    'section_list': ('structural', 'section_list'),
+    'section_read': ('structural', 'section_read'),
+    'set_active_page': ('draw', 'set_active_page'),
+    'set_headers_footers': ('headers_footer', 'set_headers_footers'),
+    'set_placeholder_text': ('draw', 'set_placeholder_text'),
+    'set_selection': ('writer', 'set_selection'),
+    'set_slide_layout': ('slide_layout', 'set_slide_layout'),
+    'set_slide_master': ('slide_master', 'set_slide_master'),
+    'set_slide_transition': ('slide_transition', 'set_slide_transition'),
+    'set_speaker_notes': ('speaker_note', 'set_speaker_notes'),
+    'set_style': ('calc', 'set_style'),
+    'shape_connect': ('shape', 'connect'),
+    'shape_delete': ('shape', 'delete'),
+    'shape_group': ('shape', 'group'),
+    'shape_summary': ('shape', 'summary'),
+    'shape_upsert': ('shape', 'upsert'),
+    'sort_range': ('range', 'sort_range'),
+    'style_create': ('styles', 'create'),
+    'style_get_info': ('styles', 'get_info'),
+    'style_import': ('styles', 'import'),
+    'style_list': ('styles', 'list'),
+    'style_update': ('styles', 'update'),
+    'switch_sheet': ('sheet', 'switch_sheet'),
+    'symbolic_math': ('python', 'symbolic_math'),
+    'table_delete': ('table', 'delete'),
+    'table_get_cells': ('table', 'get_cells'),
+    'table_insert': ('table', 'insert'),
+    'table_list': ('table', 'list'),
+    'table_set_cell': ('table', 'set_cell'),
+    'track_changes_list': ('tracking', 'track_changes_list'),
+    'track_changes_show': ('tracking', 'track_changes_show'),
+    'track_changes_start': ('tracking', 'track_changes_start'),
+    'track_changes_stop': ('tracking', 'track_changes_stop'),
+    'undo': ('core', 'undo'),
+    'upsert_memory': ('core', 'upsert_memory'),
+    'web_research': ('core', 'web_research'),
+    'write_formula_range': ('calc', 'write_formula_range')}
+
+__all__ = [   'DOMAIN_TOOLS',
+    'TOOL_METHODS',
+    'WORKFLOW_TASK_PREFIXES',
+    'bookmark',
+    'calc',
+    'chart',
+    'comment',
+    'conditional_formatting',
+    'core',
+    'draw',
+    'embedded',
+    'error',
+    'field',
+    'footnote',
+    'forms',
+    'get_active_document_type',
+    'headers_footer',
+    'images',
+    'index',
+    'mail_merge',
+    'math',
+    'page',
+    'pivot_table',
+    'python',
+    'python_sql',
+    'search',
+    'shape',
+    'sheet',
+    'slide_layout',
+    'slide_master',
+    'slide_transition',
+    'speaker_note',
+    'structural',
+    'styles',
+    'table',
+    'textframe',
+    'tracking',
+    'vision',
+    'writer']
 
 
 class _BookmarkProxy:
@@ -309,19 +542,6 @@ class _CalcProxy:
             center (optional): Center content (default: true).
         """
         return _rpc_call("merge_cells", range=range_name, center=center)
-
-    def query_folder_sql(self, sql: str, *, files: dict[str, Any] | None = None, data_range: str | None = None, headers: bool | None = None, tables: dict[str, Any] | None = None, task_hint: str | None = None) -> dict[str, Any]:
-        """Run read-only SQL (via DuckDB) against folder files and/or live Calc ranges (Phase C multi-table). Prefer stable table identity: tables={name: {sheet: "Sales_Analytics"}} (sheet used range) or {named_range: "SalesData"} (Calc named/database range). Absolute range: {range: "Sales.A1:F500"} stays frozen A1. Sibling sheet used-range: files={name: "budget.xlsx#Sales"} (dict key is the SQL table). Flat files: CSV/TSV, Parquet, JSON/JSONL/NDJSON (DuckDB read_*). Spreadsheets (.xlsx/.xls/.ods) use the LibreOffice import path. Optional tables file="budget.xlsx" reads that sibling instead of the active doc. Host prepares all UNO data + validates. Results cap at 200 rows (MAX_TABLE_ROWS): truncated=true plus warning/flags/message when the result is incomplete. COPY/EXPORT/ATTACH/INSTALL/LOAD and path escapes fail with READONLY_VIOLATION.
-
-        Args:
-            sql (required): Read-only SQL (SELECT/CTE/in-memory VIEW). COPY/EXPORT/ATTACH/INSTALL/LOAD and path escapes are rejected. Results longer than 200 rows are truncated and flagged.
-            files (optional): Folder files as name -> basename/spec. Flat: {"ledger": "ledger.parquet"}, {"events": "events.json"}. Sibling spreadsheet used-range: {"sales": "budget.xlsx#Sales"} (#SheetName is the sheet identity; the dict key is the SQL table). A list of basenames is still accepted.
-            data_range (optional): Frozen A1 on the active sheet (e.g. 'Sheet1.A1:F500'). Becomes table 'data'. Prefer tables={data: {sheet}} or {named_range} for stable identity.
-            headers (optional): First row of data_range (or preloaded) contains column headers (default true).
-            tables (optional): Multi-table catalog. Exactly one identity per entry: sheet, named_range, or range. e.g. {"sales": {"sheet": "Sales_Analytics"}, "costs": {"named_range": "CostData"}}. Mix with files.
-            task_hint (optional): Optional hint for logging/context.
-        """
-        return _rpc_call("query_folder_sql", sql=sql, files=files, data_range=data_range, headers=headers, tables=tables, task_hint=task_hint)
 
     def read_cell_range(self, range_name: list[str]) -> dict[str, Any]:
         """Reads values from the specified cell range(s). Inspection only — keep ranges small (headers or a few dozen cells). A large dump overloads chat context; oversized reads return a peek plus size only. Row-wise transforms use write_formula_range (fill-down); reductions that spill a small result use =PY into one empty cell outside the data. Date/time-formatted numeric cells return an ISO 8601 string in `value` with `type` and `format_category` of date, time, or datetime, plus `format_code` (Calc FormatString, observability only). Elapsed/stopwatch formats (`[HH]:MM:SS`, …) return `PTnHnMnS` (e.g. PT30H) with type/format_category duration. Supports lists for non-contiguous areas.
@@ -600,7 +820,7 @@ class _DrawProxy:
         return _rpc_call("add_slide", page=page, activate=activate, layout=layout)
 
     def apply_design(self, design: str) -> dict[str, Any]:
-        """Restyle the OPEN Impress deck from a listed .otp: Hidden-load the template, clone its master (shapes + layout styles) into this document, and assign that master to every slide. Does not use the system clipboard and does not open a new presentation. Existing title/body text stays. Call list_designs first. Draw documents return a not-Impress error.
+        """Restyle the OPEN Impress deck from a listed .otp: Hidden-load the template, clone its master shapes and reimported graphics into this document, and assign that master to every slide. Does not copy style families (that shares the hidden source item pool and aborts LibreOffice). Does not use the system clipboard and does not open a new presentation. Existing title/body text stays. Call list_designs first. Draw documents return a not-Impress error.
 
         Args:
             design (required): Design id, name, path, or url from list_designs (e.g. Metropolis).
@@ -655,7 +875,7 @@ class _DrawProxy:
         return _rpc_call("list_pages")
 
     def list_placeholders(self, *, page: int | None = None) -> dict[str, Any]:
-        """List all text placeholders on a slide with their role (title, subtitle, body), text content, and index. Call this before set_placeholder_text. If count=0, set layout 'text' (set_slide_layout or delegate domain=slide_layouts) then retry.
+        """List all text placeholders on a slide with their role (title, subtitle, body), text content, and index. Call this before set_placeholder_text. If count=0, delegate domain=slide_layouts with layout='text', then retry.
 
         Args:
             page (optional): 0-based slide index (active slide if omitted).
@@ -750,7 +970,7 @@ class _ErrorProxy:
 
         Args:
             formula (required): The formula to evaluate, e.g. '=SUM(A1:B2)' or '=A1*1.1'.
-            cell (optional): Optional cell coordinate/address context to evaluate relative references from, e.g. 'C5' (defaults to 'A1').
+            cell (optional): Optional bare cell on the copied active sheet whose coordinate is the formula context, e.g. 'C5' (defaults to 'A1'). A sheet prefix is ignored. A defined name is rejected.
         """
         return _rpc_call("evaluate_formula", formula=formula, cell=cell)
 
@@ -948,14 +1168,14 @@ class _HeadersFooterProxy:
         Args:
             page (required): 0-based slide index. When is_master_page is false, updates that slide. When true, updates the master page assigned to that slide.
             is_master_page (optional): If True, update the master page linked to the slide at page. Defaults to False.
-            header (optional): The text for the header.
+            header (optional): Header text. Not available on a normal slide (notes page and handout master only). On an Impress master, written to the header shape.
             footer (optional): The text for the footer.
             date_time (optional): The fixed date/time text.
             header_visible (optional): Whether the header is visible.
             footer_visible (optional): Whether the footer is visible.
             page_number_visible (optional): Whether the slide number is visible.
             date_time_visible (optional): Whether the date/time is visible.
-            date_time_fixed (optional): If True, uses 'date_time'. If False, LibreOffice automatically updates it.
+            date_time_fixed (optional): If True, uses 'date_time'. If False, LibreOffice automatically updates it. Slide property only; a master DateTimeShape has no fixed-date flag.
         """
         return _rpc_call("set_headers_footers", page=page, is_master_page=is_master_page, header=header, footer=footer, date_time=date_time, header_visible=header_visible, footer_visible=footer_visible, page_number_visible=page_number_visible, date_time_visible=date_time_visible, date_time_fixed=date_time_fixed)
 
@@ -964,6 +1184,18 @@ headers_footer = _HeadersFooterProxy()
 
 class _ImagesProxy:
     """Proxy for images tools."""
+
+    def crop_and_highlight(self, name: str, *, crop_box: list[Any] | None = None, highlights: list[Any] | None = None, units: str | None = None, width_mm: float | None = None) -> dict[str, Any]:
+        """Cut an image down to a region and/or mark passages on it (highlighter, red box, underline) with boxes in the picture's OWN pixels: [x, y, width, height] from its top-left corner, inside width_px x height_px from image_get_info. If you only see a scaled copy, pass units='percent' (0-100 of the picture's width/height). crop_box and every highlight box use the same frame: the picture as it is now. The result is baked into the picture: the cut-away part is removed from the file and marks cannot drift. Afterwards the picture IS the region (new width_px/height_px). The frame keeps its width (or width_mm) and its height follows the new shape. Check the result with get_image.
+
+        Args:
+            name (required): Name of the image (from image_list).
+            crop_box (optional): Region to keep, [x, y, width, height]. Omit to keep the picture as shown (an existing crop stays).
+            highlights (optional): Marks to draw.
+            units (optional): Units of every box (default px). One of: px, percent.
+            width_mm (optional): Display width in millimetres (default: keep the current width).
+        """
+        return _rpc_call("image_crop_and_highlight", name=name, crop_box=crop_box, highlights=highlights, units=units, width_mm=width_mm)
 
     def delete(self, name: str, *, remove_frame: bool | None = None) -> dict[str, Any]:
         """Delete an image from the document.
@@ -979,7 +1211,7 @@ class _ImagesProxy:
 
         Args:
             url (required): URL of the image to download.
-            verify_ssl (optional): Verify SSL certificates (default: false).
+            verify_ssl (optional): Verify SSL certificates (default: true).
             force (optional): Force re-download even if cached (default: false).
         """
         return _rpc_call("image_download", url=url, verify_ssl=verify_ssl, force=force)
@@ -1001,7 +1233,7 @@ class _ImagesProxy:
         return _rpc_call("image_generate", prompt=prompt, source_image=source_image, strength=strength, aspect_ratio=aspect_ratio, base_size=base_size, width=width, height=height, provider=provider, image_model=image_model)
 
     def get_info(self, name: str) -> dict[str, Any]:
-        """Get detailed info about a specific image: URL, dimensions, anchor type, orientation, crop (crop_mm, mm trimmed per edge), and paragraph index.
+        """Get detailed info about a specific image: URL, dimensions (mm, and width_px/height_px of the picture itself), anchor type, orientation, crop (crop_mm, mm trimmed per edge), hyperlink_url (the image link, including an internal target), and paragraph index.
 
         Args:
             name (required): Name of the image (from image_list).
@@ -1118,12 +1350,12 @@ class _IndexProxy:
         return _rpc_call("indexes_delete_toc_entry", old_content=old_content, index=index, occurrence=occurrence, dry_run=dry_run)
 
     def insert_toc_entry(self, content: str, *, page: str | None = None, hyperlink_url: str | None = None, position: str | None = None, old_content: str | None = None, level: int | None = None, index: int | None = None, occurrence: int | None = None, dry_run: bool | None = None) -> dict[str, Any]:
-        """Insert one new row into an existing table of contents. Does not call index update(), and does not modify neighboring entries. Clones the sibling row's Contents N paragraph style, direct character formatting, and tab stops. Set hyperlink_url to an outline target (#…|outline). Page numbers follow the sibling row: plain text after a tab (generated TOC rows store digits in the entry, not a page field). Pass page to set that text; omit it to copy the sibling's page text. position is before, after (both need old_content), or end (after the last TOC entry). indexes_update_all is the full rebuild and drops customized TOC formatting. The agent decides what is missing; this tool does not sync the outline.
+        """Insert one new row into an existing table of contents. Does not call index update(), and does not modify neighboring entries. Clones the sibling row's Contents N paragraph style, direct character formatting, and tab stops. Set hyperlink_url to an outline target (#…|outline) or a text-table target (#Name|table). Page numbers follow the sibling row: plain text after a tab (generated TOC rows store digits in the entry, not a page field). Pass page to set that text when the new row is not on the sibling's page; omit it to copy the sibling's page text. position is before, after (both need old_content), or end (after the last TOC entry). indexes_update_all is the full rebuild and drops customized TOC formatting. The agent decides what is missing; this tool does not sync the outline.
 
         Args:
             content (required): Plain text of the new entry title. May be the full line (Title followed by a tab and the page) when page is omitted.
             page (optional): Plain page text written after a tab. Omit to copy the sibling row's page text. Not a page-number field.
-            hyperlink_url (optional): Outline target (#…|outline) for the new row only. Omit to leave the new row unlinked.
+            hyperlink_url (optional): Outline target (#…|outline) or text-table target (#Name|table) for the new row only. Omit to leave the new row unlinked.
             position (optional): Where to insert the one row. before/after need old_content. end appends after the last TOC entry. Default end. One of: before, after, end.
             old_content (optional): Plain text of the existing TOC entry to insert before or after. Not used when position is end.
             level (optional): Contents N paragraph style (1-10). Omit to clone the sibling entry's style.
@@ -1134,12 +1366,20 @@ class _IndexProxy:
         return _rpc_call("indexes_insert_toc_entry", content=content, page=page, hyperlink_url=hyperlink_url, position=position, old_content=old_content, level=level, index=index, occurrence=occurrence, dry_run=dry_run)
 
     def list(self) -> dict[str, Any]:
-        """List document indexes (TOC, alphabetical, user, bibliography tables). type matches indexes_create kind (bibliography via getServiceName). For in-flow cites use indexes_list_cites, not this tool."""
+        """List document indexes (TOC, alphabetical, user, bibliography tables). type matches indexes_create kind (bibliography via getServiceName). For in-flow cites use indexes_list_cites, not this tool. For TOC row text, outline level, and the internal hyperlink use indexes_list_toc_entries."""
         return _rpc_call("indexes_list")
 
     def list_cites(self) -> dict[str, Any]:
         """List native bibliography cite fields (TextField.Bibliography). Returns identifier, key Fields (Author, Title, Year, Pages, type), and location. Does not list the bibliography table — use indexes_list for that."""
         return _rpc_call("indexes_list_cites")
+
+    def list_toc_entries(self, *, index: int | None = None) -> dict[str, Any]:
+        """List table-of-contents rows by reading the index paragraphs. Each row is the visible text, the outline level (Contents 1-10), and the internal hyperlink (HyperLinkURL, including #…|outline). Does not export the document and does not call index update(). Use this to inspect or validate TOC entries. indexes_list returns only the index name and type. Do not use get_document_content for a linked TOC: that export runs the XHTML Writer filter, entry text often comes back empty, and a long outline can hang.
+
+        Args:
+            index (optional): Document index position from indexes_list. Omit when the document has exactly one TOC.
+        """
+        return _rpc_call("indexes_list_toc_entries", index=index)
 
     def refresh_toc_entry(self, old_content: str, content: str, *, hyperlink_url: str | None = None, index: int | None = None, occurrence: int | None = None, dry_run: bool | None = None) -> dict[str, Any]:
         """Replace one substring inside a single table-of-contents entry and, when that text sits in one outline hyperlink (#…|outline), update that URL. Does not call index update(), so other entries, tabs, page numbers, and direct formatting stay. Page numbers are left as they are. indexes_update_all is the full rebuild and drops customized TOC formatting. Pass hyperlink_url to set the outline target, including when content equals old_content. Bookmark targets are not rewritten. To add or remove one row, use indexes_insert_toc_entry or indexes_delete_toc_entry.
@@ -1376,16 +1616,6 @@ pivot_table = _PivotTableProxy()
 class _PythonProxy:
     """Proxy for python tools."""
 
-    def run_venv_python_script(self, code: str, *, data_range: str | None = None, data: list[Any] | None = None) -> dict[str, Any]:
-        """Run Python code. Set `result` to a return value (NumPy ndarray, Pandas DataFrame, list, dict, or scalar). Optional data_range (one A1 address, comma-separated addresses, or an array) injects `data` / `ranges` (one address → `data` is that CalcRange; several → `data` is the `ranges` list). The host reads ranges on the main thread and sends shaped data over the efficient IPC path. For anything beyond tiny grids, use data_range (address) rather than passing values in the data parameter.
-
-        Args:
-            code (required): Python / Numpy source. Set `result` to the return value (NumPy ndarray, Pandas DataFrame, list, dict, or scalar).
-            data_range (optional): Optional A1 range(s) injected as CalcRange: one address → `data` is that range and `ranges == [data]`; two or more → `data` is the same list as `ranges`. Pass one address string, a comma/semicolon-separated string (e.g. 'A1:A10, C1:C10'), or an array of address strings.
-            data (optional): Optional 2D array of cell values as `data` (use data_range for bulk data; the host resolves addresses without putting values in the LLM context).
-        """
-        return _rpc_call("run_venv_python_script", code=code, data_range=data_range, data=data)
-
     def symbolic_math(self, helper: str, *, params: dict[str, Any] | None = None, task_hint: str | None = None, display_block: bool | None = None) -> dict[str, Any]:
         """Run a trusted SymPy symbolic math helper. Helpers: differentiate, integrate, latex_to_math_object, solve_equation, symbolic_simplify. On Writer, the result inserts as a Math object when LaTeX conversion succeeds. On Calc, results write to the active sheet.
 
@@ -1400,6 +1630,25 @@ class _PythonProxy:
 python = _PythonProxy()
 
 
+class _PythonSqlProxy:
+    """Proxy for python/sql tools."""
+
+    def query_folder_sql(self, sql: str, *, files: dict[str, Any] | None = None, data_range: str | None = None, headers: bool | None = None, tables: dict[str, Any] | None = None, task_hint: str | None = None) -> dict[str, Any]:
+        """Run read-only SQL (via DuckDB) against folder files and/or live Calc ranges (Phase C multi-table). Prefer stable table identity: tables={name: {sheet: "Sales_Analytics"}} (sheet used range) or {named_range: "SalesData"} (Calc named/database range). Absolute range: {range: "Sales.A1:F500"} stays frozen A1. Sibling sheet used-range: files={name: "budget.xlsx#Sales"} (dict key is the SQL table). Flat files: CSV/TSV, Parquet, JSON/JSONL/NDJSON (DuckDB read_*). Spreadsheets (.xlsx/.xls/.ods) use the LibreOffice import path. Optional tables file="budget.xlsx" reads that sibling instead of the active doc. Host prepares all UNO data + validates. Results cap at 200 rows (MAX_TABLE_ROWS): truncated=true plus warning/flags/message when the result is incomplete. COPY/EXPORT/ATTACH/INSTALL/LOAD and path escapes fail with READONLY_VIOLATION.
+
+        Args:
+            sql (required): Read-only SQL (SELECT/CTE/in-memory VIEW). COPY/EXPORT/ATTACH/INSTALL/LOAD and path escapes are rejected. Results longer than 200 rows are truncated and flagged.
+            files (optional): Folder files as name -> basename/spec. Flat: {"ledger": "ledger.parquet"}, {"events": "events.json"}. Sibling spreadsheet used-range: {"sales": "budget.xlsx#Sales"} (#SheetName is the sheet identity; the dict key is the SQL table). A list of basenames is still accepted.
+            data_range (optional): Frozen A1 on the active sheet (e.g. 'Sheet1.A1:F500'). Becomes table 'data'. Prefer tables={data: {sheet}} or {named_range} for stable identity.
+            headers (optional): First row of data_range (or preloaded) contains column headers (default true).
+            tables (optional): Multi-table catalog. Exactly one identity per entry: sheet, named_range, or range. e.g. {"sales": {"sheet": "Sales_Analytics"}, "costs": {"named_range": "CostData"}}. Mix with files.
+            task_hint (optional): Optional hint for logging/context.
+        """
+        return _rpc_call("query_folder_sql", sql=sql, files=files, data_range=data_range, headers=headers, tables=tables, task_hint=task_hint)
+
+python_sql = _PythonSqlProxy()
+
+
 class _RangeProxy:
     """Proxy for range tools."""
 
@@ -1410,7 +1659,7 @@ class _RangeProxy:
             name (required): Name of the range (e.g. 'TaxRate', 'Q1Sales'). Must start with a letter/underscore with no spaces.
             content (required): The formula or cell range address it points to (e.g. '$Sheet1.$A$1:$B$5', '0.0825', 'SUM(A1:A10)').
             scope (optional): Scope of the name: 'global' (default) or a specific sheet name (e.g. 'Sheet1').
-            base_cell (optional): Base cell reference for relative addresses (e.g. 'A1' or 'Sheet1.A1'). Defaults to A1 on sheet 0.
+            base_cell (optional): Base cell reference for relative addresses (e.g. 'A1' or 'Sheet1.A1'). Defaults to A1 on sheet 0. An unknown sheet name is an error.
             flags (optional): Range type flags as an array of names: 'filter_criteria', 'print_area', 'column_header', 'row_header'.
         """
         return _rpc_call("named_range_add", name=name, content=content, scope=scope, base_cell=base_cell, flags=flags)
@@ -1430,7 +1679,7 @@ class _RangeProxy:
 
         Args:
             name (required): Name of the range to delete.
-            scope (optional): Scope of the named range: 'global' (default) or specific sheet name.
+            scope (optional): Omit to resolve like named_range_get_info (active sheet shadows a same-spelled global name). 'global' or a sheet name forces that container.
         """
         return _rpc_call("named_range_delete", name=name, scope=scope)
 
@@ -1439,10 +1688,10 @@ class _RangeProxy:
 
         Args:
             name (required): Current name of the range to edit.
-            new_name (optional): New name for the range if renaming.
+            new_name (optional): New name if renaming. Must start with a letter or underscore; only letters, digits, and underscore; not a cell address (A1, R1C1) and not a name containing '.' or spaces.
             content (optional): New formula or range address content.
-            scope (optional): Scope where the named range exists: 'global' (default) or specific sheet name.
-            base_cell (optional): New base cell reference for relative coordinates.
+            scope (optional): Omit to resolve like named_range_get_info (active sheet shadows a same-spelled global name). 'global' or a sheet name forces that container.
+            base_cell (optional): New base cell reference for relative coordinates (e.g. 'A1' or 'Sheet1.A1'). An unknown sheet name is an error.
             flags (optional): Range type flags as an array of names: 'filter_criteria', 'print_area', 'column_header', 'row_header'.
         """
         return _rpc_call("named_range_edit", name=name, new_name=new_name, content=content, scope=scope, base_cell=base_cell, flags=flags)
@@ -1452,7 +1701,7 @@ class _RangeProxy:
 
         Args:
             name (required): The name of the defined range to inspect.
-            scope (optional): Scope where the name is defined: 'global' (default) or sheet name. Omit to search global then active sheet.
+            scope (optional): Omit to prefer the active sheet's local name over a same-spelled global name, then the workbook, then other visible sheets. 'global' or a sheet name forces that container, including a _-prefixed sheet.
         """
         return _rpc_call("named_range_get_info", name=name, scope=scope)
 
@@ -1460,7 +1709,7 @@ class _RangeProxy:
         """Lists named ranges and their formulas/reference targets. Supports filtering by scope ('global', 'all', or a specific sheet name).
 
         Args:
-            scope (optional): Scope to list: 'global' (default), 'all' (global + all sheets), or specific sheet name.
+            scope (optional): Scope to list: 'global' (default), 'all' (global + visible sheets; skips _-prefixed generated sheets), or a specific sheet name.
         """
         return _rpc_call("named_range_list", scope=scope)
 
@@ -1610,7 +1859,7 @@ class _ShapeProxy:
             line_color (optional): Line border color.
             line_width (optional): Line width (100ths of mm).
             text_color (optional): Text character color.
-            font_size (optional): Font size in points.
+            font_size (optional): Optional. Omit for TextFitToSize AUTOFIT (auto-size to the shape box); that is usually correct. Only set a point size when you need a specific fixed size.
             font_name (optional): Font family name.
             rotation_angle (optional): Rotation angle in degrees.
         """
@@ -2090,12 +2339,12 @@ class _WriterProxy:
         """Insert or replace content. IMPORTANT: Required after web_research or document_research delegates return. To replace the ENTIRE document use target='full_document' with content only — do NOT pass the whole document as old_content. Use target='beginning', 'end', or 'selection' to insert. Use target='search' with old_content for find-and-replace of a specific substring only. An empty replacement that removes the last text in a table deletes that table. Clearing one cell while another cell still has text leaves the table in place. Search occurrence is 0-based over replaceable body/table/frame matches only (not dry_run shape/comment rows); omit it for first-match; do not combine with all_matches=true. dry_run tags those replaceable rows with occurrence so you can pass the index back. An outline hyperlink (#…|outline) covering a replaced match is updated when the matched text occurs once in the target outside that suffix; pass hyperlink_url to set a different target on that one link, including when content equals old_content and only the URL is stale. Bookmark links are not rewritten.
 
         Args:
-            content (required): List of HTML fragments or plain-text fragments (one per block); shape and math per the APPLY_DOCUMENT_CONTENT AND HTML rules — the editing-html guidance covers them if they are not already in your context. No Markdown.
+            content (required): List of HTML fragments or plain-text fragments (one per block), or one string. A string is one block; execute still joins a list with newlines. Shape and math per the APPLY_DOCUMENT_CONTENT AND HTML rules — the editing-html guidance covers them if they are not already in your context. No Markdown.
             target (optional): Where to apply the content. One of: beginning, end, selection, full_document, search.
             old_content (optional): Substring to find when target='search'. Not for whole-document replace — use target='full_document' instead.
             all_matches (optional): Replace all occurrences (true) or first only. Default false. Only for target='search' with position='replace'.
             occurrence (optional): For target='search': 0-based index into replaceable Writer text matches (body/table/frame), not dry_run shape/comment rows. Omit for the existing first-match behavior. Cannot be combined with all_matches=true.
-            position (optional): For target='search': 'replace' (default) replaces the match; 'before'/'after' INSERT the content next to the match and leave the matched text untouched (result reports inserted=true instead of replaced_count). One of: replace, before, after.
+            position (optional): For target='search': 'replace' (default) replaces the match; 'before'/'after' INSERT the content next to the match and leave the matched text untouched (result reports inserted=true instead of replaced_count). Inline content (plain text, <b>, <i>, ...) goes at the exact match edge; block content (<p>, headings, lists, tables) goes before/after the whole paragraph that holds the match (result reports snapped_to_paragraph=true when that moved it). One of: replace, before, after.
             dry_run (optional): For target='search': do NOT edit. Return replaceable matches (each tagged with occurrence) plus shape/comment previews, so you can check before committing.
             regex (optional): For target='search': treat old_content as a regular expression (default false = literal). Regex mode is single-paragraph (no cross-paragraph chaining).
             case_sensitive (optional): For target='search': force case-sensitive (true) or case-insensitive (false) matching. Omit for the default lenient match.
@@ -2125,7 +2374,7 @@ class _WriterProxy:
             max_chars (optional): Maximum characters to return.
             start (optional): Start character offset (0-based). Required for scope 'range'.
             end (optional): End character offset (exclusive). Required for scope 'range'.
-            include_images (optional): Include embedded image data (base64) in export. Default false.
+            include_images (optional): Include embedded image data (base64) in export. Default false: an image comes back as its wrapper with the picture's name (<div|span ... id="Name"><img src=""/></...>); keep that wrapper in apply_document_content content to keep the picture there, drop it to delete the picture.
         """
         return _rpc_call("get_document_content", scope=scope, max_chars=max_chars, start=start, end=end, include_images=include_images)
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import zlib
 from html import escape as html_escape
 from typing import Any, ClassVar, Iterator
 
@@ -26,6 +27,7 @@ from plugin.doc.text_helpers import (
     get_string_without_tracked_deletions,
     _visible_portions as _shared_visible_portions,
 )
+from plugin.framework.errors import ToolExecutionError
 from plugin.framework.uno_context import new_blank_writer
 from . import xhtml_style_postprocess as xhtml_post
 from . import format as format_mod
@@ -74,10 +76,29 @@ def strip_embedded_image_data(html: str) -> str:
 
 
 
+# LibreOffice's XHTML export gives every heading an empty outline anchor, ``<a id="a__…">``,
+# named after the heading's text. A picture anchored inside the heading puts its whole base64
+# data into that name, so a heading holding one embedded screenshot came back with a
+# 40-65 KB id (twice the picture itself, once in the id and once in src), even with
+# include_images=false. Nothing in WriterAgent, nor the agent, uses these ids.
+# shorten_outline_anchor_ids gives a long id a short, stable name, in the id and in any
+# ``href="#…"`` that points to it.
+_MAX_OUTLINE_ANCHOR_ID = 200
+_LONG_OUTLINE_ANCHOR_RE = re.compile(r'(\b(?:id|href)="#?)(a__[^"]{%d,})(")' % _MAX_OUTLINE_ANCHOR_ID)
+
+
+def shorten_outline_anchor_ids(html: str) -> str:
+    """Replace outline anchor ids longer than ``_MAX_OUTLINE_ANCHOR_ID`` with ``a__<crc32>``."""
+    if not html or "a__" not in html:
+        return html
+    return _LONG_OUTLINE_ANCHOR_RE.sub(lambda m: "%sa__%08x%s" % (m.group(1), zlib.crc32(m.group(2).encode("utf-8")), m.group(3)), html)
+
+
 def _apply_image_export_options(content: str, *, include_images: bool) -> str:
-    if include_images or not content:
+    if not content:
         return content
-    return strip_embedded_image_data(content)
+    content = shorten_outline_anchor_ids(content)
+    return content if include_images else strip_embedded_image_data(content)
 
 
 def _ruby_parts(span: Any) -> tuple[str, str]:
@@ -619,6 +640,36 @@ def _selection_cursor(model: Any) -> Any | None:
         return None
 
 
+def _apply_temp_para_style(temp_doc: Any, temp_cursor: Any, style: str) -> None:
+    """Apply *style* on the scratch paragraph when that style exists there.
+
+    Selection and range export copy each paragraph into a blank
+    scratch document and set ``ParaStyleName`` with no check. A custom
+    or foreign style is not in that document, so ``setPropertyValue``
+    raises and the broad handler returns ``""``, discarding the whole
+    selection. Skip the missing style (the scratch default stays) and
+    keep copying. One style miss must not discard the range.
+    """
+    if not style:
+        return
+    try:
+        families = temp_doc.getStyleFamilies()
+        para_styles = families.getByName("ParagraphStyles")
+        if not para_styles.hasByName(style):
+            log.debug(
+                "range export: paragraph style %r is not in the scratch document; keeping the default",
+                style,
+            )
+            return
+        temp_cursor.setPropertyValue("ParaStyleName", style)
+    except Exception:
+        log.debug(
+            "range export: skipped paragraph style %r on the scratch document",
+            style,
+            exc_info=True,
+        )
+
+
 def _trim_to_source(text: Any, element: Any, para_text: str, source: Any) -> tuple[int, int]:
     """Visible-text window of *element* that lies inside *source*."""
     try:
@@ -731,7 +782,7 @@ def _range_to_content_via_temp_doc(
             if first_para:
                 temp_cursor.gotoStart(False)
                 temp_cursor.setString(para_text)
-                temp_cursor.setPropertyValue("ParaStyleName", style)
+                _apply_temp_para_style(temp_doc, temp_cursor, style)
                 first_para = False
             else:
                 temp_cursor.gotoEnd(False)
@@ -741,7 +792,7 @@ def _range_to_content_via_temp_doc(
                 # clobbers the previous paragraph instead of filling the new one.
                 temp_cursor.gotoNextParagraph(False)
                 temp_cursor.gotoEndOfParagraph(True)
-                temp_cursor.setPropertyValue("ParaStyleName", style)
+                _apply_temp_para_style(temp_doc, temp_cursor, style)
                 temp_cursor.setString(para_text)
             _paint_direct_formatting(el, portions, temp_text, trim_start, trim_end,
                                       _source_style(model, style, style_cache))
@@ -775,9 +826,10 @@ def _range_to_content_via_temp_doc(
         if max_chars and len(content) > max_chars:
             content = content[:max_chars] + "\n\n[... truncated ...]"
         return content
-    except Exception:
+    except Exception as e:
+        # Same silent "ok with empty content" as the full read (relato #63): say why instead.
         log.exception("_range_to_content_via_temp_doc failed")
-        return ""
+        raise ToolExecutionError("Could not read that part of the document (%s)." % _reason(e)) from e
     finally:
         if temp_doc is not None:
             try:
@@ -847,9 +899,10 @@ def document_to_content(
     if scope == "range":
         start = int(range_start) if range_start is not None else 0
         end = int(range_end) if range_end is not None else 0
-        doc_len = services.document.get_document_length(model) if services else 0
-        start = max(0, min(start, doc_len))
-        end = min(end, doc_len)
+        # No clamp to the document length: the walk below skips paragraphs past the end on its
+        # own. Clamping to CharacterCount cut a read at the end short ("o dan"), and measuring
+        # the real length here would walk the whole body a second time per range read.
+        start = max(0, start)
         return _done(
             _range_to_content_via_temp_doc(
                 model, ctx, start, end, max_chars, config_svc,
@@ -858,6 +911,7 @@ def document_to_content(
         )
 
     # scope == "full" — preferred: XHTML (+ flat-ODF parent map) -> semantic data-lo-style.
+    xhtml_error: Exception | None = None
     try:
         t_phase = time.perf_counter()
         xhtml = _export_xhtml(model, config_svc)
@@ -880,6 +934,7 @@ def document_to_content(
         content = _apply_image_export_options(content, include_images=include_images)
         content = _inject_exported_math_tex(model, ctx, content)
         content = _inject_ruby_from_model(model, content, fodt_has_ruby)
+        _raise_if_empty_export(model, content, "the XHTML export came back empty")
         if max_chars and len(content) > max_chars:
             content = content[:max_chars] + "\n\n[... truncated ...]"
         log.debug(
@@ -888,7 +943,8 @@ def document_to_content(
             len(content),
         )
         return _done(content, "xhtml")
-    except Exception:
+    except Exception as e:
+        xhtml_error = e
         log.exception("document_to_content (full, XHTML) failed; falling back to StarWriter")
 
     # Fallback: legacy StarWriter export (so reads never hard-fail).
@@ -904,6 +960,7 @@ def document_to_content(
             content = _apply_image_export_options(content, include_images=include_images)
             content = _inject_exported_math_tex(model, ctx, content)
             content = _inject_ruby_from_model(model, content, None)
+            _raise_if_empty_export(model, content, "the HTML export came back empty")
             if max_chars and len(content) > max_chars:
                 content = content[:max_chars] + "\n\n[... truncated ...]"
             log.debug(
@@ -912,9 +969,36 @@ def document_to_content(
                 len(content),
             )
             return _done(content, "starwriter")
-    except Exception:
+    except Exception as e:
+        # When both exports fail, returning "" makes get_document_content
+        # answer status ok with empty content (relato #63: document_length
+        # 57003, content ""), so neither the agent nor the log reader can
+        # tell why. The failure surfaces as a tool error that names both
+        # reasons (a full /tmp, a filter error, ...).
         log.exception("document_to_content (full) failed")
-        return _done("", "failed")
+        raise ToolExecutionError(
+            "Could not read the document: the XHTML export failed (%s) and the HTML export "
+            "failed too (%s)." % (_reason(xhtml_error), _reason(e))) from e
+
+
+def _reason(error: Exception | None) -> str:
+    """Short text for an export failure: the message, or the exception type when it has none
+    (UNO exceptions often have an empty message)."""
+    if error is None:
+        return "unknown error"
+    return str(error).strip() or type(error).__name__
+
+
+def _raise_if_empty_export(model: Any, content: str, why: str) -> None:
+    """Raise when an export produced nothing although the document has text."""
+    if content and content.strip():
+        return
+    try:
+        has_text = bool(model.getText().getString().strip())
+    except Exception:
+        has_text = True
+    if has_text:
+        raise ToolExecutionError(why)
 
 
 def _supports_service(obj: Any, name: str) -> bool:

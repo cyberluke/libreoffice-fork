@@ -35,6 +35,7 @@ $(eval $(call gb_Module_add_targets,officelabs,\
     Executable_officelabs_cef_subprocess \
     Package_cef \
     Package_cef_res \
+    Package_officelabs_ui \
 ))
 # macOS: assemble + install the CEF framework and the five Helper .app bundles
 # into Contents/Frameworks. Their paths contain spaces, which gbuild's Package

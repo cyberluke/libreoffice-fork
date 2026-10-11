@@ -82,14 +82,21 @@ def get_provider_defaults(provider: str | None) -> dict[str, str]:
             defaults["text_model"] = effective_id
         if (caps & ModelCapability.IMAGE) and "image_model" not in defaults:
             defaults["image_model"] = effective_id
-        if (caps & ModelCapability.AUDIO) and "stt_model" not in defaults:
-            # TTS rows (default_tts / tts) are not speech-to-text fallbacks.
-            if not model.get("default_tts") and not model.get("tts"):
-                defaults["stt_model"] = effective_id
-        if (caps & ModelCapability.AUDIO) and "tts_model" not in defaults:
-            # STT rows (default_audio / stt) are not text-to-speech fallbacks.
-            if not model.get("default_audio") and not model.get("stt"):
-                defaults["tts_model"] = effective_id
+        # CHAT|AUDIO rows with neither stt nor tts flag (Gemini 3.1 Flash Lite
+        # Preview, writeragent-mock) used to become both speech defaults: any
+        # AUDIO row that was not explicitly TTS was treated as STT, and any
+        # that was not explicitly STT was treated as TTS. Skip CHAT rows in
+        # this fallback only. The first loop's default_audio / default_tts
+        # flags are unchanged.
+        if not (caps & ModelCapability.CHAT):
+            if (caps & ModelCapability.AUDIO) and "stt_model" not in defaults:
+                # TTS rows (default_tts / tts) are not speech-to-text fallbacks.
+                if not model.get("default_tts") and not model.get("tts"):
+                    defaults["stt_model"] = effective_id
+            if (caps & ModelCapability.AUDIO) and "tts_model" not in defaults:
+                # STT rows (default_audio / stt) are not text-to-speech fallbacks.
+                if not model.get("default_audio") and not model.get("stt"):
+                    defaults["tts_model"] = effective_id
 
     return defaults
 
@@ -99,6 +106,9 @@ def get_provider_defaults(provider: str | None) -> dict[str, str]:
 # source of truth; a new sonic-* or nemotron ASR id can still appear).
 _TOGETHER_TTS_PREFIXES: tuple[str, ...] = ("canopylabs/orpheus", "hexgrad/kokoro", "cartesia/sonic")
 _TOGETHER_STT_PREFIXES: tuple[str, ...] = ("openai/whisper", "nvidia/parakeet", "nvidia/nemotron")
+# nemotron chat ids (nvidia/nemotron-nano) share the STT prefix. ASR rows
+# carry "asr"; whisper and parakeet prefixes do not need that extra check.
+_TOGETHER_STT_ASR_PREFIXES = frozenset({"nvidia/nemotron"})
 
 
 def _row_is_tts(model: dict[str, Any]) -> bool:
@@ -125,6 +135,22 @@ def catalog_speech_ids(provider: str, kind: str) -> list[str]:
     return out
 
 
+def _together_id_matches_prefix(folded: str, prefixes: tuple[str, ...]) -> bool:
+    """Prefix match for Together speech ids.
+
+    ``nvidia/nemotron`` also matches chat ids (``nemotron-nano``). Those rows
+    are not ASR unless the id contains ``asr``. Whisper and parakeet stay
+    prefix-only; sonic stays on the TTS list.
+    """
+    for prefix in prefixes:
+        if not folded.startswith(prefix):
+            continue
+        if prefix in _TOGETHER_STT_ASR_PREFIXES and "asr" not in folded:
+            continue
+        return True
+    return False
+
+
 def together_speech_ids(kind: str, remote_models: list[str] | None = None) -> list[str]:
     """Together Speech-tab ids: full serverless catalog, plus prefix matches.
 
@@ -142,7 +168,7 @@ def together_speech_ids(kind: str, remote_models: list[str] | None = None) -> li
         folded = mid.casefold()
         if folded in seen:
             continue
-        if any(folded.startswith(prefix) for prefix in prefixes):
+        if _together_id_matches_prefix(folded, prefixes):
             extras.append(mid)
             seen.add(folded)
     return curated + extras
@@ -154,7 +180,7 @@ DEFAULT_MODELS: list[dict[str, Any]] = [
     {"display_name": "DeepSeek V4 Flash", "capability": ModelCapability.CHAT | ModelCapability.TOOLS, "context_length": 163840, "ids": {"together": "deepseek-ai/DeepSeek-V4-Flash-0731"}},
     {"display_name": "MiniMax M3", "capability": ModelCapability.CHAT | ModelCapability.VISION | ModelCapability.TOOLS, "context_length": 1000000, "ids": {"together": "MiniMaxAI/MiniMax-M3"}, "default_text": True},
     {"display_name": "GPT-OSS 120B", "capability": ModelCapability.CHAT | ModelCapability.TOOLS, "context_length": 131072, "ids": {"together": "openai/gpt-oss-120b", "openrouter": "openai/gpt-oss-120b:nitro", "groq": "openai/gpt-oss-120b"}, "default_text": True},
-    {"display_name": "GPT-OSS 20B", "capability": ModelCapability.CHAT | ModelCapability.TOOLS, "context_length": 131072, "ids": {"together": "openai/gpt-oss-20b", "openrouter": "openai/gpt-oss-20b", "groq": "openai/gpt-oss-20b"}, "default_text": True},
+    {"display_name": "GPT-OSS 20B", "capability": ModelCapability.CHAT | ModelCapability.TOOLS, "context_length": 131072, "ids": {"together": "openai/gpt-oss-20b", "openrouter": "openai/gpt-oss-20b", "groq": "openai/gpt-oss-20b"}},
     {"display_name": "Mistral Large 3", "capability": ModelCapability.CHAT | ModelCapability.VISION | ModelCapability.TOOLS, "context_length": 262144, "ids": {"openrouter": "mistralai/mistral-large-2512", "mistral": "mistral-large-latest"}},
     {"display_name": "Voxtral Mini Transcribe", "capability": ModelCapability.AUDIO, "ids": {"openrouter": "mistralai/voxtral-mini-transcribe"}, "default_audio": True},
     {"display_name": "Gemini 3.1 Flash Lite Preview", "capability": ModelCapability.CHAT | ModelCapability.AUDIO | ModelCapability.VISION | ModelCapability.TOOLS, "context_length": 1048576, "ids": {"google": "gemini-3.1-flash-lite-preview", "openrouter": "google/gemini-3.1-flash-lite-preview"}},

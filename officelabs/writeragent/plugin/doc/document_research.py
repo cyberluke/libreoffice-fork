@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, Callable
 
 import uno
 
@@ -377,6 +377,7 @@ def _scan_directory(
     exclude_path: str | None,
     open_paths: dict[str, str],
     max_entries: int,
+    stop_checker: Callable[[], bool] | None = None,
 ) -> tuple[list[FileEntry], bool]:
     entries: list[FileEntry] = []
     truncated = False
@@ -389,7 +390,9 @@ def _scan_directory(
         raise OSError(f"Cannot list directory {directory!r}: {e}") from e
 
     candidates: list[tuple[str, tuple[str, os.stat_result]]] = []
-    for name in names:
+    for idx, name in enumerate(names):
+        if idx % 50 == 0 and stop_checker and stop_checker():
+            raise InterruptedError("USER_STOPPED")
         if _should_skip_filename(name):
             continue
         ext = os.path.splitext(name)[1].lower()
@@ -477,6 +480,9 @@ def _entries_from_open_only(
     return entries, truncated
 
 
+_USE_DEFAULT = object()
+
+
 def list_nearby_files(
     ctx: Any,
     active_model: Any,
@@ -484,6 +490,10 @@ def list_nearby_files(
     filter: str | None = None,
     file_kind: FileKind = "documents",
     max_entries: int = _DEFAULT_MAX_ENTRIES,
+    exclude_path: Any = _USE_DEFAULT,
+    open_paths: Any = _USE_DEFAULT,
+    listing_root: Any = _USE_DEFAULT,
+    stop_checker: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """List nearby files for the outer document_research agent.
 
@@ -492,12 +502,40 @@ def list_nearby_files(
 
     Returns a dict with ``files``, ``truncated``, and optional ``listing_root``.
     """
-    extensions = _extensions_for_file_kind(file_kind)
-    active_path = get_document_path(active_model)
-    exclude_path = _normalize_path(active_path) if active_path else None
-    open_paths = _collect_open_file_urls(ctx, exclude_path=exclude_path, extensions=extensions)
+    from plugin.framework.thread_guard import on_main_thread
+    from plugin.framework.queue_executor import execute_on_main_thread
 
-    listing_root = resolve_listing_directory(ctx, active_model)
+    extensions = _extensions_for_file_kind(file_kind)
+
+    def _fetch_uno_state() -> tuple[Any, Any, Any]:
+        res_exclude = exclude_path
+        res_open = open_paths
+        res_root = listing_root
+
+        if res_exclude is _USE_DEFAULT:
+            if active_model is not None:
+                active_path = get_document_path(active_model)
+                res_exclude = _normalize_path(active_path) if active_path else None
+            else:
+                res_exclude = None
+
+        if res_open is _USE_DEFAULT:
+            res_open = _collect_open_file_urls(ctx, exclude_path=res_exclude, extensions=extensions)
+
+        if res_root is _USE_DEFAULT:
+            res_root = resolve_listing_directory(ctx, active_model)
+
+        return res_exclude, res_open, res_root
+
+    if on_main_thread():
+        exclude_path, open_paths, listing_root = _fetch_uno_state()
+    else:
+        from plugin.framework.queue_executor import SendCancelled
+        try:
+            exclude_path, open_paths, listing_root = execute_on_main_thread(_fetch_uno_state)
+        except SendCancelled:
+            return {"status": "error", "code": "USER_STOPPED", "message": "Document read stopped by user."}
+
     if listing_root:
         try:
             files, truncated = _scan_directory(
@@ -507,8 +545,11 @@ def list_nearby_files(
                 exclude_path=exclude_path,
                 open_paths=open_paths,
                 max_entries=max_entries,
+                stop_checker=stop_checker,
             )
             return {"status": "ok", "files": files, "truncated": truncated, "listing_root": listing_root}
+        except InterruptedError:
+            return {"status": "error", "code": "USER_STOPPED", "message": "Document read stopped by user."}
         except OSError as e:
             return {"status": "error", "message": str(e), "details": {"path": listing_root}}
 
@@ -530,13 +571,26 @@ def resolve_path_or_name(
     filter: str | None = None,
     file_kind: FileKind = "documents",
 ) -> tuple[str | None, str | None]:
-    """Resolve a path or basename to an absolute path and file URL.
+    """Resolve a path, file URL, or basename to an absolute path and file URL.
 
     Returns (path, url) or (None, error_message).
     """
     raw = str(path_or_name).strip()
     if not raw:
         return None, "path_or_name is required"
+
+    # The tool schema accepts a file URL, and list_nearby_files /
+    # list_open_documents return ``file:///…`` urls.
+    # ``os.path.isabs("file:///…")`` is false, so the URL used as a
+    # listing filter matches nothing. ``open_document_for_read``
+    # already accepts ``file:`` URLs. Convert with the same helper
+    # the opener uses, then treat the result as an absolute path
+    # (not a basename filter).
+    if raw.startswith("file:"):
+        resolved = _system_path_from_url(raw)
+        if resolved and os.path.isfile(resolved):
+            return resolved, path_to_file_url(resolved)
+        return None, f"No file matching {raw!r}"
 
     if os.path.isabs(raw) and os.path.isfile(raw):
         norm = _normalize_path(raw)
@@ -581,19 +635,18 @@ _WINDOWS_HIDDEN_READONLY_TARGET = "_wa_doc_research"
 def _hidden_readonly_load_args() -> tuple[str, int]:
     """Target + FrameSearchFlag for Hidden+ReadOnly sibling open.
 
-    What was wrong: GHA 34636251918 stored Budget via the pooled Calc
-    (``store budget via active`` OK; ``test_list_nearby_excludes_active``
-    OK). ``open_document_for_read`` then ``loadComponentFromURL`` of that
-    file with ``_default`` flags=0 raised ``Could not create system
-    bitmap!`` The next sibling open hung 30s at the same call.
-
-    How: leftover Hidden ``_wa_calc_html`` paste Writers (uids 26/27)
-    poison ``_default`` / ``_blank`` — same family as leftover Hidden
-    factory (34597506651 / 34599838644) and leftover notebook detect
-    (34619751330). ``rich_html.py`` already avoids those names.
-
-    Why this: one CREATE|GLOBAL name. Hidden+ReadOnly and the reuse /
-    close-flag contract stay the same. POSIX keeps ``_default``.
+    GHA 34636251918 stored Budget via the pooled Calc (``store
+    budget via active`` OK; ``test_list_nearby_excludes_active``
+    OK). ``open_document_for_read`` then ``loadComponentFromURL``
+    of that file with ``_default`` flags=0 raises ``Could not
+    create system bitmap!`` The next sibling open hangs 30s at the
+    same call. Leftover Hidden ``_wa_calc_html`` paste Writers
+    (uids 26/27) poison ``_default`` / ``_blank`` — same family as
+    leftover Hidden factory (34597506651 / 34599838644) and leftover
+    notebook detect (34619751330). ``rich_html.py`` already avoids
+    those names. Use one CREATE|GLOBAL name. Hidden+ReadOnly and
+    the reuse / close-flag contract stay the same. POSIX keeps
+    ``_default``.
     """
     if sys.platform == "win32":
         return _WINDOWS_HIDDEN_READONLY_TARGET, _HIDDEN_READONLY_SEARCH_FLAGS
@@ -604,8 +657,9 @@ def open_document_for_read(ctx: Any, path_or_url: str) -> tuple[Any | None, str 
     """Open or reuse a document hidden+read-only.
 
     Returns (model, doc_type, error_message, opened_for_document_research). The last flag is True only
-    when this call loaded a new hidden document; callers must pass it to
+    when this call loaded a new hidden document that it returns; callers must pass it to
     :func:`close_document_research_document` after the read finishes. Reused desktop documents are not closed.
+    A load that is not returned (unsupported type, or an exception after load) is closed here.
     """
     from plugin.framework.uno_context import get_desktop
 
@@ -628,6 +682,14 @@ def open_document_for_read(ctx: Any, path_or_url: str) -> tuple[Any | None, str 
     if existing is not None:
         return existing, existing_type or doc_type_label_for_enum(get_document_type(existing), impress_as_draw=True), None, False
 
+    # A successful load that is not returned must not leave a hidden
+    # component open. An unknown doc_type that returns the error
+    # without close, and an except path after loadComponentFromURL
+    # that only logs, accumulate hidden LibreOffice components on
+    # repeated reads of unsupported files. Every load that is not
+    # handed back is closed here; callers still close only the model
+    # this function returns.
+    model: Any = None
     try:
         from plugin.writer.format import create_property_value
         desktop = get_desktop(ctx)
@@ -641,11 +703,14 @@ def open_document_for_read(ctx: Any, path_or_url: str) -> tuple[Any | None, str 
             return None, None, f"Failed to open {path}", False
         doc_type = doc_type_label_for_enum(get_document_type(model), impress_as_draw=True)
         if doc_type == "unknown":
+            close_document_research_document(model, opened_for_document_research=True)
             return None, None, f"Unsupported document type for {path}", False
         from plugin.framework.thread_guard import guard_uno
 
         return guard_uno(model), doc_type, None, True
     except Exception as e:
+        if model is not None:
+            close_document_research_document(model, opened_for_document_research=True)
         log.exception("open_document_for_read failed for %s", path)
         return None, None, f"Failed to open {path}: {e}", False
 
@@ -653,8 +718,10 @@ def open_document_for_read(ctx: Any, path_or_url: str) -> tuple[Any | None, str 
 def close_document_research_document(model: Any, *, opened_for_document_research: bool) -> None:
     """Close a sibling document opened by :func:`open_document_for_read` for document_research read.
 
-    Bugfix: without this, repeated delegate_read_document calls leave hidden LO components open.
-    Only closes when *opened_for_document_research* is True (not when reusing a user-visible open doc).
+    Repeated delegate_read_document calls leave hidden LO components
+    open unless this closes them. Only closes when
+    *opened_for_document_research* is True (not when reusing a
+    user-visible open doc).
     """
     if not opened_for_document_research or model is None:
         return
@@ -700,32 +767,57 @@ def _is_modified(model: Any) -> bool:
 
 
 def get_open_documents(uno_ctx: Any, active_model: Any = None) -> list[dict[str, Any]]:
-    """Retrieve all open documents from the desktop context with metadata."""
+    """Retrieve all open documents from the desktop context with metadata.
+
+    An empty desktop is ``[]``. A disposed desktop is not that list: it
+    leaves as ``ListenerBoundary``. A runtime error is re-raised as itself,
+    not as disposal and not as ``[]``.
+    """
     from plugin.framework.thread_guard import assert_main_thread
     from plugin.framework.uno_context import get_desktop
     from plugin.doc.doc_type import get_document_type
     from plugin.framework.uno_context import get_runtime_uid
+    from plugin.framework.uno_listeners import reraise_listener_boundary
     import os
 
-    assert_main_thread("document_research.get_open_documents")
-    desktop = get_desktop(uno_ctx)
-    comps = desktop.getComponents()
+    try:
+        assert_main_thread("document_research.get_open_documents")
+        desktop = get_desktop(uno_ctx)
+        comps = desktop.getComponents()
+    except Exception as exc:
+        # A disposed desktop (and the main-thread guard, if it fires
+        # under a later except Exception) is not "no documents".
+        # DisposedException is an Exception, and breaking the enumeration
+        # loop into ``return docs`` hides it. The listener boundary is
+        # the classifier. ``[]`` stays the answer only when the desktop
+        # has nothing to enumerate.
+        reraise_listener_boundary(exc)
     if not comps:
         return []
-    enum = comps.createEnumeration()
+    try:
+        enum = comps.createEnumeration()
+    except Exception as exc:
+        reraise_listener_boundary(exc)
     docs = []
     # Real UNO hasMoreElements() is bool. unittest MagicMock is always truthy
     # and never becomes False, so `while enum.hasMoreElements()` spun forever.
     # That wedged unit pytest at ~99% after peer send tools started calling
     # this from list_v1_peers / chat prompts with ctx=MagicMock().
     while enum is not None:
+        more = False
         try:
             more = enum.hasMoreElements()
-        except Exception:
-            break
+        except Exception as exc:
+            # Same hole as getComponents: breaking here reported a dead
+            # enumeration as the documents collected so far, often ``[]``.
+            # A runtime error took that path too. Empty is ``more`` false.
+            reraise_listener_boundary(exc)
         if more is not True and more != 1:
             break
-        elem = enum.nextElement()
+        try:
+            elem = enum.nextElement()
+        except Exception as exc:
+            reraise_listener_boundary(exc)
         model = _office_model_from_desktop_element(elem)
         if model is None or not hasattr(model, "getURL"):
             continue

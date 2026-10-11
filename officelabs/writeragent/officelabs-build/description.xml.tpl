@@ -11,14 +11,15 @@
 		<l:LibreOffice-minimal-version d:name="LibreOffice 24.8" value="24.8"/>
 	</dependencies>
     <publisher>
-        <name xlink:href="https://officelabs.example.invalid/">OfficeLabs</name>
+        <name xlink:href="https://officelabs.example.invalid/">NAI Office</name>
     </publisher>
     <display-name>
-        <name>OfficeLabs AI</name>
+        <name>NAI Office</name>
     </display-name>
 
   <icon>
-  <default xlink:href="assets/logo.jpg"/>
+  <default xlink:href="assets/ai.svg"/>
+  <highcontrast xlink:href="assets/ai.svg"/>
   </icon>
 
   <!--
