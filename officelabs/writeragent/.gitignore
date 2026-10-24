@@ -1,0 +1,8 @@
+# Build artifact: build_oxt.py vendors runtime packages (incl. cryptography) into
+# plugin/lib/ at build time. Never commit — the OXT carries it inside the bundle.
+plugin/lib/
+# Dev virtualenv (Python 3.13 dev tooling). Never commit; must also stay out
+# of the OXT dependency scan (officelabs/CustomTarget_writeragent-oxt.mk).
+**/.venv/
+**/__pycache__/
+**/*.egg-info/

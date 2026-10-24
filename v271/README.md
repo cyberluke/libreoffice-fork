@@ -56,6 +56,27 @@ v271/
 
 ## Build and install
 
+### Building the NAI Office fork (all platforms)
+
+Platform build drivers (configure + `make`, plus OXT native-wheel vendoring
+for the bundled WriterAgent extension):
+
+| Driver | Host | Configure input | CPU optimization |
+|---|---|---|---|
+| `v271/build_win.sh` | Windows (MSYS2 + vcvars64 + MSVC/clang-cl) | `autogen.input` | **auto ON** — `-arch:AVX2` (implies SSE4.1/SSE4.2) for the whole build |
+| `v271/build_mac.sh` | macOS (Xcode) | `--with-distro=NAIOfficeMac` | off (ARM64); opt-in on Intel via `--enable-naioffice-cpu-opt` |
+| `v271/build_linux.sh` | Linux (GCC/Clang) | `--with-distro=NAIOfficeLinux` | off; opt-in via `--enable-naioffice-cpu-opt` |
+
+Common driver knobs: `FORCE_AUTOGEN=1` (re-run configure),
+`AUTOGEN_ONLY=1` (stop after configure), `JOBS=N` / `PARALLELISM=N`
+(build parallelism), `PREP_VENDOR=0` (skip OXT native-wheel vendoring).
+
+CPU optimization details: `--enable-naioffice-cpu-opt` compiles the whole
+build (CFLAGS + CXXFLAGS, externals included) for AVX2 + SSE4.1 + SSE4.2 —
+on Windows it defaults to ON (MSVC/clang-cl `-arch:AVX2`; AVX-512 is
+deliberately not used). Use `--disable-naioffice-cpu-opt` for a baseline
+x86-64 build. Non-x86 hosts (e.g. ARM64 macOS) ignore the option.
+
 ```powershell
 # Windows
 powershell -ExecutionPolicy Bypass -File v271/office-extension/build_oxt.ps1

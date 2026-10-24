@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import sys
 
-import pytest
 
 sys.path.insert(0, "plugin")  # noqa: PLC0415 -- repo-root module layout, not packaging
 

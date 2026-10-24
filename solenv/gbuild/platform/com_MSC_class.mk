@@ -687,9 +687,17 @@ gb_ExternalProject_INCLUDE := \
 # Workaround for openssl build - it puts the CC var into additional pair of quotes. This breaks if
 # CC consists of more than a single element such as when using "ccache compiler". In case the
 # variables are exported for openssl, it closes and reopens the quotes after each element.
+#
+# LOCAL (NAI): use MSVC_CXX (absolute real compiler path) instead of the raw
+# CC for nmake externals. With the ccache wrap CC is "ccache cl", and
+# `cygpath -ws ccache cl` fails ("cannot create short name of ccache"),
+# yielding an EMPTY CC in the nmake environment -- libwebp's Makefile.vc
+# has no default CC=cl and then runs ` /nologo ...` as a command (NMAKE
+# U1077). MSVC_CXX is the same real-compiler source gb_AUTOCONF_WRAPPERS
+# uses for autoconf externals.
 gb_NMAKE_VARS = \
 	CC="$(subst $(WHITESPACE),$(if $(filter openssl,$(1)),\" \", ),$(strip \
-		$(shell cygpath -ws $(filter-out -%,$(CC))) $(filter -%,$(CC))))" \
+		$(shell cygpath -ws $(MSVC_CXX)) $(filter -%,$(CC))))" \
 	INCLUDE="$(gb_ExternalProject_INCLUDE)" \
 	LIB="$(ILIB)" \
 	MAKEFLAGS= \

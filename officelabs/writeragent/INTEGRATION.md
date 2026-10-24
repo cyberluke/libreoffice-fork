@@ -73,6 +73,29 @@ The build is offline and deterministic:
 - the OXT zip is timestamp-normalized via `gb_Helper_make_zip_deterministic`
   when `SOURCE_DATE_EPOCH` is set.
 
+### Cross-platform vendoring (Windows / macOS / Linux)
+
+`vendor/` is committed **pure-Python only** — the same tree must build an
+OXT on all three OSes. Platform-native wheels (e.g. `cryptography`'s Rust
+bindings: `.pyd` on Windows, `.so`/`.dylib` on macOS, `.so` on Linux) are
+added per build host:
+
+- `officelabs-build/vendor_native.sh [python]` — (re)vendors the pinned
+  native wheels into `vendor/` for the current OS. Idempotent (no-op when
+  a native backend is already present), prunes native artifacts of OTHER
+  platforms, needs network only on the first run per platform. Called
+  automatically by the build drivers (`v271/build_win.sh`,
+  `v271/build_mac.sh`, `v271/build_linux.sh`); `PREP_VENDOR=0` skips it.
+- `scripts/build_oxt.py` `sync_vendor_into_lib()` additionally filters
+  foreign-platform binaries at bundle time (safety net for checkouts that
+  were vendored on another OS): whole packages whose only native files
+  belong to another platform (e.g. `cryptography` with a Windows `_rust.pyd`
+  on macOS) are skipped, as are standalone foreign binaries and `vendor/bin`
+  console scripts. Pure-Python packages are always copied.
+- The OXT assembly step (`build-wa-oxt.sh` / `build_oxt.py`) itself stays
+  fully offline; the network-using vendoring happens in the driver scripts
+  beforehand.
+
 ## Registration on a clean profile
 
 No `unopkg add`, no Extension Manager interaction, no profile pre-seeding.

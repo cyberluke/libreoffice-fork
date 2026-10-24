@@ -1,5 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<description xmlns="http://openoffice.org/extensions/description/2006"
+<description
+  xmlns="http://openoffice.org/extensions/description/2006"
   xmlns:dep="http://openoffice.org/extensions/description/2006"
   xmlns:xlink="http://www.w3.org/1999/xlink"
   xmlns:d="http://openoffice.org/extensions/description/2006"
@@ -15,11 +16,13 @@
     <display-name>
         <name>WriterAgent</name>
     </display-name>
-    <icon>
-        <default xlink:href="assets/ai.svg"/>
-        <highcontrast xlink:href="assets/ai.svg"/>
-    </icon>
-    <update-information>
-        <src xlink:href="https://raw.githubusercontent.com/KeithCu/writeragent/refs/heads/master/update.xml" />
-    </update-information>
+
+  <icon>
+  <default xlink:href="assets/logo.jpg"/>
+  </icon>
+
+  <update-information>
+    <src xlink:href="https://raw.githubusercontent.com/KeithCu/writeragent/refs/heads/master/update.xml" />
+  </update-information>
+
 </description>

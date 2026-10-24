@@ -8935,6 +8935,63 @@ AC_SUBST([CXXFLAGS_INTRINSICS_F16C])
 AC_SUBST([CXXFLAGS_INTRINSICS_FMA])
 
 dnl ===================================================================
+dnl NAI Office CPU optimization (AVX2 / SSE4.1 / SSE4.2)
+dnl ===================================================================
+dnl Branded NAI Office product builds target modern x86-64 hardware.
+dnl --enable-naioffice-cpu-opt compiles the ENTIRE build for AVX2 +
+dnl SSE4.1 + SSE4.2. Default is "auto": on for Windows (MSVC/clang-cl
+dnl via -arch:AVX2), off for other platforms and architectures.
+dnl
+dnl Mechanism: gbuild deliberately does not use CFLAGS/CXXFLAGS for
+dnl object compiles (the config_host.mk CFLAGS export is commented out
+dnl via @x_CFLAGS@). The supported injection point is ENVCFLAGS /
+dnl ENVCFLAGSCXX, which gbuild.mk folds into every gb_LinkTarget_*FLAGS
+dnl (and therefore every cl.exe/gcc compile). config_host.mk.in exports
+dnl both, and they are AC_SUBST'd below.
+dnl
+dnl MSVC note: there is no separate /arch:SSE4.1 or /arch:SSE4.2 on
+dnl x64 -- /arch:AVX2 is the highest practical setting and implies
+dnl SSE4.2/SSE4.1 codegen; AVX-512 is deliberately NOT used (frequency
+dnl downclocking, and MSVC /arch:AVX512 is not available everywhere).
+dnl
+dnl GCC/Clang note: -mavx2 alone does not imply SSE4.1/SSE4.2, so the
+dnl three flags are spelled out explicitly (matches the intrinsics
+dnl block above, including the clang-cl preference for -m flags).
+AC_ARG_ENABLE(naioffice-cpu-opt,
+    AS_HELP_STRING([--enable-naioffice-cpu-opt],
+        [Compile the whole build for AVX2 + SSE4.1 + SSE4.2 (default: auto -- yes on Windows, no elsewhere)]),
+    [],[enable_naioffice_cpu_opt=auto])
+if test "x$enable_naioffice_cpu_opt" = "xauto"; then
+    if test "$COM" = "MSC"; then
+        enable_naioffice_cpu_opt=yes
+    else
+        enable_naioffice_cpu_opt=no
+    fi
+fi
+AC_MSG_CHECKING([for NAI Office CPU optimization (AVX2/SSE4.1/SSE4.2)])
+if test "x$enable_naioffice_cpu_opt" = "xyes"; then
+    case "$host_cpu" in
+        x86_64|amd64|AMD64|i?86)
+            if test "$GCC" = "yes" -o "$COM_IS_CLANG" = "TRUE"; then
+                ENVCFLAGS="${ENVCFLAGS:+$ENVCFLAGS }-msse4.1 -msse4.2 -mavx2"
+                ENVCFLAGSCXX="${ENVCFLAGSCXX:+$ENVCFLAGSCXX }-msse4.1 -msse4.2 -mavx2"
+            else
+                ENVCFLAGS="${ENVCFLAGS:+$ENVCFLAGS }-arch:AVX2"
+                ENVCFLAGSCXX="${ENVCFLAGSCXX:+$ENVCFLAGSCXX }-arch:AVX2"
+            fi
+            AC_MSG_RESULT([yes (x86-64: AVX2 + SSE4.1 + SSE4.2)])
+            ;;
+        *)
+            AC_MSG_RESULT([no (CPU optimization only applies to x86/x64 hosts)])
+            ;;
+    esac
+else
+    AC_MSG_RESULT([no])
+fi
+AC_SUBST([ENVCFLAGS])
+AC_SUBST([ENVCFLAGSCXX])
+
+dnl ===================================================================
 dnl system stl sanity tests
 dnl ===================================================================
 if test "$_os" != "WINNT"; then

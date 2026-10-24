@@ -143,6 +143,55 @@ def _vendor_copy_ignore(_dir: str, names: list[str]) -> list[str]:
     return ignored
 
 
+# Native extension suffixes per platform. The committed vendor/ tree holds
+# pure-Python packages only; platform wheels (e.g. cryptography's Rust
+# bindings: .pyd on Windows, .so/.dylib on macOS, .so on Linux) are added
+# per host by officelabs-build/vendor_native.sh. This filter is the safety
+# net that keeps foreign-platform binaries out of the OXT bundle even when
+# a checkout was previously vendored on another OS.
+_VENDOR_NATIVE_EXTS = {
+    "win32": frozenset({".pyd", ".exe", ".dll"}),
+    "linux": frozenset({".so"}),
+    "darwin": frozenset({".so", ".dylib"}),
+}
+
+
+def _vendor_platform_exts() -> frozenset[str]:
+    """Native extension suffixes for the current platform (empty set when unknown)."""
+    return _VENDOR_NATIVE_EXTS.get(sys.platform, frozenset())
+
+
+def _vendor_all_native_exts() -> frozenset[str]:
+    """Union of every platform's native suffixes (used to spot foreign wheels)."""
+    return frozenset().union(*_VENDOR_NATIVE_EXTS.values())
+
+
+def _vendor_dir_native_state(root: str) -> tuple[bool, bool]:
+    """Return (has_native, has_foreign) for compiled files under *root*.
+
+    Pure-Python packages contain neither; a wheel for the current platform
+    contains native files; a wheel for another platform contains only
+    foreign files.
+    """
+    native = _vendor_platform_exts()
+    all_native = _vendor_all_native_exts()
+    has_native = has_foreign = False
+    for _dir, _dirs, files in os.walk(root):
+        for name in files:
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in all_native:
+                continue
+            if ext in native:
+                has_native = True
+            else:
+                has_foreign = True
+            if has_native and has_foreign:
+                break
+        if has_native and has_foreign:
+            break
+    return has_native, has_foreign
+
+
 def sync_vendor_into_lib(vendor_dir: str, lib_dir: str, *, prune_websockets: bool = True) -> int:
     """Copy ``vendor/`` package trees into a ``plugin/lib/`` directory.
 
@@ -150,17 +199,30 @@ def sync_vendor_into_lib(vendor_dir: str, lib_dir: str, *, prune_websockets: boo
     bundle already received these wheels, but a stale/incomplete project
     ``plugin/lib/`` would wipe them (``rsync --delete``) and break imports such
     as ``isodate`` — Calc cell tools then fail to register.
+
+    Platform wheels for OTHER operating systems are skipped (see
+    ``_VENDOR_NATIVE_EXTS``): a checkout vendored on Windows must not leak
+    ``.pyd``/``.exe`` into a macOS or Linux bundle.
     """
     if not os.path.isdir(vendor_dir):
         return 0
     os.makedirs(lib_dir, exist_ok=True)
     vendor_count = 0
+    skipped: list[str] = []
+    native_exts = _vendor_platform_exts()
+    all_native_exts = _vendor_all_native_exts()
     for entry in sorted(os.listdir(vendor_dir)):
         if entry.endswith(".dist-info") or entry.startswith(("_", ".")):
             continue
         src_path = os.path.join(vendor_dir, entry)
         dst_path = os.path.join(lib_dir, entry)
         if os.path.isdir(src_path):
+            has_native, has_foreign = _vendor_dir_native_state(src_path)
+            if has_foreign and not has_native:
+                # Wheel built for another platform (e.g. cryptography's
+                # Windows _rust.pyd on macOS): would break imports, skip it.
+                skipped.append(entry)
+                continue
             if os.path.exists(dst_path):
                 shutil.rmtree(dst_path)
             shutil.copytree(src_path, dst_path, ignore=_vendor_copy_ignore)
@@ -169,9 +231,18 @@ def sync_vendor_into_lib(vendor_dir: str, lib_dir: str, *, prune_websockets: boo
                 if pruned:
                     print("  Pruned websockets for CDP client (%d paths)" % len(pruned))
         elif os.path.isfile(src_path):
+            ext = os.path.splitext(entry)[1].lower()
+            if ext in all_native_exts and ext not in native_exts:
+                # Standalone foreign binary (e.g. vendor/_cffi_backend...pyd
+                # on macOS/Linux): skip it instead of shipping a broken file.
+                skipped.append(entry)
+                continue
             os.makedirs(os.path.dirname(dst_path), exist_ok=True)
             shutil.copy2(src_path, dst_path)
         vendor_count += 1
+    if skipped:
+        print("  Skipped %d foreign-platform vendored artifact(s): %s"
+              % (len(skipped), ", ".join(skipped)))
     return vendor_count
 
 

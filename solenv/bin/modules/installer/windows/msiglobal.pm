@@ -23,6 +23,7 @@ use warnings;
 
 use Cwd;
 use Digest::MD5;
+use File::Spec;
 use installer::converter;
 use installer::exiter;
 use installer::files;
@@ -123,8 +124,22 @@ sub make_relative_ddf_path
         $windowstemppath = $installer::globals::cyg_temppath;
     }
 
-    $sourcepath =~ s/\Q$windowstemppath\E//;
-    $sourcepath =~ s/^[\\\/]//;
+    # LOCAL (NAI Office fork): express the source path relative to the
+    # packaging temp dir. execute_packaging() chdirs to that dir before
+    # running makecab.exe, and MakeCAB rejects ddf lines longer than 256
+    # characters -- with absolute paths the fork's long presentation
+    # template names exceed the limit. File::Spec keeps same-drive paths
+    # relative (with ..) and falls back to the absolute path when the
+    # source is on a different drive than the temp dir.
+    if ( $windowstemppath ne '' )
+    {
+        $sourcepath = File::Spec->abs2rel($sourcepath, $windowstemppath);
+    }
+    else
+    {
+        $sourcepath =~ s/\Q$windowstemppath\E//;
+        $sourcepath =~ s/^[\\\/]//;
+    }
 
     return $sourcepath;
 }

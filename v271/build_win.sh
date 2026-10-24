@@ -88,6 +88,20 @@ if [ "$TMP" = "/tmp" ] || [ "$TEMP" = "/tmp" ]; then
     echo "== TMP/TEMP -> $TMPWIN =="
 fi
 
+# TMPDIR: the MSI installer perl (installer/parameter.pm setglobalvariables)
+# derives its packaging temp dir from $ENV{TMPDIR} and chdirs there before
+# running makecab.exe, which resolves the ddf's relative source paths
+# against that directory. The temp dir must be on the same drive as
+# instdir and as shallow as possible: MakeCAB rejects ddf lines longer
+# than 256 chars, and each extra directory level costs one "../" on every
+# line. The build root itself gives only three hops (../../../instdir/...),
+# which keeps even the fork's longest template names (105 chars, twice per
+# line) under the limit.
+if [ -z "$TMPDIR" ] || [ "$TMPDIR" = "/tmp" ]; then
+    export TMPDIR="$(cygpath -m "$(pwd)")"
+    echo "== TMPDIR -> $TMPDIR =="
+fi
+
 # Firebird is built in a real, junction-free directory (see the LOCAL patch
 # in external/firebird/ExternalProject_firebird.mk): its shared-memory trace
 # regions are keyed by path string and the workdir junction gives every
@@ -129,6 +143,15 @@ if [ ! -x /usr/local/bin/wslpath ] && [ -f "$(dirname "$0")/wslpath-shim" ]; the
 fi
 
 echo "== env sanity: $(type -p cl.exe) / $(type -p git) / INCLUDE=${#INCLUDE} chars =="
+
+# OXT native wheels (cryptography etc.) for this platform. The committed
+# vendor/ tree holds pure-Python packages only; the Windows-specific
+# compiled wheels are (re)vendored per host. Idempotent -- no-op when a
+# native backend is already present. PREP_VENDOR=0 skips this step.
+if [ "${PREP_VENDOR:-1}" = "1" ]; then
+    ./officelabs/writeragent/officelabs-build/vendor_native.sh "${PYTHON:-python3}" \
+        || echo "WARN: vendor_native.sh failed; the OXT will lack platform-native wheels"
+fi
 
 # Configure once (also re-run when ccache was just enabled so config_host.mk
 # picks up the ccache-wrapped CC/CXX). FORCE_AUTOGEN=1 re-runs autogen.sh

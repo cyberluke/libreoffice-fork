@@ -23,11 +23,18 @@ officelabs_writeragent_oxt_PYTHON := $(call gb_ExternalExecutable_get_command,py
 officelabs_writeragent_oxt_OXT := $(WORKDIR)/OfficeLabsAI/WriterAgent.oxt
 
 # Any change to the vendored source, the OfficeLabs overlays or the build
-# script rebuilds the OXT. vendor/ and build-tools/ are excluded from the
-# scan (they only change through bin/update-writeragent-upstream.py).
+# script rebuilds the OXT. vendor/, build-tools/, the dev .venv and other
+# generated/dev-only state are excluded from the scan (they only change
+# through bin/update-writeragent-upstream.py or local tooling, and must not
+# become make prerequisites -- a stale/broken venv file (e.g. a scipy wheel
+# symlink that does not survive a Windows checkout) otherwise fails the
+# target with "No rule to make target").
 officelabs_writeragent_oxt_SOURCES := \
 	$(shell find $(officelabs_writeragent_oxt_SRCDIR) -type f \
-		! -path '*/vendor/*' ! -path '*/build-tools/*')
+		! -path '*/vendor/*' ! -path '*/build-tools/*' \
+		! -path '*/.venv/*' ! -path '*/__pycache__/*' \
+		! -path '*/plugin/lib/*' ! -path '*/.git/*' \
+		! -path '*/WriterAgent.egg-info/*')
 
 $(officelabs_writeragent_oxt_WORKDIR)/writeragent-oxt.done : \
 	$(officelabs_writeragent_oxt_SOURCES) \

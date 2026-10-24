@@ -72,6 +72,11 @@ export CEF_CFLAGS=$(gb_SPACE)@CEF_CFLAGS@
 export CEF_LIBS=$(gb_SPACE)@CEF_LIBS@
 export WITH_OFFICELABS_AI=@WITH_OFFICELABS_AI@
 @x_CFLAGS@ export CFLAGS=@CFLAGS@
+# NAI Office CPU optimization (--enable-naioffice-cpu-opt): gbuild consumes
+# ENVCFLAGS/ENVCFLAGSCXX into every object compile (see gbuild.mk), which is
+# why the option sets these instead of the disabled CFLAGS export above.
+export ENVCFLAGS=@ENVCFLAGS@
+export ENVCFLAGSCXX=@ENVCFLAGSCXX@
 export CLANG_USE_LD=@CLANG_USE_LD@
 export CLANGDIR=@CLANGDIR@
 export CLANGLIBDIR=@CLANGLIBDIR@

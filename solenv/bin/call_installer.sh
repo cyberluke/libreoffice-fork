@@ -32,6 +32,13 @@ if [ "${STRIP}" = "strip" ] ; then
     export ENABLE_STRIP=1
 fi
 
+# LOCAL (NAI Office): MSYS2 converts Windows-tool switches (/V3, /F) when
+# the installer perl spawns makecab.exe through /bin/sh, so makecab rejects
+# its own ddf argument with "Too many parameters". Disable argument path
+# conversion for the installer process tree -- all paths passed here are
+# already in Windows form.
+export MSYS2_ARG_CONV_EXCL='*'
+
 # shellcheck disable=SC2086
 # shellcheck disable=SC2154
 ${PERL} -w "${SRCDIR}"/solenv/bin/make_installer.pl \

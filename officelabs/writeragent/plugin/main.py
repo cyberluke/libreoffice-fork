@@ -405,6 +405,28 @@ def _tests_bundled() -> bool:
     return bool(_TESTS_AVAILABLE)
 
 
+_EVAL_RUNNER_AVAILABLE: bool | None = None
+
+
+def _eval_dashboard_bundled() -> bool:
+    """True when ``tests/eval_runner.py`` (the Evaluation Dashboard backend) ships in this build.
+
+    Release OXTs are packaged with ``--no-tests`` and vendored snapshots may
+    drop ``tests/`` entirely; the dashboard then can only report "not in this
+    build" after Run, so the menus must not offer it. ``find_spec`` raises
+    ``ModuleNotFoundError`` when the ``tests`` package itself is absent.
+    """
+    global _EVAL_RUNNER_AVAILABLE
+    if _EVAL_RUNNER_AVAILABLE is None:
+        try:
+            import importlib.util
+
+            _EVAL_RUNNER_AVAILABLE = importlib.util.find_spec("tests.eval_runner") is not None
+        except Exception:
+            _EVAL_RUNNER_AVAILABLE = False
+    return bool(_EVAL_RUNNER_AVAILABLE)
+
+
 def _show_tests_unavailable(test_name: str) -> None:
     """Show a message when test suites are not bundled (release builds)."""
     try:

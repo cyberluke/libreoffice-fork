@@ -33,11 +33,31 @@ STAGE="$WORK/src"
 
 rm -rf "$WORK"
 mkdir -p "$WORK"
+# The stage dir must exist before the extraction tar below runs with
+# -C "$STAGE": GNU tar errors with "Cannot open: No such file or
+# directory" when the -C target does not exist yet.
+mkdir -p "$STAGE"
 
 # 1. Fresh copy of the vendored tree. Copying every time keeps the build
 #    reproducible: stale generated artifacts can never leak from the source
 #    checkout into the OXT.
-cp -a "$SRC/." "$STAGE/"
+#    Excluded from the copy (dev-only/generated state that must never be
+#    staged; .venv alone is >1 GB with scipy/nodejs wheels and previously
+#    filled the disk on every OXT build):
+#      .venv  .git  __pycache__  *.egg-info
+#    vendor/ and build-tools/ are copied separately below (kept out of the
+#    tar so nothing regenerable is written twice).
+tar -C "$SRC" \
+    --exclude='./.venv' \
+    --exclude='./.git' \
+    --exclude='*/__pycache__' \
+    --exclude='*egg-info*' \
+    --exclude='./vendor' \
+    --exclude='./build-tools' \
+    --exclude='./officelabs-build' \
+    --exclude='./build' \
+    --exclude='./plugin/lib' \
+    -cf - . | tar -C "$STAGE" -xf -
 
 # Remove state that is regenerated below or provided by the build environment.
 rm -rf \

@@ -49,9 +49,13 @@ $(call gb_Zip_get_target,%) :
 	# zips in one directory (see run_zip_template_recipe in
 	# extras/CustomTarget_templates.mk), which can corrupt or delete
 	# packages built concurrently by make -j24.
+	# NOTE: RESPONSEFILE must be exported -- flock -c spawns a new shell that
+	# does not inherit plain (unexported) recipe variables; without export the
+	# inner `cat $RESPONSEFILE` reads empty stdin and zip aborts with
+	# "zip error: Nothing to do!".
 	$(call gb_Helper_abbreviate_dirs,\
 		$(if $(FILES),\
-			RESPONSEFILE=$(call gb_var2file,$(shell $(gb_MKTEMP)),\
+			export RESPONSEFILE=$(call gb_var2file,$(shell $(gb_MKTEMP)),\
                         $(FILES)) && \
 			cd $(LOCATION) && \
 			flock $(dir $(call gb_Zip_get_target,$*)).zip-lock -c 'cat $${RESPONSEFILE} | tr "[:space:]" "\n" | \

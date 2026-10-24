@@ -17,16 +17,16 @@
  */
 
 [OOO_ARPCONTACTTEMPLATE]
-en-US = "LibreOffice Community"
+en-US = "NAI Office"
 
 [OOO_ARPHELPLINKTEMPLATE]
-en-US = "https://www.libreoffice.org/get-help"
+en-US = "https://www.nanotrik.ai"
 
 [OOO_ARPURLINFOABOUTTEMPLATE]
-en-US = "https://www.libreoffice.org/"
+en-US = "https://www.nanotrik.ai"
 
 [OOO_ARPURLUPDATEINFOTEMPLATE]
-en-US = "https://www.libreoffice.org/download"
+en-US = "https://www.nanotrik.ai"
 
 [OOO_STR_NEW_DISPLAY_NAME]
 en-US = "~New"
