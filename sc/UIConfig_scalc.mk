@@ -169,6 +169,7 @@ $(eval $(call gb_UIConfig_add_uifiles,modules/scalc,\
 	sc/uiconfig/scalc/ui/notebookbar \
 	sc/uiconfig/scalc/ui/notebookbar_compact \
 	sc/uiconfig/scalc/ui/notebookbar_groups \
+	sc/uiconfig/scalc/ui/notebookbar_writer2027 \
 	sc/uiconfig/scalc/ui/notebookbar_groupedbar_full \
 	sc/uiconfig/scalc/ui/notebookbar_groupedbar_compact \
 	sc/uiconfig/scalc/ui/numberbox \

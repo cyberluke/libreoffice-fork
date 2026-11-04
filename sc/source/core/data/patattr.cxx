@@ -866,13 +866,12 @@ void ScPatternAttr::fillColor(model::ComplexColor& rComplexColor, const SfxItemS
             }
         }
 
-        //  get system text color for comparison
+        //  get system text color for comparison (used when the background is
+        //  not dark, so the configured FONTCOLOR is honored on light surfaces)
         Color aSysTextColor;
-        if (eAutoMode == ScAutoFontColorMode::Print)
-        {
+        if ( eAutoMode == ScAutoFontColorMode::Print )
             aSysTextColor = COL_BLACK;
-        }
-        else if (pTextConfigColor)
+        else if ( pTextConfigColor )
         {
             // pTextConfigColor can be used to avoid repeated lookup of the configured color
             aSysTextColor = *pTextConfigColor;
@@ -885,21 +884,17 @@ void ScPatternAttr::fillColor(model::ComplexColor& rComplexColor, const SfxItemS
             }
         }
         else
-        {
             aSysTextColor = ScModule::get()->GetColorConfig().GetColorValue(svtools::FONTCOLOR).nColor;
-        }
 
-        if (SfxViewShell::Current())
-        {
-            if (aBackColor.IsDark())
-                aColor = COL_WHITE;
-            else
-                aColor = COL_BLACK;
-        }
+        // Base the automatic text color on the resolved document background so
+        // dark mode keeps unformatted cell text light regardless of whether a
+        // view shell is currently associated with this paint. Print/export are
+        // unaffected: in ScAutoFontColorMode::Print aBackColor is forced to
+        // COL_WHITE above, so this resolves to COL_BLACK there.
+        if ( aBackColor.IsDark() )
+            aColor = COL_WHITE;
         else
-        {
             aColor = aSysTextColor;
-        }
     }
     aComplexColor.setFinalColor(aColor);
     rComplexColor = std::move(aComplexColor);

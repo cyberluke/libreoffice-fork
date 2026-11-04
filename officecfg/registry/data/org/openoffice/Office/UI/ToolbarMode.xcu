@@ -5,13 +5,13 @@
     <value>notebookbar_writer2027.ui</value>
   </prop>
   <prop oor:name="ActiveCalc">
-    <value>notebookbar.ui</value>
+    <value>notebookbar_writer2027.ui</value>
   </prop>
   <prop oor:name="ActiveImpress">
-    <value>notebookbar.ui</value>
+    <value>notebookbar_writer2027.ui</value>
   </prop>
   <prop oor:name="ActiveDraw">
-    <value>notebookbar.ui</value>
+    <value>notebookbar_writer2027.ui</value>
   </prop>
   <node oor:name="Applications">
     <node oor:name="Writer" oor:op="replace">
@@ -324,7 +324,7 @@
     </node>
     <node oor:name="Calc" oor:op="replace">
       <prop oor:name="Active">
-        <value>notebookbar.ui</value>
+        <value>notebookbar_writer2027.ui</value>
       </prop>
       <node oor:name="Modes">
         <node oor:name="Default" oor:op="replace">
@@ -572,11 +572,39 @@
             <value>true</value>
           </prop>
         </node>
+        <node oor:name="Writer2027" oor:op="replace">
+          <prop oor:name="Label">
+            <value xml:lang="en-US">Writer 2027</value>
+          </prop>
+          <prop oor:name="HasNotebookbar">
+            <value>true</value>
+          </prop>
+          <prop oor:name="IsExperimental">
+            <value>false</value>
+          </prop>
+          <prop oor:name="MenuPosition">
+            <value>9</value>
+          </prop>
+          <prop oor:name="CommandArg">
+            <value>notebookbar_writer2027.ui</value>
+          </prop>
+          <prop oor:name="Toolbars">
+            <value>
+            </value>
+          </prop>
+          <prop oor:name="UserToolbars">
+            <value>
+            </value>
+          </prop>
+          <prop oor:name="Sidebar">
+            <value>Opened</value>
+          </prop>
+        </node>
       </node>
     </node>
     <node oor:name="Impress" oor:op="replace">
       <prop oor:name="Active">
-        <value>notebookbar.ui</value>
+        <value>notebookbar_writer2027.ui</value>
       </prop>
       <node oor:name="Modes">
         <node oor:name="Default" oor:op="replace">
@@ -827,11 +855,39 @@
             <value>true</value>
           </prop>
         </node>
+        <node oor:name="Writer2027" oor:op="replace">
+          <prop oor:name="Label">
+            <value xml:lang="en-US">Writer 2027</value>
+          </prop>
+          <prop oor:name="HasNotebookbar">
+            <value>true</value>
+          </prop>
+          <prop oor:name="IsExperimental">
+            <value>false</value>
+          </prop>
+          <prop oor:name="MenuPosition">
+            <value>9</value>
+          </prop>
+          <prop oor:name="CommandArg">
+            <value>notebookbar_writer2027.ui</value>
+          </prop>
+          <prop oor:name="Toolbars">
+            <value>
+            </value>
+          </prop>
+          <prop oor:name="UserToolbars">
+            <value>
+            </value>
+          </prop>
+          <prop oor:name="Sidebar">
+            <value>Opened</value>
+          </prop>
+        </node>
       </node>
     </node>
     <node oor:name="Draw" oor:op="replace">
       <prop oor:name="Active">
-        <value>notebookbar.ui</value>
+        <value>notebookbar_writer2027.ui</value>
       </prop>
       <node oor:name="Modes">
         <node oor:name="Default" oor:op="replace">
@@ -989,6 +1045,34 @@
           </prop>
           <prop oor:name="HasMenubar">
             <value>true</value>
+          </prop>
+        </node>
+        <node oor:name="Writer2027" oor:op="replace">
+          <prop oor:name="Label">
+            <value xml:lang="en-US">Writer 2027</value>
+          </prop>
+          <prop oor:name="HasNotebookbar">
+            <value>true</value>
+          </prop>
+          <prop oor:name="IsExperimental">
+            <value>false</value>
+          </prop>
+          <prop oor:name="MenuPosition">
+            <value>9</value>
+          </prop>
+          <prop oor:name="CommandArg">
+            <value>notebookbar_writer2027.ui</value>
+          </prop>
+          <prop oor:name="Toolbars">
+            <value>
+            </value>
+          </prop>
+          <prop oor:name="UserToolbars">
+            <value>
+            </value>
+          </prop>
+          <prop oor:name="Sidebar">
+            <value>Opened</value>
           </prop>
         </node>
       </node>

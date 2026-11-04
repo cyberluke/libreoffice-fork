@@ -2365,6 +2365,36 @@ bool SwDrawTextInfo::ApplyAutoColor( vcl::Font* pFont )
     const SwViewShell *pVSh = GetShell();
     const bool bOutputToWindow(pVSh && (pVSh->GetWin() || pVSh->isOutputToWindow()));
 
+    // Resolve the effective text background for this run: an explicit font or
+    // paragraph background first, then the page/document background (which is
+    // dark in dark mode), finally the global workspace retouche color.
+    const auto lcl_ResolveTextBackground = [this]() -> std::optional<Color>
+    {
+        std::optional<Color> pCol;
+        if (GetFont())
+            pCol = GetFont()->GetBackColor();
+        if (!pCol || COL_TRANSPARENT == *pCol)
+        {
+            const SvxBrushItem* pItem;
+            SwRect aOrigBackRect;
+            drawinglayer::attribute::SdrAllFillAttributesHelperPtr aFillAttributes;
+            if (GetFrame()->GetBackgroundBrush(aFillAttributes, pItem, pCol, aOrigBackRect, false, /*bConsiderTextBox=*/true))
+            {
+                if (aFillAttributes && aFillAttributes->isUsed())
+                    pCol = Color(aFillAttributes->getAverageColor(aGlobalRetoucheColor.getBColor()));
+                if (!pCol)
+                    pCol = pItem->GetColor();
+                if (pCol && *pCol == COL_TRANSPARENT)
+                    pCol.reset();
+            }
+            else
+                pCol.reset();
+        }
+        if (!pCol)
+            pCol = aGlobalRetoucheColor;
+        return pCol;
+    };
+
     // Writer 2027 Print Friendly (Phase 5): remap ONLY the default digital
     // palette to paper-safe counterparts (light text -> dark, links -> dark
     // blue/violet, hairlines -> dark neutral). Explicit user colors are
@@ -2428,47 +2458,7 @@ bool SwDrawTextInfo::ApplyAutoColor( vcl::Font* pFont )
         if ( bChgFntColor )
         {
             // check if current background has a user defined setting
-            std::optional<Color> pCol;
-            if (GetFont())
-                pCol = GetFont()->GetBackColor();
-            if( ! pCol || COL_TRANSPARENT == *pCol )
-            {
-                const SvxBrushItem* pItem;
-                SwRect aOrigBackRect;
-                drawinglayer::attribute::SdrAllFillAttributesHelperPtr aFillAttributes;
-
-                /// OD 21.08.2002
-                ///     consider, that [GetBackgroundBrush(...)] can set <pCol>
-                ///     - see implementation in /core/layout/paintfrm.cxx
-                /// OD 21.08.2002 #99657#
-                ///     There is a user defined setting for the background, if there
-                ///     is a background brush and its color is *not* "no fill"/"auto fill".
-                if( GetFrame()->GetBackgroundBrush( aFillAttributes, pItem, pCol, aOrigBackRect, false, /*bConsiderTextBox=*/true ) )
-                {
-                    if (aFillAttributes && aFillAttributes->isUsed())
-                    {
-                        // First see if fill attributes provide a color.
-                        pCol = Color(aFillAttributes->getAverageColor(aGlobalRetoucheColor.getBColor()));
-                    }
-
-                    // If not, then fall back to the old brush item.
-                    if ( !pCol )
-                    {
-                        pCol = pItem->GetColor();
-                    }
-
-                    /// OD 30.08.2002 #99657#
-                    /// determined color <pCol> can be <COL_TRANSPARENT>. Thus, check it.
-                    if ( *pCol == COL_TRANSPARENT)
-                        pCol.reset();
-                }
-                else
-                    pCol.reset();
-            }
-
-            // no user defined color at paragraph or font background
-            if ( ! pCol )
-                pCol = aGlobalRetoucheColor;
+            std::optional<Color> pCol = lcl_ResolveTextBackground();
 
             if (pVSh && bOutputToWindow)
             {
@@ -2491,6 +2481,25 @@ bool SwDrawTextInfo::ApplyAutoColor( vcl::Font* pFont )
                 else
                     nNewColor = COL_BLACK;
             }
+        }
+    }
+
+    // Dark-mode readability for imported documents (e.g. .docx with explicit
+    // dark/black font colors): when the app theme is dark and the resolved
+    // background is dark, force the text color to white even if the document
+    // sets a non-AUTO font color, so black-on-dark imported content becomes
+    // readable. Gated to window paint only, so print/PDF keep the authored
+    // black-on-white appearance. Writer-2027 native dark documents are
+    // excluded: they carry their own authored digital palette.
+    if (!bChgFntColor && pVSh && bOutputToWindow
+        && sw::writer2027view::IsDarkThemeActive()
+        && !sw::writer2027view::IsWriter2027DarkDocument(*pVSh->GetDoc()))
+    {
+        std::optional<Color> pCol = lcl_ResolveTextBackground();
+        if (pCol && pCol->IsDark())
+        {
+            nNewColor = COL_WHITE;
+            bChgFntColor = true;
         }
     }
 
