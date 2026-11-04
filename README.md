@@ -1,142 +1,76 @@
-# LibreOffice
-[![Coverity Scan Build Status](https://scan.coverity.com/projects/211/badge.svg)](https://scan.coverity.com/projects/211) [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/307/badge)](https://www.bestpractices.dev/projects/307) [![Translation status](https://weblate.documentfoundation.org/widgets/libo_ui-master/-/svg-badge.svg)](https://weblate.documentfoundation.org/engage/libo_ui-master/?utm_source=widget)
+# NAI Office
 
-<img align="right" width="150" src="https://opensource.org/wp-content/uploads/2009/06/OSIApproved.svg">
+**Your documents. Native office engines. AI assistance where it belongs: inside the workflow.**
 
-LibreOffice is an integrated office suite based on copyleft licenses
-and compatible with most document formats and standards. Libreoffice
-is backed by The Document Foundation, which represents a large
-independent community of enterprises, developers and other volunteers
-moved by the common goal of bringing to the market the best software
-for personal productivity. LibreOffice is open source, and free to
-download, use and distribute.
+**NAI Office** is NANOTRIK's document productivity product built from a **real LibreOffice source fork**, not a web imitation or an Office extension masquerading as an entire suite. It retains LibreOffice's C++ document core, UNO APIs and established document-format machinery while adding native AI integration surfaces and a separate V271 document-context integration.
 
-A quick overview of the LibreOffice code structure.
+NAI Office is part of the **[NAI software ecosystem](https://github.com/cyberluke/NAI-OS)**. The NAI OS repository contains the Windows shell and integration surface; **this repository is the office application's source tree**.
 
-## Overview
+**Status:** active engineering source fork. Features described here have concrete source paths, but this README does not promise a finished public installer, a hosted AI service or that every proposed cross-app contract is already shipping.
 
-You can develop for LibreOffice in one of two ways, one
-recommended and one much less so. First the somewhat less recommended
-way: it is possible to use the SDK to develop an extension,
-for which you can read the [API docs](https://api.libreoffice.org/)
-and [Developers Guide](https://wiki.documentfoundation.org/Documentation/DevGuide).
-This re-uses the (extremely generic) UNO APIs that are also used by
-macro scripting in StarBasic.
+## What lives in this repository
 
-The best way to add a generally useful feature to LibreOffice
-is to work on the code base however. Overall this way makes it easier
-to compile and build your code, it avoids any arbitrary limitations of
-our scripting APIs, and in general is far more simple and intuitive -
-if you are a reasonably able C++ programmer.
+| Layer | Role | Source |
+| --- | --- | --- |
+| **LibreOffice document engines** | Writer, Calc, Impress/Draw, document models, formatting, import/export and UNO. Native C++ and supporting platform code. | [`sw/`](sw/), [`sc/`](sc/), [`sd/`](sd/), [`sfx2/`](sfx2/), [`vcl/`](vcl/), [`framework/`](framework/) |
+| **OfficeLabs native integration** | Additional C++ host module for AI UI embedding, document-controller interactions, inline completion/rewrite and agent-transport boundaries. `OfficeLabs` is an internal implementation name retained in this fork. | [`officelabs/`](officelabs/) |
+| **AI webview bridge** | Conditional Chromium Embedded Framework (CEF) host, message bridge, security/consent and trust boundaries. Requires the configured build/runtime dependencies. | [`officelabs/source/`](officelabs/source/), [`officelabs/Module_officelabs.mk`](officelabs/Module_officelabs.mk) |
+| **V271 document integration** | UNO extension for OIDC Authorization Code + PKCE, document identity, recent/favorite metadata, document-context extraction and graph/vector-service integration. | [`v271/`](v271/), [`v271/README.md`](v271/README.md) |
+| **Upstream-sync engineering** | Tracks changes to inherited LibreOffice files, native build scripts and intentionally modified integration points to reduce merge regressions. | [`upstream-patches.list`](upstream-patches.list), [`upstream-sync.sh`](upstream-sync.sh) |
 
-## The Build Chain and Runtime Baselines
+## The office experience
 
-These are the current minimal operating system and compiler versions to
-run and compile LibreOffice, also used by the TDF builds:
+**Edit real documents.** The native office suite provides the actual document model, formatting engine and file compatibility. AI features are added around the existing document context and editing model rather than replacing it with a simplified editor.
 
-* Windows:
-    * Runtime: Windows 10
-    * Build: [wsl-as-helper](https://wiki.documentfoundation.org/Development/BuildingOnWSLWindows) + Visual Studio 2022
-* macOS:
-    * Runtime: 11
-    * Build: 13 or later + Xcode 14.3 or later (using latest version available for a given version of macOS)
-* Linux:
-    * Runtime: RHEL 9 or CentOS 9 and comparable
-    * Build: either GCC 13; or Clang 18 with libstdc++ 11
-* iOS (only for LibreOfficeKit):
-    * Runtime: 14.5 (only support for newer i devices == 64 bit)
-    * Build: Xcode 12.5 and iPhone SDK 14.5
-* Android:
-    * Build: NDK 27 and SDK 30.0.3
-* Emscripten / WASM:
-    * Runtime: a browser with SharedMemory support (threads + atomics)
-    * Build: Qt 5.15 with Qt supported Emscripten 1.39.8
-    * See [README.wasm](static/README.wasm.md)
+**Work in context.** The OfficeLabs module contains dedicated native code for document interaction, inline completion, rewrites, CEF webview hosting, request transport and consent boundaries. These source components are not a claim that an AI backend is bundled or universally available out of the box.
 
-Java is required for building many parts of LibreOffice. In TDF Wiki article
-[Development/Java](https://wiki.documentfoundation.org/Development/Java), the
-exact modules that depend on Java are listed.
+**Connect documents to the wider NAI environment when configured.** The `v271/` extension implements an explicit identity and document-metadata path, with configurable V271 services. Document extraction and embeddings use a central vector service where this integration is enabled. The presence of that path does **not** imply all document contents remain offline or are automatically shared: inspect configuration, authorization and service endpoints for the actual deployment.
 
-The baseline for Java is Java Development Kit (JDK) Version 17 or later.
+**Keep a shared protocol, not duplicated AI sidebars.** A canonical cross-application chat component is described in [`v271/CHAT_AI_CANONICAL_SPEC.md`](v271/CHAT_AI_CANONICAL_SPEC.md). **That document explicitly labels itself a specification.** Its planned portable deployment is not represented here as an implemented feature of every NAI application.
 
-The baseline for Python is version 3.11. It follows the version available
-in SUSE Linux Enterprise Desktop and the Maintenance Support version of
-Red Hat Enterprise Linux.
+## Architecture
 
-If you want to use Clang with the LibreOffice compiler plugins, the minimal
-version of Clang is 18. Since Xcode doesn't provide the compiler plugin
-headers, you have to compile your own Clang to use them on macOS.
+```text
+NAI Office (this repository)
+│
+├── LibreOffice core (C++ / UNO / VCL / sfx2)
+│   ├── sw/                  Writer
+│   ├── sc/                  Calc
+│   ├── sd/                  Draw / Impress
+│   └── framework/           menus, toolbars, runtime structure
+│
+├── officelabs/              NAI/OfficeLabs native host module
+│   ├── source/              CEF, document controller, inline and rewrite
+│   ├── inc/                 native interfaces
+│   └── writeragent/         optional bundled agent extension assets
+│
+└── v271/                    optional V271 UNO integration
+    ├── office-extension/    OIDC + document graph/context code
+    ├── tests/               extension tests
+    └── evidence/            recorded extension acceptance evidence
+```
 
-You can find the TDF configure switches in the `distro-configs/` directory.
+The fork remains a **full LibreOffice tree**, with multiple build targets and native/runtime prerequisites. Integrations deliberately have separate build and verification contracts.
 
-To setup your initial build environment on Windows and macOS, we provide
-the LibreOffice Development Environment
-([LODE](https://wiki.documentfoundation.org/Development/lode)) scripts.
+## Build and verification
 
-For more information see the build instructions for your platform in the
-[TDF wiki](https://wiki.documentfoundation.org/Development/How_to_build).
+For the upstream engine's supported build chains and prerequisites, start with the **[preserved LibreOffice technical README](README.LIBREOFFICE-UPSTREAM.md)** and the official [LibreOffice developer documentation](https://wiki.documentfoundation.org/Development/How_to_build).
 
-## The Important Bits of Code
+For this fork's additional integration surfaces:
 
-Each module should have a `README.md` file inside it which has some
-degree of documentation for that module; patches are most welcome to
-improve those. We have those turned into a web page here:
+- [`officelabs/Module_officelabs.mk`](officelabs/Module_officelabs.mk) registers the native OfficeLabs module. CEF targets are conditional on `ENABLE_CEF`; the WriterAgent extension target is conditional on `OFFICELABS_AI`.
+- [`v271/README.md`](v271/README.md) documents the V271 UNO extension's build, configuration, test commands, evidence expectations and backend contract.
+- [`upstream-patches.list`](upstream-patches.list) and [`upstream-sync.sh`](upstream-sync.sh) define the fork's upstream merge-discipline.
+- [`build-sandbox.sh`](build-sandbox.sh) and [`test-build-sandbox.sh`](test-build-sandbox.sh) provide specialized build-sandbox tooling for the existing engineering environment.
 
-<https://docs.libreoffice.org/>
+**Verification statement:** README-only changes have not been built or tested. Historical test counts, backend availability and current installer readiness must be verified in the target environment before they become release claims. Do not use upstream LibreOffice release badges as evidence of NAI Office CI status.
 
-However, there are two hundred modules, many of them of only
-peripheral interest for a specialist audience. So - where is the
-good stuff, the code that is most useful. Here is a quick overview of
-the most important ones:
+## Ecosystem boundaries
 
-Module    | Description
-----------|-------------------------------------------------
-[sal/](sal)             | this provides a simple System Abstraction Layer
-[tools/](tools)         | this provides basic internal types: `Rectangle`, `Color` etc.
-[vcl/](vcl)             | this is the widget toolkit library and one rendering abstraction
-[framework/](framework) | UNO framework, responsible for building toolbars, menus, status bars, and the chrome around the document using widgets from VCL, and XML descriptions from `/uiconfig/` files
-[sfx2/](sfx2)           | legacy core framework used by Writer/Calc/Draw: document model / load/save / signals for actions etc.
-[svx/](svx)             | drawing model related helper code, including much of Draw/Impress
+NAI Office is one independent NAI application, alongside [NAI OS](https://github.com/cyberluke/NAI-OS), PaintBrush, Mail, Browser and other products developed in separate public or private repositories. The office document engine, embedded AI UI, model runtime and NAI desktop shell are not interchangeable components; integration should be claimed only where its particular transport and runtime exist.
 
-Then applications
+## LibreOffice heritage, attribution and licenses
 
-Module    | Description
-----------|-------------------------------------------------
-[desktop/](desktop)  | this is where the `main()` for the application lives, init / bootstrap. the name dates back to an ancient StarOffice that also drew a desktop
-[sw/](sw/)           | Writer
-[sc/](sc/)           | Calc
-[sd/](sd/)           | Draw / Impress
+This fork inherits the LibreOffice codebase created and maintained by **[The Document Foundation](https://www.documentfoundation.org/)** and the upstream contributor community. The original inherited README has been preserved **unchanged** as [`README.LIBREOFFICE-UPSTREAM.md`](README.LIBREOFFICE-UPSTREAM.md). It provides the original developer/module map and upstream links.
 
-There are several other libraries that are helpful from a graphical perspective:
-
-Module    | Description
-----------|-------------------------------------------------
-[basegfx/](basegfx)  | algorithms and data-types for graphics as used in the canvas
-[canvas/](canvas)   | new (UNO) canvas rendering model with various backends
-[cppcanvas/](cppcanvas) | C++ helper classes for using the UNO canvas
-[drawinglayer/](drawinglayer) | View code to render drawable objects and break them down into primitives we can render more easily.
-
-## Rules for #include Directives (C/C++)
-
-Use the `"..."` form if and only if the included file is found next to the
-including file. Otherwise, use the `<...>` form. (For further details, see the
-mail [Re: C[++]: Normalizing include syntax ("" vs
-<>)](https://lists.freedesktop.org/archives/libreoffice/2017-November/078778.html).)
-
-The UNO API include files should consistently use double quotes, for the
-benefit of external users of this API.
-
-`loplugin:includeform (compilerplugins/clang/includeform.cxx)` enforces these rules.
-
-
-## Finding Out More
-
-Beyond this, you can read the `README.md` files, send us patches, ask
-on the mailing list libreoffice@lists.freedesktop.org (no subscription
-required) or poke people on IRC `#libreoffice-dev` on irc.libera.chat -
-we're a friendly and generally helpful mob. We know the code can be
-hard to get into at first, and so there are no silly questions.
-
-## SAST Tools
-
-[PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - static analyzer for C, C++, C#, and Java code.
+The repository contains multiple licensing notices, including [`COPYING`](COPYING), [`COPYING.LGPL`](COPYING.LGPL) and [`COPYING.MPL`](COPYING.MPL), together with licenses for individual components and dependencies. The NAI Office branding does not change these upstream obligations or imply endorsement from The Document Foundation.
